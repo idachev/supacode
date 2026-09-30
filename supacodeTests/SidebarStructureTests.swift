@@ -86,35 +86,60 @@ struct SidebarStructureTests {
     #expect(structure.hoistedRowIDs.isEmpty)
   }
 
-  // MARK: - Pinned hoisting + git main exclusion.
+  // MARK: - Explicit main-checkout pins.
 
-  @Test func gitMainWorktreeNeverEntersPinnedHighlight() {
-    let repoRoot = URL(fileURLWithPath: "/tmp/repo")
+  @Test(arguments: [true, false])
+  func mainWorktreeHoistsOnlyWhenExplicitlyPinned(groupPinned: Bool) {
+    let repoRoot = URL(fileURLWithPath: "/tmp/main-pin-\(UUID().uuidString)")
     let main = makeMainWorktree(repoRoot: repoRoot)
     let repository = Repository(
       id: RepositoryID(repoRoot.path(percentEncoded: false)),
-      rootURL: repoRoot,
-      name: "repo",
-      worktrees: IdentifiedArray(uniqueElements: [main])
+      rootURL: repoRoot, name: "repo",
+      worktrees: IdentifiedArray(uniqueElements: [main]),
     )
     var state = makeState(repositories: [repository])
-    // Even if some pre-state has the main in `.pinned`, the helper must skip it.
-    state.$sidebar.withLock { sidebar in
-      var section = sidebar.sections[repository.id] ?? .init()
-      var pinnedBucket = section.buckets[.pinned] ?? .init()
-      pinnedBucket.items[main.id] = .init()
-      section.buckets[.pinned] = pinnedBucket
-      sidebar.sections[repository.id] = section
+    for isPinned in [false, true] {
+      if isPinned {
+        state.$sidebar.withLock { $0.pin(worktree: main.id, in: repository.id) }
+        RepositoriesFeature.syncSidebar(&state)
+      }
+      let structure = state.computeSidebarStructure(groupPinned: groupPinned, groupActive: false)
+      let pinnedIDs = structure.sections.compactMap { section -> [Worktree.ID]? in
+        if case .highlight(.pinned, let ids) = section { return ids }
+        return nil
+      }.flatMap { $0 }
+      let groups = structure.sections.compactMap { section -> [SidebarItemGroup]? in
+        if case .repository(let id, let groups) = section, id == repository.id { return groups }
+        return nil
+      }
+      #expect(groups.count == 1)
+      let hoisted = isPinned && groupPinned
+      #expect(pinnedIDs == (hoisted ? [main.id] : []))
+      #expect(state.menuBarForcedHoists().pinned == (isPinned ? [main.id] : []))
+      #expect(groups.flatMap { $0 }.flatMap(\.rowIDs) == (hoisted ? [] : [main.id]))
+      #expect(structure.hoistSummaryByRepositoryID[repository.id]?.pinnedCount == (hoisted ? 1 : nil))
+      #expect(structure.hotkeySlots.filter { $0.id == main.id }.count == 1)
     }
+  }
 
-    let structure = state.computeSidebarStructure(groupPinned: true, groupActive: true)
-
-    let pinnedIDs = structure.sections.compactMap { section -> [Worktree.ID]? in
-      if case .highlight(.pinned, let ids) = section { return ids }
-      return nil
-    }.flatMap { $0 }
-    #expect(pinnedIDs.isEmpty)
-    #expect(!structure.hoistedRowIDs.contains(main.id))
+  @Test func pinnedActiveMainWorktreeIsNotDuplicatedInActive() {
+    let repoRoot = URL(fileURLWithPath: "/tmp/main-active-\(UUID().uuidString)")
+    let main = makeMainWorktree(repoRoot: repoRoot)
+    let repository = Repository(
+      id: RepositoryID(repoRoot.path(percentEncoded: false)),
+      rootURL: repoRoot, name: "repo",
+      worktrees: IdentifiedArray(uniqueElements: [main]),
+    )
+    var state = makeState(repositories: [repository])
+    state.$sidebar.withLock { $0.pin(worktree: main.id, in: repository.id) }
+    RepositoriesFeature.syncSidebar(&state)
+    state.sidebarItems[id: main.id]?.agentSnapshot.agents = [.init(agent: .claude, activity: .idle)]
+    let grouped = state.computeSidebarStructure(groupPinned: true, groupActive: true)
+    #expect(grouped.sections.contains(.highlight(kind: .pinned, rowIDs: [main.id])))
+    #expect(!grouped.sections.contains(.highlight(kind: .active, rowIDs: [main.id])))
+    let ungrouped = state.computeSidebarStructure(groupPinned: false, groupActive: true)
+    #expect(ungrouped.sections.contains(.highlight(kind: .active, rowIDs: [main.id])))
+    #expect(!ungrouped.sections.contains(.highlight(kind: .pinned, rowIDs: [main.id])))
   }
 
   @Test func pinnedPendingWorktreeHoistsIntoPinnedHighlight() {

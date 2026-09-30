@@ -3282,18 +3282,12 @@ struct RepositoriesFeature {
           Self.syncSidebar(&state)
           return .none
         }
-        // Git main worktrees render in the main slot, never the pinned list, so pinning is a no-op.
-        // Scope the skip to git repos: folder synthetics are `isMainWorktree` by geometry but ARE pinnable.
-        guard let worktree = state.worktree(for: worktreeID),
-          let repositoryID = state.repositoryID(containing: worktreeID),
-          let repository = state.repositories[id: repositoryID]
+        guard state.worktree(for: worktreeID) != nil,
+          let repositoryID = state.repositoryID(containing: worktreeID)
         else {
           // Reachable when a menu snapshot outlives its row (e.g. a pending id
           // whose creation just materialized under a new id).
           repositoriesLogger.warning("Ignoring pin for unresolvable worktree \(worktreeID).")
-          return .none
-        }
-        if repository.isGitRepository, state.isMainWorktree(worktree) {
           return .none
         }
         // Pin / unpin are unarchive-adjacent (the new bucket flow drops
@@ -6805,9 +6799,8 @@ extension RepositoriesFeature.State {
         rebuilt[repoID] = section
         continue
       }
-      // Folder synthetic worktrees satisfy `isMainWorktree` by geometry but are
-      // user-pinnable. Scope the main-worktree skip to git repos so a pin on a
-      // folder survives `.repositoriesLoaded`.
+      // Git main rows keep their main-slot projection, but an explicit pin
+      // must survive roster reloads just like a linked worktree pin.
       let mainID =
         repository.isGitRepository ? repository.worktrees.first(where: { isMainWorktree($0) })?.id : nil
       let worktreeIDs = Set(repository.worktrees.map(\.id))
@@ -6816,7 +6809,10 @@ extension RepositoriesFeature.State {
       let isUnresolvedRemotePlaceholder = repository.host != nil && repository.worktrees.isEmpty
       let pruneAgainstRoster = pruneLivenessAgainstRoster && !isUnresolvedRemotePlaceholder
       var copy = section
-      let mainCustomization = mainID.flatMap { Self.mainWorktreeCustomization(in: copy, mainID: $0) }
+      let mainCustomization = mainID.flatMap { id in
+        copy.buckets[.pinned]?.items[id] == nil
+          ? Self.mainWorktreeCustomization(in: copy, mainID: id) : nil
+      }
       let seenInCuratedBuckets = Self.pruneCuratedBuckets(
         in: &copy, mainID: mainID, liveWorktreeIDs: worktreeIDs, pruneAgainstRoster: pruneAgainstRoster)
       if let mainID, let mainCustomization {
@@ -6853,8 +6849,8 @@ extension RepositoriesFeature.State {
     $sidebar.withLock { sidebar in sidebar.sections = rebuilt }
   }
 
-  /// Prunes each curated bucket in place: drops the main worktree (it renders in
-  /// the main slot) and, when `pruneAgainstRoster`, any row no longer live.
+  /// Prunes each curated bucket in place: keeps explicit main-worktree pins,
+  /// drops other main entries, and, when `pruneAgainstRoster`, rows no longer live.
   /// Returns the worktree IDs kept, so the caller can skip re-seeding them.
   private static func pruneCuratedBuckets(
     in copy: inout SidebarState.Section,
@@ -6867,7 +6863,7 @@ extension RepositoriesFeature.State {
       if bucketID == .archived { continue }
       var prunedItems: OrderedDictionary<Worktree.ID, SidebarState.Item> = [:]
       for (worktreeID, item) in bucket.items {
-        if let mainID, worktreeID == mainID { continue }
+        if let mainID, worktreeID == mainID, bucketID != .pinned { continue }
         if pruneAgainstRoster, !liveWorktreeIDs.contains(worktreeID) { continue }
         prunedItems[worktreeID] = item
         seen.insert(worktreeID)

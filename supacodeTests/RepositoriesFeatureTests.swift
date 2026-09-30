@@ -3084,6 +3084,61 @@ struct RepositoriesFeatureTests {
     }
   }
 
+  @Test(arguments: [false, true])
+  func mainWorktreePinSurvivesReloadAndUnpins(isRemote: Bool) async {
+    let root = "/tmp/main-pin-\(UUID().uuidString)"
+    let host = RemoteHost(alias: "devbox")
+    let main =
+      isRemote
+      ? RepositoriesFeature.remoteMainWorktree(host: host, remotePath: root)
+      : makeWorktree(id: root, name: "main", repoRoot: root)
+    let repository =
+      isRemote
+      ? Repository(
+        id: RepositoriesFeature.remoteRepositoryID(host: host, remotePath: root),
+        rootURL: URL(fileURLWithPath: root), name: "repo",
+        worktrees: IdentifiedArray(uniqueElements: [main]), host: host,
+      )
+      : makeRepository(id: root, worktrees: [main])
+    var initial = makeState(repositories: [repository])
+    initial.$sidebar.withLock { sidebar in
+      sidebar.setCustomization(title: "Root", color: .blue, worktree: main.id, in: repository.id)
+    }
+    let store = TestStore(initialState: initial) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.analyticsClient.capture = { _, _ in }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pinWorktree(main.id))
+    #expect(store.state.isWorktreePinned(main))
+    #expect(store.state.orderedHighlightPinnedIDs() == [main.id])
+    #expect(store.state.sidebarItems[id: main.id]?.accent == .main)
+    #expect(store.state.orderedPinnedWorktreeIDs(in: repository).isEmpty)
+    #expect(store.state.sidebarGrouping.bucketsByRepository[repository.id]?[.pinned] == [main.id])
+    #expect(store.state.sidebar.status(of: main.id, in: repository.id, isMain: true) == .main)
+
+    await store.send(
+      .repositoriesLoaded([repository], failures: [], roots: [repository.rootURL], animated: false)
+    )
+    #expect(store.state.isWorktreePinned(main))
+    #expect(store.state.sidebar.sections[repository.id]?.buckets[.unpinned]?.items[main.id] == nil)
+    #expect(store.state.sidebarItems[id: main.id]?.customTitle == "Root")
+    #expect(store.state.sidebarItems[id: main.id]?.customTint == .blue)
+
+    await store.send(.unpinWorktree(main.id))
+    #expect(!store.state.isWorktreePinned(main))
+    #expect(store.state.orderedHighlightPinnedIDs().isEmpty)
+    await store.send(
+      .repositoriesLoaded([repository], failures: [], roots: [repository.rootURL], animated: false)
+    )
+    #expect(!store.state.isWorktreePinned(main))
+    #expect(store.state.sidebarItems[id: main.id]?.customTitle == "Root")
+    #expect(store.state.sidebarItems[id: main.id]?.customTint == .blue)
+    #expect(store.state.sidebarGrouping.bucketsByRepository[repository.id]?[.pinned] == [main.id])
+  }
+
   @Test func folderPinUnpinFlowsThroughBucketMachinery() async {
     // Folders use the same `pinWorktree` / `unpinWorktree` actions as git
     // worktrees. The two invariants this test locks:

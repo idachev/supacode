@@ -777,12 +777,9 @@ private struct SidebarItemContextMenu: View {
 
   @ViewBuilder
   private func pinActions(contextRows: [SidebarContextRow], isBulkSelection: Bool) -> some View {
-    // Folder synthetic rows pass `isMainWorktree` by geometry but are pinnable; git "main" still
-    // aren't. Pending rows pin too: the reducer parks the intent on the
-    // `PendingWorktree` and lands it when the worktree materializes.
-    let pinnableRows = contextRows.filter {
-      !$0.isMainWorktree || $0.isFolder
-    }
+    // Main checkouts, folders, and pending rows share the same pin action.
+    // Pending pin intent lands when the worktree materializes.
+    let pinnableRows = contextRows
     if !pinnableRows.isEmpty {
       let allPinned = pinnableRows.allSatisfy(\.isPinned)
       let allFolders = pinnableRows.allSatisfy(\.isFolder)

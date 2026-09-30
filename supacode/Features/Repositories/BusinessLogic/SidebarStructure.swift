@@ -671,9 +671,8 @@ extension RepositoriesFeature.State {
   }
 
   /// Pinned worktree IDs across every repository in the user's repo order.
-  /// Git main worktrees are excluded (they belong to the per-repo main slot,
-  /// not the user-curated pinned list). Folders seed into `.unpinned` by
-  /// default and only appear here after an explicit pin. Pinned still-creating
+  /// Main checkouts and folders appear only after an explicit user pin.
+  /// Pinned still-creating
   /// pending rows are included; their pin intent lives on `PendingWorktree`,
   /// not the buckets. Archived rows are filtered for parity with the Active
   /// candidate filter. The optional `archived` parameter lets a caller share
@@ -683,12 +682,8 @@ extension RepositoriesFeature.State {
     let archivedSet = archived ?? archivedWorktreeIDSet
     var ids: [SidebarItemID] = []
     for repoID in orderedRepositoryIDs() {
-      guard let repository = repositories[id: repoID] else { continue }
-      let isGit = repository.isGitRepository
+      guard repositories[id: repoID] != nil else { continue }
       for worktreeID in sidebar.sections[repoID]?.buckets[.pinned]?.items.keys ?? [] {
-        if isGit, let worktree = repository.worktrees[id: worktreeID], isMainWorktree(worktree) {
-          continue
-        }
         if archivedSet.contains(worktreeID) { continue }
         ids.append(worktreeID)
       }
