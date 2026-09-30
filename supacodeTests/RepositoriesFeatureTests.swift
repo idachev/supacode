@@ -3084,7 +3084,7 @@ struct RepositoriesFeatureTests {
     }
   }
 
-  @Test(arguments: [false, true])
+  @Test(.dependencies, arguments: [false, true])
   func mainWorktreePinSurvivesReloadAndUnpins(isRemote: Bool) async {
     let root = "/tmp/main-pin-\(UUID().uuidString)"
     let host = RemoteHost(alias: "devbox")
@@ -3110,6 +3110,12 @@ struct RepositoriesFeatureTests {
       $0.analyticsClient.capture = { _, _ in }
     }
     store.exhaustivity = .off
+    // Remote rosters arrive through the probe result; bulk local reloads discard
+    // unconfigured remote repositories before sidebar reconciliation.
+    let reloadAction: RepositoriesFeature.Action =
+      isRemote
+      ? .remoteRepositoryResolved(repositoryID: repository.id, repository: repository, failureMessage: nil)
+      : .repositoriesLoaded([repository], failures: [], roots: [repository.rootURL], animated: false)
 
     await store.send(.pinWorktree(main.id))
     #expect(store.state.isWorktreePinned(main))
@@ -3119,9 +3125,7 @@ struct RepositoriesFeatureTests {
     #expect(store.state.sidebarGrouping.bucketsByRepository[repository.id]?[.pinned] == [main.id])
     #expect(store.state.sidebar.status(of: main.id, in: repository.id, isMain: true) == .main)
 
-    await store.send(
-      .repositoriesLoaded([repository], failures: [], roots: [repository.rootURL], animated: false)
-    )
+    await store.send(reloadAction)
     #expect(store.state.isWorktreePinned(main))
     #expect(store.state.sidebar.sections[repository.id]?.buckets[.unpinned]?.items[main.id] == nil)
     #expect(store.state.sidebarItems[id: main.id]?.customTitle == "Root")
@@ -3130,9 +3134,9 @@ struct RepositoriesFeatureTests {
     await store.send(.unpinWorktree(main.id))
     #expect(!store.state.isWorktreePinned(main))
     #expect(store.state.orderedHighlightPinnedIDs().isEmpty)
-    await store.send(
-      .repositoriesLoaded([repository], failures: [], roots: [repository.rootURL], animated: false)
-    )
+    #expect(store.state.sidebarItems[id: main.id]?.customTitle == "Root")
+    #expect(store.state.sidebar.sections[repository.id]?.buckets[.unpinned]?.items[main.id]?.title == "Root")
+    await store.send(reloadAction)
     #expect(!store.state.isWorktreePinned(main))
     #expect(store.state.sidebarItems[id: main.id]?.customTitle == "Root")
     #expect(store.state.sidebarItems[id: main.id]?.customTint == .blue)

@@ -20,7 +20,7 @@ TUIST_SOURCE_GENERATION_STAMP := $(TUIST_GENERATION_STAMP_DIR)/none
 TUIST_RELEASE_GENERATION_STAMP := $(TUIST_GENERATION_STAMP_DIR)/development-release
 # Test targets use explicit source globs expanded at generation time, so a new
 # test file must trigger a regen or it would silently run in no bundle.
-TUIST_GENERATION_INPUTS := Project.swift Workspace.swift Tuist.swift Tuist/Package.swift $(wildcard Tuist/Package.resolved) $(PROJECT_CONFIG_PATH) mise.toml scripts/build-ghostty.sh scripts/build-zmx.sh $(wildcard supacodeTests/*.swift)
+TUIST_GENERATION_INPUTS := Project.swift Workspace.swift Tuist.swift Tuist/Package.swift $(wildcard Tuist/Package.resolved) $(PROJECT_CONFIG_PATH) mise.toml scripts/build-ghostty.sh scripts/build-zmx.sh scripts/select-zig-sdk.sh scripts/with-zig-sdk.sh scripts/zig-sdk-bin/xcrun $(wildcard patches/ghostty/*.patch) $(wildcard patches/zmx/*.patch) $(wildcard supacodeTests/*.swift)
 TUIST_GENERATE_CACHE_PROFILE ?= development
 TUIST_CACHE_CONFIGURATION ?= Debug
 VERSION ?=

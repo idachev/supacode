@@ -1,0 +1,15 @@
+diff --git a/src/build/LibtoolStep.zig b/src/build/LibtoolStep.zig
+--- a/src/build/LibtoolStep.zig
++++ b/src/build/LibtoolStep.zig
+@@ -31,7 +31,10 @@ pub fn create(b: *std.Build, opts: Options) *LibtoolStep {
+     const self = b.allocator.create(LibtoolStep) catch @panic("OOM");
+ 
+     const run_step = RunStep.create(b, b.fmt("libtool {s}", .{opts.name}));
+-    run_step.addArgs(&.{ "libtool", "-static", "-o" });
++    // Apple libtool in Xcode 27 skips Zig's archive members whose offsets
++    // are not 8-byte aligned. Repack with LLVM's Darwin writer instead.
++    // qL preserves every member, including duplicate names across libraries.
++    run_step.addArgs(&.{ b.graph.zig_exe, "ar", "--format=darwin", "qcLs" });
+     const output = run_step.addOutputFileArg(opts.out_name);
+     for (opts.sources) |source| run_step.addFileArg(source);
+ 

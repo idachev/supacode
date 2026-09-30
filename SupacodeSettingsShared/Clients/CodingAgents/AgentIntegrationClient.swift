@@ -49,7 +49,7 @@ extension AgentIntegrationClient: DependencyKey {
 }
 
 extension DependencyValues {
-  public var agentIntegrationClient: AgentIntegrationClient {
+  public nonisolated var agentIntegrationClient: AgentIntegrationClient {
     get { self[AgentIntegrationClient.self] }
     set { self[AgentIntegrationClient.self] = newValue }
   }

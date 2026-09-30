@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Zig discovers libc and frameworks through xcrun, independently of SDKROOT.
+# Scope the override to SDK discovery; Metal and all other tools use Xcode.
+set -euo pipefail
+if [ "$#" -eq 3 ] && [ "$1" = "--sdk" ] && [ "$2" = "macosx" ] && [ "$3" = "--show-sdk-path" ]; then
+  printf '%s\n' "${SUPACODE_ZIG_SDKROOT:?missing Zig SDK selection}"
+else
+  exec /usr/bin/xcrun "$@"
+fi

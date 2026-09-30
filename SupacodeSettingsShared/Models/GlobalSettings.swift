@@ -560,12 +560,12 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
 extension GlobalSettings {
   /// Effective enablement for one forge integration. GitHub reads the legacy
   /// stored flag so downgraded builds keep their setting.
-  public func forgeIntegrationEnabled(forID id: String) -> Bool {
+  public nonisolated func forgeIntegrationEnabled(forID id: String) -> Bool {
     guard id != "github" else { return githubIntegrationEnabled }
     return forgeEnabledByID[id] ?? true
   }
 
-  public mutating func setForgeIntegrationEnabled(_ enabled: Bool, forID id: String) {
+  public nonisolated mutating func setForgeIntegrationEnabled(_ enabled: Bool, forID id: String) {
     guard id != "github" else {
       githubIntegrationEnabled = enabled
       return

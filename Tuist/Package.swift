@@ -13,6 +13,11 @@ import ProjectDescription
 let packageSettings = PackageSettings(
   productTypes: [
     "Sparkle": .framework,
+  ],
+  targetSettings: [
+    // Swift 6.4 emits mismatched private @State initialization symbols when
+    // Sharing is compiled per file. One compilation unit keeps them consistent.
+    "Sharing": .settings(base: ["SWIFT_COMPILATION_MODE": "wholemodule"])
   ]
 )
 #endif
@@ -28,7 +33,7 @@ let package = Package(
     .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.0-beta.2"),
     .package(url: "https://github.com/pointfreeco/swift-case-paths", exact: "1.7.2"),
     .package(url: "https://github.com/pointfreeco/swift-clocks", exact: "1.0.6"),
-    .package(url: "https://github.com/pointfreeco/swift-composable-architecture", exact: "1.23.1"),
+    .package(url: "https://github.com/pointfreeco/swift-composable-architecture", exact: "1.23.3"),
     .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", exact: "1.3.2"),
     .package(url: "https://github.com/pointfreeco/swift-custom-dump", exact: "1.3.4"),
     .package(url: "https://github.com/pointfreeco/swift-dependencies", exact: "1.10.1"),

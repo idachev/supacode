@@ -10,7 +10,7 @@ extension ShellClient {
   /// `runLogin*` entries must not re-wrap it and route to the plain `base.run*`.
   /// `extraOptions` injects per-call `ssh -o` flags (e.g. the non-interactive
   /// background-probe profile) on top of the shared multiplexing options.
-  public static func ssh(
+  public nonisolated static func ssh(
     host: RemoteHost,
     base: ShellClient = .live,
     extraOptions: [String] = []

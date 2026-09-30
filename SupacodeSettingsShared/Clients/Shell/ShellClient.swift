@@ -199,7 +199,7 @@ extension ShellClient: DependencyKey {
 }
 
 extension DependencyValues {
-  public var shellClient: ShellClient {
+  public nonisolated var shellClient: ShellClient {
     get { self[ShellClient.self] }
     set { self[ShellClient.self] = newValue }
   }

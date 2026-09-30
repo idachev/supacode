@@ -36,7 +36,7 @@ extension ArchivedWorktreeDatesClient: DependencyKey {
 }
 
 extension DependencyValues {
-  public var archivedWorktreeDatesClient: ArchivedWorktreeDatesClient {
+  public nonisolated var archivedWorktreeDatesClient: ArchivedWorktreeDatesClient {
     get { self[ArchivedWorktreeDatesClient.self] }
     set { self[ArchivedWorktreeDatesClient.self] = newValue }
   }

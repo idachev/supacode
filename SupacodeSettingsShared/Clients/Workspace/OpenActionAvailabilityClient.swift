@@ -43,7 +43,7 @@ extension OpenActionAvailabilityClient: DependencyKey {
 }
 
 extension DependencyValues {
-  public var openActionAvailability: OpenActionAvailabilityClient {
+  public nonisolated var openActionAvailability: OpenActionAvailabilityClient {
     get { self[OpenActionAvailabilityClient.self] }
     set { self[OpenActionAvailabilityClient.self] = newValue }
   }

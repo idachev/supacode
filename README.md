@@ -73,7 +73,7 @@ you can bind an action to a hotkey or fire it from another app.
 - macOS 26.0+
 - [mise](https://mise.jdx.dev/) for the pinned toolchain. Add `~/.local/bin` to your `PATH`.
 - git submodules: `git submodule update --init --recursive`
-- **Xcode 26.3** if you are on macOS 26.4+ (see [below](#building-on-macos-264-tahoe)).
+- **Xcode 26 or 27**, plus a macOS SDK <= 26.3 for Zig (see [below](#building-on-macos-264-tahoe)).
 
 ## Quick start
 
@@ -99,18 +99,25 @@ make run-app                     # build and launch
 
 ### Building on macOS 26.4+ (Tahoe)
 
-GhosttyKit is built with a pinned Zig (`0.15.2`, required exactly by ghostty) whose linker
-cannot link the macOS 26.4+ SDK: that SDK dropped the `arm64-macos` slice from `libSystem.tbd`
-([ziglang/zig#31658](https://github.com/ziglang/zig/issues/31658)), so the build fails with a
-wall of `undefined symbol` errors. Install [Xcode 26.3](https://developer.apple.com/download/all/?q=Xcode%2026.3),
-which ships the macOS 26.2 SDK that still has `arm64-macos`. You do not need to switch it
-globally: the build auto-detects a Zig-linkable Xcode and pins it for that build only. After
-installing Xcode 26.3 once:
+GhosttyKit uses Zig 0.15.2, whose linker cannot use the newer SDK's arm64 stubs.
+Xcode 26.3 includes a compatible macOS 26.2 SDK and works directly.
+
+Xcode 27 can also build the app when a compatible older SDK is installed.
+The build automatically checks the Command Line Tools SDKs for a fallback.
+Only Zig uses that SDK; Swift and Metal continue using the selected Xcode.
+To use a compatible SDK at another path:
 
 ```bash
-sudo DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer xcodebuild -license accept
-sudo DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer xcodebuild -runFirstLaunch
-sudo DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain
+SUPACODE_ZIG_SDKROOT=/path/to/MacOSX26.2.sdk make build-app
+```
+
+The build does not change the global Xcode selection or modify installed SDKs.
+Finish first launch and install the Metal Toolchain for the selected Xcode:
+
+```bash
+sudo DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -license accept
+sudo DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -runFirstLaunch
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain
 ```
 
 See [AGENTS.md](AGENTS.md) for the full rationale and the rest of the architecture.

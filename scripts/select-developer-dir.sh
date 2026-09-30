@@ -1,22 +1,16 @@
 #!/usr/bin/env bash
-# Prints the Developer dir of an Xcode whose macOS SDK the pinned Zig (0.15.2) can
-# link. Shared by the build scripts, the Makefile, and `make doctor`. Exit 1 with
+# Prints the Developer dir of a full Xcode with a native or fallback macOS SDK
+# that Zig 0.15.2 can link. Shared by build scripts and doctor. Exit 1 with
 # an actionable message when none is installed.
 set -euo pipefail
 
-# Linkable when the dir is a full Xcode whose macOS SDK predates the zig-breaking
-# change. macOS 26.4+ SDKs can't link with Zig 0.15.2 (ziglang/zig#31658, fixed in
-# 0.16+) even though their libSystem.tbd may still list arm64-macos, so gate on the
-# SDK version, not that string (which is present on broken SDKs too).
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Require full Xcode plus either its native SDK or a compatible Zig-only fallback.
 is_zig_linkable() {
-  local dir="$1" ver
-  [ -d "$dir" ] || return 1
-  # Require a full Xcode, not CommandLineTools (no xcodebuild).
+  local dir="$1"
   [ -x "${dir}/usr/bin/xcodebuild" ] || return 1
-  ver="$(DEVELOPER_DIR="$dir" xcrun --sdk macosx --show-sdk-version 2>/dev/null)" || return 1
-  [ -n "$ver" ] || return 1
-  # Reject SDKs newer than 26.3 (the 26.4+ break); sort -V keeps 26.10 above 26.3.
-  [ "$(printf '%s\n26.3\n' "$ver" | sort -V | tail -1)" = "26.3" ]
+  DEVELOPER_DIR="$dir" "$script_dir/select-zig-sdk.sh" >/dev/null 2>&1
 }
 
 # Honor an explicit DEVELOPER_DIR when it is itself linkable.
@@ -52,12 +46,11 @@ for dir in ${candidates[@]+"${candidates[@]}"}; do
 done
 
 cat >&2 <<'EOF'
-error: no Zig-linkable Xcode found.
+error: no Xcode with a Zig-compatible SDK found.
 
-  The pinned Zig (0.15.2, required exactly by ghostty) cannot link the macOS
-  26.4+ SDK: it dropped the arm64-macos slice from libSystem.tbd (ziglang/zig
-  #31658, fixed only in Zig 0.16+). Install Xcode 26.3, which ships the macOS
-  26.2 SDK whose .tbd still has arm64-macos:
+  Zig 0.15.2 needs a macOS SDK <= 26.3. Newer Xcodes can use a compatible
+  Command Line Tools SDK for Zig while Swift keeps the native Xcode SDK.
+  Set SUPACODE_ZIG_SDKROOT to another compatible SDK, or install Xcode 26.3:
 
     https://developer.apple.com/download/all/?q=Xcode%2026.3
 

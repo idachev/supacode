@@ -27,7 +27,7 @@ extension DirectoryPickerClient: DependencyKey {
 }
 
 extension DependencyValues {
-  public var directoryPicker: DirectoryPickerClient {
+  public nonisolated var directoryPicker: DirectoryPickerClient {
     get { self[DirectoryPickerClient.self] }
     set { self[DirectoryPickerClient.self] = newValue }
   }

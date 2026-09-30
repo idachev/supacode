@@ -57,7 +57,7 @@ public nonisolated struct AgentsFile: Codable, Equatable, Sendable {
 
 extension AgentInstallTarget {
   /// The persistable record for this target.
-  public var installRecord: AgentInstallRecord {
+  public nonisolated var installRecord: AgentInstallRecord {
     switch location {
     case .standard: AgentInstallRecord(agent: agent, path: nil)
     case .custom(let path): AgentInstallRecord(agent: agent, path: path)
@@ -67,7 +67,7 @@ extension AgentInstallTarget {
 
 extension AgentInstallRecord {
   /// The install target this record identifies.
-  public var target: AgentInstallTarget {
+  public nonisolated var target: AgentInstallTarget {
     AgentInstallTarget(
       agent: agent,
       location: path.map { AgentInstallLocation.custom(configDirectoryPath: $0) } ?? .standard)

@@ -36,6 +36,8 @@ print_fingerprint() {
       git diff --no-ext-diff --no-color HEAD -- . | shasum -a 256
       git ls-files --others --exclude-standard | LC_ALL=C sort | shasum -a 256
       shasum -a 256 "${script_path}" | awk '{print $1}'
+      shasum -a 256 "${script_dir}/select-zig-sdk.sh" "${script_dir}/with-zig-sdk.sh" "${script_dir}/zig-sdk-bin/xcrun"
+      "${script_dir}/select-zig-sdk.sh"
       shasum -a 256 "${srcroot}/mise.toml" | awk '{print $1}'
       # The patches are applied at build time, so an edited patch must bust the cache.
       for patch in "${zmx_patches_dir}"/*.patch; do
@@ -169,7 +171,7 @@ for target in "${zmx_targets[@]}"; do
   slice_prefix="${zmx_build_root}/slices/${target}"
   slice_cache="${slice_prefix}/.zig-cache"
   slice_binary="${slice_prefix}/bin/zmx"
-  mise exec -- zig build \
+  "${script_dir}/with-zig-sdk.sh" mise exec -- zig build \
     -Doptimize=ReleaseSafe \
     -Dtarget="${target}" \
     --prefix "${slice_prefix}" \
@@ -186,7 +188,8 @@ mkdir -p "$(dirname "${zmx_binary_path}")"
 lipo -create "${slice_paths[@]}" -output "${zmx_binary_path}"
 
 # Defense in depth: -verify_arch fails closed on a partial / thin lipo output, but exits silently.
-if ! lipo "${zmx_binary_path}" -verify_arch x86_64 arm64; then
+if ! lipo "${zmx_binary_path}" -verify_arch x86_64 ||
+  ! lipo "${zmx_binary_path}" -verify_arch arm64; then
   echo "error: zmx universal binary at ${zmx_binary_path} is missing x86_64 or arm64 slice" >&2
   exit 1
 fi

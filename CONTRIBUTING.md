@@ -62,7 +62,7 @@ make test    # the test suite
 ```
 
 See the [README](README.md) and [AGENTS.md](AGENTS.md) for how to build and run the app,
-including the Xcode 26.3 requirement on macOS 26.4+.
+including the compatible Zig SDK requirement on macOS 26.4+.
 
 ## AI tools and accountability
 

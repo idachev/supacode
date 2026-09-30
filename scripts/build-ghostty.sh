@@ -34,6 +34,8 @@ print_fingerprint() {
       git diff --no-ext-diff --no-color HEAD -- . | shasum -a 256
       git ls-files --others --exclude-standard | LC_ALL=C sort | shasum -a 256
       shasum -a 256 "${script_path}" | awk '{print $1}'
+      shasum -a 256 "${script_dir}/select-zig-sdk.sh" "${script_dir}/with-zig-sdk.sh" "${script_dir}/zig-sdk-bin/xcrun"
+      "${script_dir}/select-zig-sdk.sh"
       shasum -a 256 "${srcroot}/mise.toml" | awk '{print $1}'
       # The patches are applied at build time, so an edited patch must bust the cache.
       for patch in "${ghostty_patches_dir}"/*.patch; do
@@ -176,7 +178,7 @@ if [ -f "${ghostty_fingerprint_path}" ] &&
 fi
 
 cd "${ghostty_dir}"
-mise exec -- zig build -Doptimize=ReleaseFast -Demit-xcframework=true -Dsentry=false --prefix "${ghostty_build_root}" --cache-dir "${ghostty_local_cache_dir}" --global-cache-dir "${ghostty_global_cache_dir}"
+"${script_dir}/with-zig-sdk.sh" mise exec -- zig build -Doptimize=ReleaseFast -Demit-xcframework=true -Demit-macos-app=false -Dsentry=false --prefix "${ghostty_build_root}" --cache-dir "${ghostty_local_cache_dir}" --global-cache-dir "${ghostty_global_cache_dir}"
 rsync -a --delete "${ghostty_dir}/macos/GhosttyKit.xcframework/" "${xcframework_path}/"
 prepare_xcframework
 printf '%s\n' "${fingerprint}" > "${ghostty_fingerprint_path}"

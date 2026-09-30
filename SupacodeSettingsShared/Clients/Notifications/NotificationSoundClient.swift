@@ -61,7 +61,7 @@ extension NotificationSoundClient: DependencyKey {
 }
 
 extension DependencyValues {
-  public var notificationSoundClient: NotificationSoundClient {
+  public nonisolated var notificationSoundClient: NotificationSoundClient {
     get { self[NotificationSoundClient.self] }
     set { self[NotificationSoundClient.self] = newValue }
   }

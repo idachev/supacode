@@ -52,10 +52,11 @@ fi
 developer_dir="$("${script_dir}/select-developer-dir.sh" 2>/dev/null)" || developer_dir=""
 if [ -n "${developer_dir}" ]; then
   sdk="$(DEVELOPER_DIR="${developer_dir}" xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
-  pass "Zig-linkable Xcode: ${developer_dir} ($(basename "${sdk:-unknown}"))"
+  zig_sdk="$(DEVELOPER_DIR="${developer_dir}" "${script_dir}/select-zig-sdk.sh")"
+  pass "Xcode: ${developer_dir} ($(basename "${sdk:-unknown}")); Zig SDK: ${zig_sdk}"
 else
-  fail "no Zig-linkable Xcode: macOS 26.4+ SDK dropped arm64-macos (ziglang/zig#31658)" \
-    "install Xcode 26.3 (ships the macOS 26.2 SDK): https://developer.apple.com/download/all/?q=Xcode%2026.3"
+  fail "no full Xcode with a Zig-compatible macOS SDK" \
+    "install Xcode 26.3, or install newer Xcode and set SUPACODE_ZIG_SDKROOT to a macOS SDK <= 26.3"
 fi
 
 # 4 and 5 need an Xcode to point at.
