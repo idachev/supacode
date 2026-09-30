@@ -243,7 +243,17 @@ struct SidebarStructure: Equatable, Sendable {
       customTitle: String?,
       color: RepositoryColor?
     )
+    case repositoryGroup(RepositoryGroup)
     case placeholder
+
+    var repositoryID: Repository.ID? {
+      switch self {
+      case .repository(let id, _), .folder(let id, _),
+        .failedRepository(let id, _, _, _, _), .environmentBlockedRepository(let id, _, _, _):
+        id
+      case .repositoryGroup, .highlight, .placeholder: nil
+      }
+    }
 
     var id: SectionID {
       switch self {
@@ -252,6 +262,7 @@ struct SidebarStructure: Equatable, Sendable {
       case .folder(let repositoryID, _): .folder(repositoryID)
       case .failedRepository(let repositoryID, _, _, _, _): .failedRepository(repositoryID)
       case .environmentBlockedRepository(let repositoryID, _, _, _): .environmentBlockedRepository(repositoryID)
+      case .repositoryGroup(let group): .repositoryGroup(group.id)
       case .placeholder: .placeholder
       }
     }
@@ -262,6 +273,7 @@ struct SidebarStructure: Equatable, Sendable {
       case folder(Repository.ID)
       case failedRepository(Repository.ID)
       case environmentBlockedRepository(Repository.ID)
+      case repositoryGroup(UUID)
       case placeholder
     }
   }
@@ -287,6 +299,59 @@ struct SidebarStructure: Equatable, Sendable {
   /// this to translate `.onMove` flat offsets into the index space the
   /// `.repositoriesMoved` reducer action expects.
   var reorderableRepositoryIDs: [Repository.ID]
+
+  /// Translate visual indices to persisted indices, including interleaved groups.
+  /// At a group boundary the drop follows the previous repository, rather than
+  /// the next group's first member (which can precede it in persisted order).
+  func repositoryMove(offsets: IndexSet, destination: Int) -> (offsets: IndexSet, destination: Int)? {
+    var repositoryOffsets = IndexSet()
+    for index in offsets where sections.indices.contains(index) {
+      guard let id = sections[index].repositoryID,
+        let repositoryIndex = reorderableRepositoryIDs.firstIndex(of: id)
+      else { continue }
+      repositoryOffsets.insert(repositoryIndex)
+    }
+    guard !repositoryOffsets.isEmpty else { return nil }
+    let clampedDestination = min(max(destination, 0), sections.count)
+    let groups = sections.compactMap { section -> RepositoryGroup? in
+      if case .repositoryGroup(let group) = section { return group }
+      return nil
+    }
+    let previousID = sections.prefix(clampedDestination).reversed().compactMap(\.repositoryID).first
+    guard let firstOffset = repositoryOffsets.first else { return nil }
+    let sourceID = reorderableRepositoryIDs[firstOffset]
+    let sourceGroup = groups.first { $0.repositoryIDs.contains(sourceID.rawValue) }?.id
+    let previousGroup = previousID.flatMap { id in
+      groups.first { $0.repositoryIDs.contains(id.rawValue) }?.id
+    }
+    let targetGroup: UUID?
+    if clampedDestination < sections.count,
+      case .repositoryGroup(let group) = sections[clampedDestination]
+    {
+      targetGroup = group.id
+    } else if clampedDestination < sections.count, let id = sections[clampedDestination].repositoryID {
+      targetGroup = groups.first { $0.repositoryIDs.contains(id.rawValue) }?.id
+    } else {
+      targetGroup = nil
+    }
+    if sourceGroup != nil, sourceGroup == previousGroup, sourceGroup != targetGroup,
+      let previousID, let index = reorderableRepositoryIDs.firstIndex(of: previousID)
+    {
+      return (repositoryOffsets, index + 1)
+    }
+    if clampedDestination < sections.count,
+      let id = sections[clampedDestination].repositoryID,
+      let index = reorderableRepositoryIDs.firstIndex(of: id)
+    {
+      return (repositoryOffsets, index)
+    }
+    if let previousID,
+      let index = reorderableRepositoryIDs.firstIndex(of: previousID)
+    {
+      return (repositoryOffsets, index + 1)
+    }
+    return (repositoryOffsets, 0)
+  }
 
   static let empty = SidebarStructure(
     sections: [],
@@ -450,7 +515,8 @@ extension RepositoriesFeature.Action {
     // highlight sections (unread float), so a runtime toggle must recompute.
     // `sidebarSectionSortChanged` re-orders repo/folder sections
     // without rewriting persisted drag order.
-    case .sidebarGroupingTogglesChanged, .sidebarNestByBranchChanged,
+    case .repositoryGroupsChanged, .repositoryGroupsReloaded, .revealSelectedWorktreeInSidebar,
+      .sidebarGroupingTogglesChanged, .sidebarNestByBranchChanged,
       .sidebarSectionSortChanged,
       .repositoryExpansionChanged, .branchNestExpansionChanged,
       .setAllSidebarGroupsExpanded,
@@ -602,7 +668,7 @@ extension RepositoriesFeature.Action {
       // always follows `.gitEnvironmentChanged`, so this needs no invalidation.
       .gitEnvironmentChanged,
       .openRepositories,
-      .revealSelectedWorktreeInSidebar, .revealHoistedWorktreeInSidebar,
+      .revealHoistedWorktreeInSidebar,
       .consumePendingSidebarReveal,
       .createRandomWorktree,
       .promptedWorktreeCreationDataLoaded, .promptedWorktreeBranchesLoaded,
@@ -740,7 +806,21 @@ extension RepositoriesFeature.State {
     if !hoists.active.isEmpty {
       sections.append(.highlight(kind: .active, rowIDs: hoists.active))
     }
-    sections.append(contentsOf: repoSections.sections)
+    var groupedRepositoryIDs: Set<String> = []
+    for group in settingsFile.repositoryGroups {
+      sections.append(.repositoryGroup(group))
+      let members = repoSections.sections.filter { section in
+        guard let id = section.repositoryID?.rawValue else { return false }
+        return group.repositoryIDs.contains(id) && !groupedRepositoryIDs.contains(id)
+      }
+      groupedRepositoryIDs.formUnion(group.repositoryIDs)
+      if !group.sidebarCollapsed { sections.append(contentsOf: members) }
+    }
+    sections.append(
+      contentsOf: repoSections.sections.filter {
+        guard let id = $0.repositoryID?.rawValue else { return true }
+        return !groupedRepositoryIDs.contains(id)
+      })
 
     let hotkey = computeHotkeyOrdering(
       pinnedHoisted: hoists.pinned,
@@ -1047,7 +1127,7 @@ extension RepositoriesFeature.State {
     var ids: [Worktree.ID] = []
     for section in sections {
       switch section {
-      case .highlight, .placeholder, .failedRepository, .environmentBlockedRepository:
+      case .repositoryGroup, .highlight, .placeholder, .failedRepository, .environmentBlockedRepository:
         continue
       case .folder(_, let rowID):
         ids.append(rowID)

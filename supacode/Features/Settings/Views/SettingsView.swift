@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Kingfisher
+import Sharing
 import SupacodeSettingsFeature
 import SupacodeSettingsShared
 import SwiftUI
@@ -82,6 +83,7 @@ private struct SettingsRepositoryRow: View {
   let repository: SettingsRepositorySummary
   @Bindable var settingsStore: StoreOf<SettingsFeature>
   @Binding var expandedRepositories: Set<String>
+  @Shared(.settingsFile) private var settingsFile
 
   var body: some View {
     if repository.isGitRepository {
@@ -127,6 +129,7 @@ private struct SettingsRepositoryRow: View {
 private struct SettingsSidebarView: View {
   @Bindable var settingsStore: StoreOf<SettingsFeature>
   @Binding var expandedRepositories: Set<String>
+  @Shared(.settingsFile) private var settingsFile
 
   var body: some View {
     List(selection: $settingsStore.selection.sending(\.setSelection)) {
@@ -160,28 +163,35 @@ private struct SettingsSidebarView: View {
         .appFont(.body)
         .tag(SettingsSection.updates)
 
-      let localRepositories = settingsStore.repositorySummaries.filter { !$0.isRemote }
-      let remoteRepositories = settingsStore.repositorySummaries.filter(\.isRemote)
+      ForEach(settingsFile.repositoryGroups) { group in
+        RepositoryGroupHeader(
+          group: group, surface: .settings,
+          repositoryIDs: Set(settingsStore.repositorySummaries.map(\.id))
+        ) {
+          settingsStore.send(.repositoryGroupsChanged($0))
+        }
+        if !group.settingsCollapsed {
+          ForEach(
+            settingsStore.repositorySummaries.filter {
+              group.repositoryIDs.contains($0.id)
+            }, id: \.id
+          ) { repository in
+            repositoryRow(repository)
+          }
+        }
+      }
+      let groupedIDs = Set(settingsFile.repositoryGroups.flatMap(\.repositoryIDs))
+      let ungrouped = settingsStore.repositorySummaries.filter { !groupedIDs.contains($0.id) }
+      let localRepositories = ungrouped.filter { !$0.isRemote }
+      let remoteRepositories = ungrouped.filter(\.isRemote)
       if !localRepositories.isEmpty {
         Section("Local") {
-          ForEach(localRepositories, id: \.id) { repository in
-            SettingsRepositoryRow(
-              repository: repository,
-              settingsStore: settingsStore,
-              expandedRepositories: $expandedRepositories
-            )
-          }
+          ForEach(localRepositories, id: \.id) { repository in repositoryRow(repository) }
         }
       }
       if !remoteRepositories.isEmpty {
         Section("Remote") {
-          ForEach(remoteRepositories, id: \.id) { repository in
-            SettingsRepositoryRow(
-              repository: repository,
-              settingsStore: settingsStore,
-              expandedRepositories: $expandedRepositories
-            )
-          }
+          ForEach(remoteRepositories, id: \.id) { repository in repositoryRow(repository) }
         }
       }
     }
@@ -189,6 +199,23 @@ private struct SettingsSidebarView: View {
     .frame(minWidth: 220, maxHeight: .infinity)
     .navigationSplitViewColumnWidth(220)
     .toolbar(removing: .sidebarToggle)
+    .toolbar {
+      ToolbarItem {
+        RepositoryGroupCreateButton { settingsStore.send(.repositoryGroupsChanged($0)) }
+      }
+    }
+  }
+
+  private func repositoryRow(_ repository: SettingsRepositorySummary) -> some View {
+    SettingsRepositoryRow(
+      repository: repository, settingsStore: settingsStore,
+      expandedRepositories: $expandedRepositories
+    )
+    .contextMenu {
+      RepositoryGroupAssignmentMenu(repositoryID: repository.id) {
+        settingsStore.send(.repositoryGroupsChanged($0))
+      }
+    }
   }
 }
 

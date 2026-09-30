@@ -1544,7 +1544,7 @@ struct SidebarStructureTests {
         .failedRepository(let id, _, _, _, _),
         .environmentBlockedRepository(let id, _, _, _):
         return id
-      case .highlight, .placeholder:
+      case .repositoryGroup, .highlight, .placeholder:
         return nil
       }
     }

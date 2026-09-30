@@ -648,6 +648,11 @@ private struct SidebarItemContextMenu: View {
     isAllFoldersBulk: Bool,
     overrides: [AppShortcutID: AppShortcutOverride]
   ) -> some View {
+    if rowIsFolder, !isBulkSelection {
+      RepositoryGroupAssignmentMenu(repositoryID: repositoryID.rawValue) {
+        store.send(.repositoryGroupsChanged($0))
+      }
+    }
     let archiveShortcut = AppShortcuts.archiveWorktree.effective(from: overrides)
     let deleteShortcut = AppShortcuts.deleteWorktree.effective(from: overrides)
 

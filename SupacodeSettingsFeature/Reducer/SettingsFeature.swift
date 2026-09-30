@@ -272,6 +272,7 @@ public struct SettingsFeature {
     case agentConfigDirectoriesResolved(Set<AgentInstallTarget>)
     case agentCustomFolderPersistFailed(AgentInstallTarget, reason: String)
     case repositorySettings(RepositorySettingsFeature.Action)
+    case repositoryGroupsChanged(RepositoryGroup.Mutation)
     case addGlobalScript
     case removeGlobalScript(ScriptDefinition.ID)
     case alert(PresentationAction<Alert>)
@@ -915,6 +916,11 @@ public struct SettingsFeature {
         state.alert = nil
         state.globalScripts.removeAll { $0.id == id }
         return persist(state)
+
+      case .repositoryGroupsChanged(let mutation):
+        @Shared(.settingsFile) var settingsFile
+        $settingsFile.withLock { $0.updateRepositoryGroups(mutation) }
+        return .none
 
       case .repositoriesChanged(let repositories):
         state.repositorySummaries =

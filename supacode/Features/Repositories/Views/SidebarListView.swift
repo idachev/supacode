@@ -67,6 +67,9 @@ struct SidebarListView: View {
             } : nil)
       }
       .listStyle(.sidebar)
+      .onChange(of: settingsFile.repositoryGroups) { _, _ in
+        store.send(.repositoryGroupsReloaded)
+      }
       .focused($isSidebarFocused)
       .frame(minWidth: 220)
       .onChange(of: groupPinnedRows, initial: false) { _, _ in
@@ -136,46 +139,9 @@ struct SidebarListView: View {
     destination: Int,
     structure: SidebarStructure
   ) {
-    let repoIDs = structure.reorderableRepositoryIDs
-    guard !repoIDs.isEmpty else { return }
-    let sourceFlat = offsets.sorted()
-    let sectionsCount = structure.sections.count
-    // Map flat section indices to repo indices via SectionID matching. Skip
-    // any flat offset that doesn't correspond to a reorderable repo section.
-    var repoOffsets = IndexSet()
-    for index in sourceFlat where index < sectionsCount {
-      let section = structure.sections[index]
-      switch section {
-      case .repository(let repositoryID, _),
-        .folder(let repositoryID, _),
-        .failedRepository(let repositoryID, _, _, _, _),
-        .environmentBlockedRepository(let repositoryID, _, _, _):
-        if let repoIndex = repoIDs.firstIndex(of: repositoryID) {
-          repoOffsets.insert(repoIndex)
-        }
-      case .highlight, .placeholder:
-        continue
-      }
-    }
-    guard !repoOffsets.isEmpty else { return }
-    let clampedDestination = min(max(destination, 0), sectionsCount)
-    let repoDestination: Int
-    if clampedDestination >= sectionsCount {
-      repoDestination = repoIDs.count
-    } else {
-      let section = structure.sections[clampedDestination]
-      switch section {
-      case .repository(let repositoryID, _),
-        .folder(let repositoryID, _),
-        .failedRepository(let repositoryID, _, _, _, _),
-        .environmentBlockedRepository(let repositoryID, _, _, _):
-        repoDestination = repoIDs.firstIndex(of: repositoryID) ?? repoIDs.count
-      case .highlight, .placeholder:
-        // Dropping above the highlight prefix collapses to "before the first repo".
-        repoDestination = 0
-      }
-    }
-    store.send(.repositoriesMoved(repoOffsets, repoDestination))
+    guard let move = structure.repositoryMove(offsets: offsets, destination: destination) else { return }
+    // Drag changes ordering only; group transfer stays explicit in Move to Group.
+    store.send(.repositoriesMoved(move.offsets, move.destination))
   }
 
   @MainActor
@@ -207,6 +173,14 @@ private struct SidebarSectionDispatcher: View {
 
   var body: some View {
     switch section {
+    case .repositoryGroup(let group):
+      RepositoryGroupHeader(
+        group: group, surface: .sidebar,
+        repositoryIDs: Set(store.state.orderedRepositoryIDs().map(\.rawValue))
+      ) {
+        store.send(.repositoryGroupsChanged($0))
+      }
+      .moveDisabled(true)
     case .placeholder:
       SidebarPlaceholderView()
         .moveDisabled(true)
@@ -306,6 +280,11 @@ private struct SidebarGitRepositorySection: View {
         isResolving: isResolvingRemote
       )
     }
+    .contextMenu {
+      RepositoryGroupAssignmentMenu(repositoryID: repository.id.rawValue) {
+        store.send(.repositoryGroupsChanged($0))
+      }
+    }
     .sectionActions {
       SidebarSectionActionsView(
         repositoryID: repository.id,
@@ -389,6 +368,9 @@ private struct SidebarSectionActionsView: View {
 
   var body: some View {
     Menu {
+      RepositoryGroupAssignmentMenu(repositoryID: repositoryID.rawValue) {
+        store.send(.repositoryGroupsChanged($0))
+      }
       Button("Customize Appearance…", systemImage: "paintbrush") {
         store.send(.requestCustomizeRepository(repositoryID))
       }
@@ -475,6 +457,11 @@ private struct SidebarFailedRepositorySection: View {
         isRemoving: false,
         hostInfo: store.state.repositories[id: repositoryID]?.host?.displayAuthority
       )
+    }
+    .contextMenu {
+      RepositoryGroupAssignmentMenu(repositoryID: repositoryID.rawValue) {
+        store.send(.repositoryGroupsChanged($0))
+      }
     }
     .sectionActions {
       // No `+`: the repo isn't loadable, so worktree create is meaningless.

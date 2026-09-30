@@ -177,21 +177,25 @@ nonisolated final class InMemorySettingsFileStorage: @unchecked Sendable {
 public nonisolated struct RoutesFile: Codable, Equatable, Sendable {
   public var local: [String]
   public var remote: [String]
+  public var repositoryGroups: [RepositoryGroup]
 
-  public init(local: [String] = [], remote: [String] = []) {
+  public init(local: [String] = [], remote: [String] = [], repositoryGroups: [RepositoryGroup] = []) {
     self.local = local
     self.remote = remote
+    self.repositoryGroups = repositoryGroups
   }
 
   enum CodingKeys: String, CodingKey {
     case local
     case remote
+    case repositoryGroups
   }
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     local = try container.decodeIfPresent([String].self, forKey: .local) ?? []
     remote = try container.decodeIfPresent([String].self, forKey: .remote) ?? []
+    repositoryGroups = try container.decodeIfPresent([RepositoryGroup].self, forKey: .repositoryGroups) ?? []
   }
 }
 
@@ -302,7 +306,8 @@ public nonisolated struct SettingsFileKey: SharedKey {
       repositories: repositories,
       repositoryRoots: routes.local,
       remoteRepositoryRoots: routes.remote,
-      pinnedWorktreeIDs: []
+      pinnedWorktreeIDs: [],
+      repositoryGroups: routes.repositoryGroups
     )
     health.markHealthy(urls)
     continuation.resume(returning: settings)
@@ -367,7 +372,9 @@ public nonisolated struct SettingsFileKey: SharedKey {
     }
     let encoder = Self.makeEncoder()
     try storage.save(try encoder.encode(value.global), urls.config)
-    let routes = RoutesFile(local: value.repositoryRoots, remote: value.remoteRepositoryRoots)
+    let routes = RoutesFile(
+      local: value.repositoryRoots, remote: value.remoteRepositoryRoots,
+      repositoryGroups: value.repositoryGroups)
     try storage.save(try encoder.encode(routes), urls.routes)
     try storage.save(try encoder.encode(value.repositories), urls.repositories)
   }

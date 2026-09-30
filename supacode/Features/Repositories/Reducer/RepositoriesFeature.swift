@@ -257,6 +257,7 @@ struct RepositoriesFeature {
     /// through `$sidebar.withLock` so the SharedKey emits a single
     /// atomic file update per reducer action.
     @Shared(.sidebar) var sidebar: SidebarState
+    @Shared(.settingsFile) var settingsFile: SettingsFile
     /// Mirrors the View menu's "Nest Worktrees by Branch" toggle. Owned by
     /// State so the reducer's hotkey / arrow navigation walks the same
     /// trie-filtered row list the sidebar actually renders.
@@ -518,6 +519,8 @@ struct RepositoriesFeature {
       selectionWasRemoved: Bool,
       nextSelection: Worktree.ID?
     )
+    case repositoryGroupsChanged(RepositoryGroup.Mutation)
+    case repositoryGroupsReloaded
     case repositoriesMoved(IndexSet, Int)
     case pinnedWorktreesMoved(repositoryID: Repository.ID, IndexSet, Int)
     case unpinnedWorktreesMoved(repositoryID: Repository.ID, IndexSet, Int)
@@ -1555,6 +1558,14 @@ struct RepositoriesFeature {
           .merge(immediateEffects),
           .merge(followupEffects)
         )
+
+      case .repositoryGroupsChanged(let mutation):
+        @Shared(.settingsFile) var settingsFile
+        $settingsFile.withLock { $0.updateRepositoryGroups(mutation) }
+        return .none
+
+      case .repositoryGroupsReloaded:
+        return .none
 
       case .repositoriesMoved(let offsets, let destination):
         var ordered = state.orderedRepositoryIDs()
@@ -3917,6 +3928,12 @@ struct RepositoriesFeature {
         return .none
 
       case .setAllSidebarGroupsExpanded(let isExpanded):
+        @Shared(.settingsFile) var settingsFile
+        $settingsFile.withLock { file in
+          for index in file.repositoryGroups.indices {
+            file.repositoryGroups[index].sidebarCollapsed = !isExpanded
+          }
+        }
         // Iterate the full roster, not just `sidebar.sections.keys`: the section
         // map is sparse (a repo renders expanded until something writes an
         // entry), so collapsing must materialize one for every repo.
@@ -4000,6 +4017,13 @@ struct RepositoriesFeature {
         guard let worktreeID = state.selectedWorktreeID,
           let repositoryID = state.repositoryID(containing: worktreeID)
         else { return .none }
+        @Shared(.settingsFile) var settingsFile
+        $settingsFile.withLock { file in
+          for index in file.repositoryGroups.indices
+          where file.repositoryGroups[index].repositoryIDs.contains(repositoryID.rawValue) {
+            file.repositoryGroups[index].sidebarCollapsed = false
+          }
+        }
         // Resolve outside the lock to keep the critical section short.
         let branchName = state.sidebarItems[id: worktreeID]?.branchName
         let containingBucket = state.sidebar.currentBucket(of: worktreeID, in: repositoryID)
@@ -4565,6 +4589,7 @@ struct RepositoriesFeature {
         return .none
 
       case .deleteSidebarItemConfirmed, .deleteScriptCompleted, .deleteWorktreeApply, .worktreeDeleted,
+        .repositoryGroupsChanged, .repositoryGroupsReloaded,
         .repositoriesMoved, .pinnedWorktreesMoved, .unpinnedWorktreesMoved, .deleteWorktreeFailed,
         .requestDeleteRepository, .requestRemoveFailedRepository, .removeFailedRepository,
         .repositoryRemovalCompleted, .repositoriesRemoved:

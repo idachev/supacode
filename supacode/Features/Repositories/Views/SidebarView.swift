@@ -37,6 +37,8 @@ struct SidebarView: View {
           }
           .help("Add a repository or folder on an SSH host")
           Divider()
+          RepositoryGroupCreateButton { store.send(.repositoryGroupsChanged($0)) }
+          Divider()
           Button {
             store.send(.requestCloneRepository)
           } label: {
