@@ -300,6 +300,24 @@ struct SidebarStructure: Equatable, Sendable {
   /// into the index space of the sidebar sections.
   var reorderableRepositoryIDs: [Repository.ID]
 
+  /// Group headers share the List's native move gesture with repository sections.
+  /// Child sections do not count as group positions.
+  func nativeGroupDrop(offsets: IndexSet, destination: Int) -> RepositoryGroup.Mutation? {
+    guard !offsets.isEmpty, (0...sections.count).contains(destination) else { return nil }
+    var ids: Set<UUID> = []
+    for index in offsets {
+      guard sections.indices.contains(index), case .repositoryGroup(let group) = sections[index] else {
+        return nil
+      }
+      ids.insert(group.id)
+    }
+    let targetID = sections.dropFirst(destination).compactMap { section -> UUID? in
+      guard case .repositoryGroup(let group) = section, !ids.contains(group.id) else { return nil }
+      return group.id
+    }.first
+    return .move(ids, before: targetID)
+  }
+
   struct NativeRepositoryDrop: Equatable {
     let repositoryIDs: Set<Repository.ID>
     let targetID: Repository.ID

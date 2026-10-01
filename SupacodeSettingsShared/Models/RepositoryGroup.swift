@@ -23,6 +23,7 @@ public nonisolated struct RepositoryGroup: Codable, Equatable, Identifiable, Sen
     case create(UUID, String)
     case rename(UUID, String)
     case remove(UUID)
+    case move(Set<UUID>, before: UUID?)
     case assign(String, UUID?)
     case assignAll(Set<String>, UUID)
     case sidebarExpanded(UUID, Bool)
@@ -41,6 +42,8 @@ extension SettingsFile {
       let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty, let index = repositoryGroups.firstIndex(where: { $0.id == id }) else { return }
       repositoryGroups[index].name = trimmed
+    case .move(let ids, let targetID):
+      moveRepositoryGroups(ids, before: targetID)
     case .remove(let id):
       repositoryGroups.removeAll { $0.id == id }
     case .assign(let repositoryID, let groupID):
@@ -56,6 +59,19 @@ extension SettingsFile {
       guard let index = repositoryGroups.firstIndex(where: { $0.id == id }) else { return }
       repositoryGroups[index].settingsCollapsed = !expanded
     }
+  }
+
+  private mutating func moveRepositoryGroups(_ ids: Set<UUID>, before targetID: UUID?) {
+    guard !ids.isEmpty, targetID.map({ !ids.contains($0) }) ?? true,
+      targetID.map({ id in repositoryGroups.contains { $0.id == id } }) ?? true
+    else { return }
+    let moving = repositoryGroups.filter { ids.contains($0.id) }
+    guard !moving.isEmpty else { return }
+    repositoryGroups.removeAll { ids.contains($0.id) }
+    let destination =
+      targetID.flatMap { id in repositoryGroups.firstIndex { $0.id == id } }
+      ?? repositoryGroups.endIndex
+    repositoryGroups.insert(contentsOf: moving, at: destination)
   }
 
   private mutating func assignRepositories(_ repositoryIDs: Set<String>, to groupID: UUID?) {

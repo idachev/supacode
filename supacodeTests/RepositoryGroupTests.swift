@@ -118,6 +118,51 @@ struct RepositoryGroupTests {
 
   }
 
+  @Test func nativeGroupDragResolvesExpandedCollapsedAndEmptyGroups() {
+    let first = RepositoryGroup(name: "First", repositoryIDs: ["/tmp/a"])
+    let second = RepositoryGroup(name: "Second", sidebarCollapsed: true)
+    let third = RepositoryGroup(name: "Third")
+    var structure = SidebarStructure.empty
+    structure.sections = [
+      .highlight(kind: .pinned, rowIDs: []),
+      .repositoryGroup(first), .repository(repositoryID: "/tmp/a", groups: []),
+      .repositoryGroup(second), .repositoryGroup(third),
+      .repository(repositoryID: "/tmp/ungrouped", groups: []),
+    ]
+    #expect(structure.nativeGroupDrop(offsets: [1], destination: 4) == .move([first.id], before: third.id))
+    #expect(structure.nativeGroupDrop(offsets: [4], destination: 0) == .move([third.id], before: first.id))
+    #expect(structure.nativeGroupDrop(offsets: [1], destination: 6) == .move([first.id], before: nil))
+    #expect(structure.nativeGroupDrop(offsets: [1], destination: 2) == .move([first.id], before: second.id))
+    #expect(structure.nativeGroupDrop(offsets: [1, 3], destination: 6) == .move([first.id, second.id], before: nil))
+    #expect(structure.nativeGroupDrop(offsets: [2], destination: 4) == nil)
+    #expect(structure.nativeGroupDrop(offsets: [1], destination: 99) == nil)
+  }
+
+  @Test(.dependencies) func groupReorderingPreservesMembershipAndCollapseState() async throws {
+    @Shared(.settingsFile) var file
+    let first = RepositoryGroup(name: "First", repositoryIDs: ["/tmp/a"])
+    let second = RepositoryGroup(name: "Second", sidebarCollapsed: true)
+    let third = RepositoryGroup(name: "Third", settingsCollapsed: true)
+    $file.withLock { $0.repositoryGroups = [first, second, third] }
+    var state = RepositoriesFeature.State()
+    state.isInitialLoadComplete = true
+    let store = TestStore(initialState: state) { RepositoriesFeature() }
+    store.exhaustivity = .off
+    await store.send(.repositoryGroupsChanged(.move([third.id], before: first.id)))
+    #expect(file.repositoryGroups == [third, first, second])
+    #expect(
+      store.state.sidebarStructure.sections.map(\.id) == [
+        .repositoryGroup(third.id), .repositoryGroup(first.id), .repositoryGroup(second.id),
+      ])
+    await store.send(.repositoryGroupsChanged(.move([third.id, first.id], before: nil)))
+    #expect(file.repositoryGroups == [second, third, first])
+    await store.send(.repositoryGroupsChanged(.move([second.id], before: second.id)))
+    await store.send(.repositoryGroupsChanged(.move([first.id], before: UUID())))
+    #expect(file.repositoryGroups == [second, third, first])
+    let routes = RoutesFile(local: [], repositoryGroups: file.repositoryGroups)
+    #expect(try JSONDecoder().decode(RoutesFile.self, from: JSONEncoder().encode(routes)) == routes)
+  }
+
   @Test func nativeRepositoryDragResolvesSectionGapsWithoutLosingTheSource() {
     let repoA: RepositoryID = "/tmp/a"
     let repoB: RepositoryID = "/tmp/b"

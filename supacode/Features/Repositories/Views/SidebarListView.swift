@@ -56,19 +56,22 @@ struct SidebarListView: View {
             terminalManager: terminalManager
           )
           .itemProvider {
+            if case .repositoryGroup(let group) = section {
+              return RepositoryGroupOrderDragItem(groupID: group.id).itemProvider()
+            }
             guard let id = section.repositoryID else { return nil }
             return RepositoryGroupDragItem(repositoryID: id.rawValue).itemProvider()
           }
         }
-        .onMove(
-          perform: sectionSort.allowsReordering
-            ? { offsets, destination in
-              guard let drop = structure.nativeRepositoryDrop(offsets: offsets, destination: destination) else {
-                return
-              }
-              store.send(.repositoryDropped(drop.repositoryIDs, relativeTo: drop.targetID, after: drop.after))
-            } : nil
-        )
+        .onMove { offsets, destination in
+          if let mutation = structure.nativeGroupDrop(offsets: offsets, destination: destination) {
+            store.send(.repositoryGroupsChanged(mutation))
+          } else if sectionSort.allowsReordering,
+            let drop = structure.nativeRepositoryDrop(offsets: offsets, destination: destination)
+          {
+            store.send(.repositoryDropped(drop.repositoryIDs, relativeTo: drop.targetID, after: drop.after))
+          }
+        }
       }
       .listStyle(.sidebar)
       .onChange(of: settingsFile.repositoryGroups) { _, _ in
@@ -174,7 +177,6 @@ private struct SidebarSectionDispatcher: View {
       ) {
         store.send(.repositoryGroupsChanged($0))
       }
-      .moveDisabled(true)
     case .placeholder:
       SidebarPlaceholderView()
         .moveDisabled(true)

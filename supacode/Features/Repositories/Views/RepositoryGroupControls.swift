@@ -8,7 +8,7 @@ struct RepositoryGroupCreateButton: View {
   let request: () -> Void
 
   var body: some View {
-    Button("New Repository Group…", systemImage: "folder.badge.plus") {
+    Button("New Group", systemImage: "folder.badge.plus") {
       request()
     }
     .help("Name and create a repository group")
@@ -38,7 +38,7 @@ struct RepositoryGroupAssignmentMenu: View {
         .help("Move this repository to \(group.name)")
       }
       Divider()
-      Button("New Group with This Repository…", systemImage: "folder.badge.plus") {
+      Button("New Group", systemImage: "folder.badge.plus") {
         requestCreation(repositoryID)
       }
       .help("Create a group containing this repository")
@@ -58,7 +58,7 @@ struct RepositoryGroupHeader: View {
   let repositoryIDs: Set<String>
   let send: (RepositoryGroup.Mutation) -> Void
   @State private var isRenaming = false
-  @State private var name = ""
+  @State private var name: String?
   @State private var isDropTargeted = false
   @State private var isHovering = false
   @State private var isConfirmingRemoval = false
@@ -69,6 +69,7 @@ struct RepositoryGroupHeader: View {
   }
 
   var body: some View {
+    let draftName = name ?? group.name
     HStack {
       Button {
         send(
@@ -76,8 +77,9 @@ struct RepositoryGroupHeader: View {
             ? .sidebarExpanded(group.id, isCollapsed)
             : .settingsExpanded(group.id, isCollapsed))
       } label: {
-        HStack {
-          Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+        HStack(spacing: 4) {
+          Image(systemName: "chevron.right")
+            .rotationEffect(.degrees(isCollapsed ? 0 : 90))
             .accessibilityHidden(true)
           Label(group.name, systemImage: "folder")
             .dropDestination(for: RepositoryGroupDragItem.self) { items, _ in
@@ -95,14 +97,6 @@ struct RepositoryGroupHeader: View {
             }
 
           Spacer()
-          if isDropTargeted {
-            Image(systemName: "plus")
-              .foregroundStyle(.secondary)
-              .accessibilityLabel("Move repository to group")
-          } else {
-            Text("\(group.repositoryIDs.intersection(repositoryIDs).count)")
-              .foregroundStyle(.secondary)
-          }
         }
         .appFont(.body)
         .fontWeight(.semibold)
@@ -113,7 +107,7 @@ struct RepositoryGroupHeader: View {
       .help(isCollapsed ? "Expand \(group.name)" : "Collapse \(group.name)")
       Menu {
         Button("Rename Group…", systemImage: "pencil") {
-          name = group.name
+          name = nil
           isRenaming = true
         }
         .help("Change the group name")
@@ -136,6 +130,18 @@ struct RepositoryGroupHeader: View {
       .help("Manage \(group.name)")
       .opacity(isHovering ? 1 : 0)
       .allowsHitTesting(isHovering)
+      Group {
+        if isDropTargeted {
+          Image(systemName: "plus")
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Move repository to group")
+        } else {
+          Text("\(group.repositoryIDs.intersection(repositoryIDs).count)")
+            .foregroundStyle(.secondary)
+        }
+      }
+      .appFont(.body)
+      .fontWeight(.semibold)
     }
     .foregroundStyle(Color.primary)
     .contentShape(Rectangle())
@@ -145,10 +151,10 @@ struct RepositoryGroupHeader: View {
         .fill(Color.accentColor.opacity(isDropTargeted ? 0.15 : 0))
     }
     .alert("Rename Repository Group", isPresented: $isRenaming) {
-      TextField("Group name", text: $name)
+      TextField("Group name", text: Binding(get: { draftName }, set: { name = $0 }))
       Button("Cancel", role: .cancel) {}
-      Button("Save") { send(.rename(group.id, name)) }
-        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      Button("Save") { send(.rename(group.id, draftName)) }
+        .disabled(draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .alert("Delete Repository Group?", isPresented: $isConfirmingRemoval) {
       Button("Cancel", role: .cancel) {}
@@ -239,5 +245,20 @@ struct RepositoryGroupDragSource: ViewModifier {
           operationsOutsideApp: .init(allowCopy: false)
         )
       )
+  }
+}
+
+/// A separate payload lets List reorder groups without assigning repositories.
+nonisolated struct RepositoryGroupOrderDragItem: Codable, Transferable {
+  let groupID: UUID
+
+  func itemProvider() -> NSItemProvider {
+    let provider = NSItemProvider()
+    provider.register(self)
+    return provider
+  }
+
+  static var transferRepresentation: some TransferRepresentation {
+    CodableRepresentation(contentType: UTType(exportedAs: "sh.supacode.repositoryGroupId", conformingTo: .json))
   }
 }
