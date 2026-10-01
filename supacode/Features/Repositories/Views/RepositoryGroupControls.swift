@@ -71,40 +71,7 @@ struct RepositoryGroupHeader: View {
   var body: some View {
     let draftName = name ?? group.name
     HStack {
-      Button {
-        send(
-          surface == .sidebar
-            ? .sidebarExpanded(group.id, isCollapsed)
-            : .settingsExpanded(group.id, isCollapsed))
-      } label: {
-        HStack(spacing: 4) {
-          Image(systemName: "chevron.right")
-            .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-            .accessibilityHidden(true)
-          Label(group.name, systemImage: "folder")
-            .dropDestination(for: RepositoryGroupDragItem.self) { items, _ in
-              let droppedIDs = Set(items.map(\.repositoryID)).intersection(repositoryIDs).subtracting(
-                group.repositoryIDs)
-              guard !droppedIDs.isEmpty else { return }
-              send(.assignAll(droppedIDs, group.id))
-            }
-            .dropConfiguration { _ in DropConfiguration(operation: .move) }
-            .onDropSessionUpdated { session in
-              switch session.phase {
-              case .entering, .active: isDropTargeted = true
-              default: isDropTargeted = false
-              }
-            }
-
-          Spacer()
-        }
-        .appFont(.body)
-        .fontWeight(.semibold)
-        .foregroundStyle(Color.primary)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .help(isCollapsed ? "Expand \(group.name)" : "Collapse \(group.name)")
+      groupLabel
       Menu {
         Button("Rename Group…", systemImage: "pencil") {
           name = nil
@@ -142,6 +109,8 @@ struct RepositoryGroupHeader: View {
       }
       .appFont(.body)
       .fontWeight(.semibold)
+      .frame(minWidth: 16)
+      .padding(.trailing, 4)
     }
     .foregroundStyle(Color.primary)
     .contentShape(Rectangle())
@@ -170,6 +139,44 @@ struct RepositoryGroupHeader: View {
     }
     .accessibilityElement(children: .contain)
   }
+
+  private var groupLabel: some View {
+    HStack(spacing: 4) {
+      Button {
+        send(
+          surface == .sidebar
+            ? .sidebarExpanded(group.id, isCollapsed)
+            : .settingsExpanded(group.id, isCollapsed))
+      } label: {
+        Image(systemName: "chevron.right")
+          .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+          .accessibilityLabel(isCollapsed ? "Expand group" : "Collapse group")
+      }
+      .buttonStyle(.plain)
+      .help(isCollapsed ? "Expand \(group.name)" : "Collapse \(group.name)")
+      Label(group.name, systemImage: "folder")
+        .dropDestination(for: RepositoryGroupDragItem.self, isEnabled: true) { items, _ in
+          let droppedIDs = Set(items.map(\.repositoryID)).intersection(repositoryIDs).subtracting(
+            group.repositoryIDs)
+          guard !droppedIDs.isEmpty else { return }
+          send(.assignAll(droppedIDs, group.id))
+        }
+        .dropConfiguration { _ in DropConfiguration(operation: .move) }
+        .onDropSessionUpdated { session in
+          switch session.phase {
+          case .entering, .active: isDropTargeted = true
+          default: isDropTargeted = false
+          }
+        }
+      Spacer()
+    }
+    .appFont(.body)
+    .fontWeight(.semibold)
+    .foregroundStyle(Color.primary)
+    .contentShape(Rectangle())
+    .help("Drag to reorder group")
+  }
+
 }
 
 /// Present on the stable sidebar, since toolbar and context menus disappear
