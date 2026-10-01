@@ -539,9 +539,8 @@ private struct SidebarItemBody: View {
   }
 }
 
-/// Folder repos render one row that must be a direct child of the outer
-/// `.onMove` to receive repo-level drags. The structure pre-resolves the
-/// synthetic worktree id and the shortcut hint; the view does no lookup.
+/// Folder repos expose repository drag/drop on their sole row. The structure
+/// pre-resolves the synthetic worktree id and the shortcut hint.
 struct SidebarFolderRow: View {
   let repository: Repository
   let rowID: Worktree.ID
@@ -567,6 +566,7 @@ struct SidebarFolderRow: View {
           custom: store.state.sidebar.sections[repository.id]?.title, fallback: repository.name)
       )
     )
+    .modifier(RepositoryReorderDropTarget(repositoryID: repository.id, store: store))
   }
 }
 

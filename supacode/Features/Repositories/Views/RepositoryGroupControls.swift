@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import CoreTransferable
 import Sharing
 import SupacodeSettingsShared
@@ -80,6 +81,20 @@ struct RepositoryGroupHeader: View {
           Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
             .accessibilityHidden(true)
           Label(group.name, systemImage: "folder")
+            .dropDestination(for: RepositoryGroupDragItem.self) { items, _ in
+              let droppedIDs = Set(items.map(\.repositoryID)).intersection(repositoryIDs).subtracting(
+                group.repositoryIDs)
+              guard !droppedIDs.isEmpty else { return }
+              send(.assignAll(droppedIDs, group.id))
+            }
+            .dropConfiguration { _ in DropConfiguration(operation: .move) }
+            .onDropSessionUpdated { session in
+              switch session.phase {
+              case .entering, .active: isDropTargeted = true
+              default: isDropTargeted = false
+              }
+            }
+
           Spacer()
           if isDropTargeted {
             Image(systemName: "plus")
@@ -129,18 +144,6 @@ struct RepositoryGroupHeader: View {
     .background {
       RoundedRectangle(cornerRadius: 4)
         .fill(Color.accentColor.opacity(isDropTargeted ? 0.15 : 0))
-    }
-    .dropDestination(for: RepositoryGroupDragItem.self) { items, _ in
-      let droppedIDs = Set(items.map(\.repositoryID)).intersection(repositoryIDs)
-      guard !droppedIDs.isEmpty else { return }
-      send(.assignAll(droppedIDs, group.id))
-    }
-    .dropConfiguration { _ in DropConfiguration(operation: .move) }
-    .onDropSessionUpdated { session in
-      switch session.phase {
-      case .entering, .active: isDropTargeted = true
-      default: isDropTargeted = false
-      }
     }
     .alert("Rename Repository Group", isPresented: $isRenaming) {
       TextField("Group name", text: $name)
@@ -200,7 +203,7 @@ nonisolated struct RepositoryGroupDragItem: Codable, Transferable {
   }
 }
 
-/// One source serves both native List insertion and drops onto group headers.
+/// One source serves repository reordering and drops onto group names.
 struct RepositoryGroupDragSource: ViewModifier {
   let repositoryID: String
   let name: String
@@ -229,5 +232,50 @@ struct RepositoryGroupDragSource: ViewModifier {
           operationsOutsideApp: .init(allowCopy: false)
         )
       )
+  }
+}
+
+/// Anchor insertion to a repository ID. A List containing nested Sections does
+/// not provide a reliable outer-ForEach index for insertion drops.
+struct RepositoryReorderDropTarget: ViewModifier {
+  let repositoryID: Repository.ID
+  let store: StoreOf<RepositoriesFeature>
+  @Shared(.sidebarSectionSort) private var sectionSort: SidebarSectionSort
+  @State private var height: CGFloat = 0
+  @State private var insertAfter: Bool?
+
+  func body(content: Content) -> some View {
+    content
+      .onGeometryChange(for: CGFloat.self) {
+        $0.size.height
+      } action: {
+        height = $0
+      }
+      .dropDestination(for: RepositoryGroupDragItem.self, isEnabled: sectionSort.allowsReordering) { items, session in
+        store.send(
+          .repositoryDropped(
+            Set(items.map { Repository.ID($0.repositoryID) }),
+            relativeTo: repositoryID,
+            after: session.location.y >= height / 2
+          )
+        )
+      }
+      .dropConfiguration { _ in DropConfiguration(operation: .move) }
+      .onDropSessionUpdated { session in
+        switch session.phase {
+        case .entering, .active:
+          insertAfter = session.location.y >= height / 2
+        default:
+          insertAfter = nil
+        }
+      }
+      .overlay(alignment: insertAfter == true ? .bottom : .top) {
+        if insertAfter != nil {
+          Rectangle()
+            .fill(Color.accentColor)
+            .frame(height: 2)
+            .allowsHitTesting(false)
+        }
+      }
   }
 }

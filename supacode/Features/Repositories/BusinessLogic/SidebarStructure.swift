@@ -296,74 +296,24 @@ struct SidebarStructure: Equatable, Sendable {
   /// Per-repo hoisted-row tally; git repos only, built only for repos that
   /// contributed at least one highlight row.
   var hoistSummaryByRepositoryID: [Repository.ID: SidebarHoistSummary]
-  /// Outer-ForEach data ordering for repository sections. The view uses
-  /// this to translate visual insertion offsets into the index space the
-  /// `.repositoriesMoved` reducer action expects.
+  /// Persisted repository order used to resolve identity-based drop targets
+  /// into the index space of the sidebar sections.
   var reorderableRepositoryIDs: [Repository.ID]
 
-  /// Both insertion drops and group drops consume the same repository payload.
-  /// Ignore stale or external IDs before translating the visual insertion point.
+  /// Resolve a drop against an explicit repository, never a section-local List
+  /// index. The reducer applies the target membership together with this order.
   func repositoryMove(
-    repositoryIDs: Set<Repository.ID>, destination: Int
+    repositoryIDs: Set<Repository.ID>, relativeTo targetID: Repository.ID, after: Bool
   ) -> (offsets: IndexSet, destination: Int)? {
+    guard !repositoryIDs.contains(targetID),
+      let targetIndex = reorderableRepositoryIDs.firstIndex(of: targetID)
+    else { return nil }
     let offsets = IndexSet(
-      sections.indices.filter { index in
-        sections[index].repositoryID.map { repositoryIDs.contains($0) } ?? false
+      reorderableRepositoryIDs.indices.filter {
+        repositoryIDs.contains(reorderableRepositoryIDs[$0])
       })
-    return repositoryMove(offsets: offsets, destination: destination)
-  }
-
-  /// Translate visual indices to persisted indices, including interleaved groups.
-  /// At a group boundary the drop follows the previous repository, rather than
-  /// the next group's first member (which can precede it in persisted order).
-  func repositoryMove(offsets: IndexSet, destination: Int) -> (offsets: IndexSet, destination: Int)? {
-    var repositoryOffsets = IndexSet()
-    for index in offsets where sections.indices.contains(index) {
-      guard let id = sections[index].repositoryID,
-        let repositoryIndex = reorderableRepositoryIDs.firstIndex(of: id)
-      else { continue }
-      repositoryOffsets.insert(repositoryIndex)
-    }
-    guard !repositoryOffsets.isEmpty else { return nil }
-    let clampedDestination = min(max(destination, 0), sections.count)
-    let groups = sections.compactMap { section -> RepositoryGroup? in
-      if case .repositoryGroup(let group) = section { return group }
-      return nil
-    }
-    let previousID = sections.prefix(clampedDestination).reversed().compactMap(\.repositoryID).first
-    guard let firstOffset = repositoryOffsets.first else { return nil }
-    let sourceID = reorderableRepositoryIDs[firstOffset]
-    let sourceGroup = groups.first { $0.repositoryIDs.contains(sourceID.rawValue) }?.id
-    let previousGroup = previousID.flatMap { id in
-      groups.first { $0.repositoryIDs.contains(id.rawValue) }?.id
-    }
-    let targetGroup: UUID?
-    if clampedDestination < sections.count,
-      case .repositoryGroup(let group) = sections[clampedDestination]
-    {
-      targetGroup = group.id
-    } else if clampedDestination < sections.count, let id = sections[clampedDestination].repositoryID {
-      targetGroup = groups.first { $0.repositoryIDs.contains(id.rawValue) }?.id
-    } else {
-      targetGroup = nil
-    }
-    if sourceGroup != nil, sourceGroup == previousGroup, sourceGroup != targetGroup,
-      let previousID, let index = reorderableRepositoryIDs.firstIndex(of: previousID)
-    {
-      return (repositoryOffsets, index + 1)
-    }
-    if clampedDestination < sections.count,
-      let id = sections[clampedDestination].repositoryID,
-      let index = reorderableRepositoryIDs.firstIndex(of: id)
-    {
-      return (repositoryOffsets, index)
-    }
-    if let previousID,
-      let index = reorderableRepositoryIDs.firstIndex(of: previousID)
-    {
-      return (repositoryOffsets, index + 1)
-    }
-    return (repositoryOffsets, 0)
+    guard !offsets.isEmpty else { return nil }
+    return (offsets, targetIndex + (after ? 1 : 0))
   }
 
   static let empty = SidebarStructure(
@@ -541,7 +491,7 @@ extension RepositoriesFeature.Action {
 
     // Reorders rewrite the bucket order the selection slice's rows are walked
     // in, so the cached selection order would otherwise go stale.
-    case .repositoriesMoved, .pinnedWorktreesMoved, .unpinnedWorktreesMoved:
+    case .repositoriesMoved, .repositoryDropped, .pinnedWorktreesMoved, .unpinnedWorktreesMoved:
       return [.sidebarStructure, .sidebarSelectionSlice]
 
     // Repository-roster changes (repos added, removed, or reloaded): the only

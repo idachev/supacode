@@ -118,62 +118,94 @@ struct RepositoryGroupTests {
 
   }
 
-  @Test func dragAtGroupBoundaryUsesPreviousRepositoryInPersistedOrder() {
+  @Test(arguments: [false, true])
+  func repositoryDropUsesTargetIdentityWithInterleavedGroups(after: Bool) {
     let repoA: RepositoryID = "/tmp/repoA"
     let repoB: RepositoryID = "/tmp/repoB"
     let repoC: RepositoryID = "/tmp/repoC"
-    let first = RepositoryGroup(name: "First", repositoryIDs: [repoA.rawValue, repoC.rawValue])
-    let second = RepositoryGroup(name: "Second", repositoryIDs: [repoB.rawValue])
+    let repoD: RepositoryID = "/tmp/repoD"
+    let group = RepositoryGroup(name: "Work", repositoryIDs: [repoA.rawValue, repoC.rawValue, repoD.rawValue])
     var structure = SidebarStructure.empty
     structure.sections = [
-      .repositoryGroup(first), .repository(repositoryID: repoA, groups: []),
-      .repository(repositoryID: repoC, groups: []), .repositoryGroup(second),
-      .repository(repositoryID: repoB, groups: []),
+      .highlight(kind: .pinned, rowIDs: []), .repositoryGroup(group),
+      .repository(repositoryID: repoA, groups: []),
+      .repository(repositoryID: repoC, groups: []),
+      .repository(repositoryID: repoD, groups: []),
+      .folder(repositoryID: repoB, rowID: "/tmp/repoB"),
     ]
-    structure.reorderableRepositoryIDs = [repoA, repoB, repoC]
-    let move = structure.repositoryMove(offsets: [1], destination: 3)
+    structure.reorderableRepositoryIDs = [repoA, repoB, repoC, repoD]
+    let move = structure.repositoryMove(repositoryIDs: [repoA], relativeTo: repoC, after: after)
     #expect(move?.offsets == [0])
-    #expect(move?.destination == 3)
+    #expect(move?.destination == (after ? 3 : 2))
     var reordered = structure.reorderableRepositoryIDs
     if let move { reordered.move(fromOffsets: move.offsets, toOffset: move.destination) }
-    #expect(reordered.filter { first.repositoryIDs.contains($0.rawValue) } == [repoC, repoA])
-    let endMove = structure.repositoryMove(offsets: [1], destination: 5)
-    #expect(endMove?.destination == 2)
-    let headerMove = structure.repositoryMove(offsets: [0], destination: 2)
-    #expect(headerMove?.offsets == nil)
-    structure.sections = [
-      .repositoryGroup(first), .repository(repositoryID: repoA, groups: []),
-      .repository(repositoryID: repoC, groups: []), .repository(repositoryID: repoB, groups: []),
-    ]
-    let ungroupedBoundaryMove = structure.repositoryMove(offsets: [1], destination: 3)
-    #expect(ungroupedBoundaryMove?.destination == 3)
+    #expect(reordered == (after ? [repoB, repoC, repoA, repoD] : [repoB, repoA, repoC, repoD]))
 
+    let upward = structure.repositoryMove(repositoryIDs: [repoD], relativeTo: repoC, after: after)
+    var upwardOrder = structure.reorderableRepositoryIDs
+    if let upward { upwardOrder.move(fromOffsets: upward.offsets, toOffset: upward.destination) }
+    #expect(upwardOrder == (after ? [repoA, repoB, repoC, repoD] : [repoA, repoB, repoD, repoC]))
   }
 
-  @Test func repositoryPayloadReordersAcrossGroupHeadersAndIgnoresUnknownIDs() {
+  @Test func repositoryDropIgnoresSelfAndUnknownTargets() {
     let repoA: RepositoryID = "/tmp/repoA"
     let repoB: RepositoryID = "/tmp/repoB"
     let repoC: RepositoryID = "/tmp/repoC"
-    let group = RepositoryGroup(name: "Work", repositoryIDs: [repoA.rawValue, repoC.rawValue])
     var structure = SidebarStructure.empty
-    structure.sections = [
-      .repositoryGroup(group), .repository(repositoryID: repoA, groups: []),
-      .repository(repositoryID: repoC, groups: []), .folder(repositoryID: repoB, rowID: "/tmp/repoB"),
-    ]
     structure.reorderableRepositoryIDs = [repoA, repoB, repoC]
-
-    let move = structure.repositoryMove(repositoryIDs: [repoA, "/tmp/stale"], destination: 3)
-    #expect(move?.offsets == [0])
-    #expect(move?.destination == 3)
-    var reordered = structure.reorderableRepositoryIDs
-    if let move { reordered.move(fromOffsets: move.offsets, toOffset: move.destination) }
-    #expect(reordered == [repoB, repoC, repoA])
-
-    let multiple = structure.repositoryMove(repositoryIDs: [repoB, repoC], destination: 0)
+    #expect(structure.repositoryMove(repositoryIDs: [repoA], relativeTo: repoA, after: true) == nil)
+    #expect(structure.repositoryMove(repositoryIDs: [repoA], relativeTo: "/tmp/stale", after: false) == nil)
+    #expect(structure.repositoryMove(repositoryIDs: ["/tmp/stale"], relativeTo: repoB, after: false) == nil)
+    #expect(structure.repositoryMove(repositoryIDs: [], relativeTo: repoB, after: true) == nil)
+    let multiple = structure.repositoryMove(
+      repositoryIDs: [repoB, repoC, "/tmp/stale"], relativeTo: repoA, after: false)
     #expect(multiple?.offsets == [1, 2])
     #expect(multiple?.destination == 0)
-    #expect(structure.repositoryMove(repositoryIDs: ["/tmp/stale"], destination: 1) == nil)
-    #expect(structure.repositoryMove(repositoryIDs: [], destination: 1) == nil)
+  }
+
+  @Test func assigningRepositoryToItsCurrentGroupDoesNotChangeSettings() {
+    let group = RepositoryGroup(name: "Work", repositoryIDs: ["/tmp/a", "/tmp/b"])
+    var settings = SettingsFile()
+    settings.repositoryGroups = [group]
+    let original = settings
+    settings.updateRepositoryGroups(.assignAll(["/tmp/a"], group.id))
+    #expect(settings == original)
+  }
+
+  @Test(.dependencies, arguments: [false, true], [false, true])
+  func repositoryDropUpdatesMembershipAndOrderTogether(after: Bool, targetIsGrouped: Bool) async {
+    @Shared(.settingsFile) var settings
+    @Shared(.sidebarSectionSort) var sectionSort: SidebarSectionSort
+    $sectionSort.withLock { $0 = .manual }
+    let repositories = ["a", "b", "c", "d"].map { name in
+      let root = URL(fileURLWithPath: "/tmp/drop-\(name)")
+      return Repository(id: RepositoryID(root.path()), rootURL: root, name: name, worktrees: [])
+    }
+    let ids = repositories.map(\.id)
+    let sourceGroup = RepositoryGroup(name: "Source", repositoryIDs: [ids[0].rawValue])
+    let targetGroup = RepositoryGroup(name: "Target", repositoryIDs: Set(ids.dropFirst().map(\.rawValue)))
+    $settings.withLock { $0.repositoryGroups = targetIsGrouped ? [sourceGroup, targetGroup] : [sourceGroup] }
+    var state = RepositoriesFeature.State(reconciledRepositories: repositories)
+    state.isInitialLoadComplete = true
+    state.applyCacheRecomputes(.all)
+    let store = TestStore(initialState: state) { RepositoriesFeature() }
+    store.exhaustivity = .off
+    await store.send(.repositoryDropped([ids[0]], relativeTo: ids[2], after: after))
+    let expected = after ? [ids[1], ids[2], ids[0], ids[3]] : [ids[1], ids[0], ids[2], ids[3]]
+    #expect(store.state.orderedRepositoryIDs() == expected)
+    #expect(store.state.sidebarStructure.sections.compactMap(\.repositoryID) == expected)
+    #expect(settings.repositoryGroups[0].repositoryIDs.isEmpty)
+    if targetIsGrouped {
+      #expect(settings.repositoryGroups[1].repositoryIDs == Set(ids.map(\.rawValue)))
+    }
+    // A second move inside the same group must use the new target position.
+    let membership = settings.repositoryGroups
+    await store.send(.repositoryDropped([ids[0]], relativeTo: ids[1], after: false))
+    #expect(store.state.orderedRepositoryIDs() == ids)
+    #expect(settings.repositoryGroups == membership)
+    await store.send(.repositoryDropped([ids[0]], relativeTo: ids[0], after: true))
+    #expect(store.state.orderedRepositoryIDs() == ids)
+    #expect(settings.repositoryGroups == membership)
   }
 
   @Test(.dependencies) func settingsReducerKeepsCollapseIndependentAndSharesMembership() async {

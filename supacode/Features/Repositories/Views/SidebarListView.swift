@@ -47,7 +47,7 @@ struct SidebarListView: View {
 
     return ScrollViewReader { scrollProxy in
       List(selection: selection) {
-        let sections = ForEach(structure.sections) { section in
+        ForEach(structure.sections) { section in
           SidebarSectionDispatcher(
             section: section,
             structure: structure,
@@ -55,19 +55,6 @@ struct SidebarListView: View {
             store: store,
             terminalManager: terminalManager
           )
-        }
-        if sectionSort.allowsReordering {
-          sections.dropDestination(for: RepositoryGroupDragItem.self) { items, destination in
-            guard
-              let move = structure.repositoryMove(
-                repositoryIDs: Set(items.map { Repository.ID($0.repositoryID) }),
-                destination: destination
-              )
-            else { return }
-            store.send(.repositoriesMoved(move.offsets, move.destination))
-          }
-        } else {
-          sections
         }
       }
       .listStyle(.sidebar)
@@ -287,6 +274,7 @@ private struct SidebarGitRepositorySection: View {
           name: Repository.sidebarDisplayName(custom: section?.title, fallback: repository.name)
         )
       )
+      .modifier(RepositoryReorderDropTarget(repositoryID: repository.id, store: store))
     }
     // Keep repository actions in the header menu. A context menu on the
     // Section overrides the worktree row menus, including Pin / Unpin.
@@ -472,6 +460,7 @@ private struct SidebarFailedRepositorySection: View {
       )
       .padding(.leading, groupIndent)
       .modifier(RepositoryGroupDragSource(repositoryID: repositoryID.rawValue, name: displayName))
+      .modifier(RepositoryReorderDropTarget(repositoryID: repositoryID, store: store))
     }
     .sectionActions {
       // No `+`: the repo isn't loadable, so worktree create is meaningless.
@@ -550,6 +539,7 @@ private struct SidebarBlockedRepositorySection: View {
       )
       .padding(.leading, groupIndent)
       .modifier(RepositoryGroupDragSource(repositoryID: repositoryID.rawValue, name: displayName))
+      .modifier(RepositoryReorderDropTarget(repositoryID: repositoryID, store: store))
     }
   }
 }

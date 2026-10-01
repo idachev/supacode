@@ -524,6 +524,7 @@ struct RepositoriesFeature {
     case repositoryGroupsChanged(RepositoryGroup.Mutation)
     case repositoryGroupsReloaded
     case repositoriesMoved(IndexSet, Int)
+    case repositoryDropped(Set<Repository.ID>, relativeTo: Repository.ID, after: Bool)
     case pinnedWorktreesMoved(repositoryID: Repository.ID, IndexSet, Int)
     case unpinnedWorktreesMoved(repositoryID: Repository.ID, IndexSet, Int)
     case deleteWorktreeFailed(String, worktreeID: Worktree.ID)
@@ -1595,27 +1596,30 @@ struct RepositoriesFeature {
       case .repositoryGroupsReloaded:
         return .none
 
-      case .repositoriesMoved(let offsets, let destination):
-        var ordered = state.orderedRepositoryIDs()
-        guard !offsets.isEmpty, ordered.indices.contains(offsets.min() ?? 0),
-          destination <= ordered.count
+      case .repositoryDropped(let repositoryIDs, let targetID, let after):
+        @Shared(.sidebarSectionSort) var sectionSort: SidebarSectionSort
+        guard sectionSort.allowsReordering,
+          let move = state.sidebarStructure.repositoryMove(
+            repositoryIDs: repositoryIDs, relativeTo: targetID, after: after)
         else { return .none }
-        ordered.move(fromOffsets: offsets, toOffset: destination)
+        let validIDs = Set(repositoryIDs.intersection(state.orderedRepositoryIDs()).map(\.rawValue))
+        @Shared(.settingsFile) var settingsFile
+        let targetGroupID = settingsFile.repositoryGroups.first {
+          $0.repositoryIDs.contains(targetID.rawValue)
+        }?.id
         withAnimation(.snappy(duration: 0.2)) {
-          state.$sidebar.withLock { sidebar in
-            var reordered: OrderedDictionary<Repository.ID, SidebarState.Section> = [:]
-            for id in ordered {
-              reordered[id] = sidebar.sections[id] ?? .init()
+          $settingsFile.withLock { settings in
+            for id in validIDs {
+              settings.updateRepositoryGroups(.assign(id, targetGroupID))
             }
-            // Sections for repos still loading / not yet seen are
-            // reliably absent from `ordered`; append them in their
-            // original relative order so a live-row reorder doesn't
-            // silently reshuffle curation on them.
-            for (id, section) in sidebar.sections where reordered[id] == nil {
-              reordered[id] = section
-            }
-            sidebar.sections = reordered
           }
+          state.moveRepositories(fromOffsets: move.offsets, toOffset: move.destination)
+        }
+        return .none
+
+      case .repositoriesMoved(let offsets, let destination):
+        withAnimation(.snappy(duration: 0.2)) {
+          state.moveRepositories(fromOffsets: offsets, toOffset: destination)
         }
         return .none
 
@@ -4618,7 +4622,7 @@ struct RepositoriesFeature {
 
       case .deleteSidebarItemConfirmed, .deleteScriptCompleted, .deleteWorktreeApply, .worktreeDeleted,
         .repositoryGroupCreation, .repositoryGroupsChanged, .repositoryGroupsReloaded,
-        .repositoriesMoved, .pinnedWorktreesMoved, .unpinnedWorktreesMoved, .deleteWorktreeFailed,
+        .repositoriesMoved, .repositoryDropped, .pinnedWorktreesMoved, .unpinnedWorktreesMoved, .deleteWorktreeFailed,
         .requestDeleteRepository, .requestRemoveFailedRepository, .removeFailedRepository,
         .repositoryRemovalCompleted, .repositoriesRemoved:
         // Real handling lives in `worktreeRemovalReducer` (combined below) so `body` stays under
@@ -5967,6 +5971,25 @@ extension RepositoriesFeature.State {
       ordered = repositories.filter { $0.host == nil }.map(\.rootURL)
     }
     return ordered
+  }
+
+  mutating func moveRepositories(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+    var ordered = orderedRepositoryIDs()
+    guard !offsets.isEmpty, offsets.allSatisfy(ordered.indices.contains),
+      (0...ordered.count).contains(destination)
+    else { return }
+    ordered.move(fromOffsets: offsets, toOffset: destination)
+    $sidebar.withLock { sidebar in
+      var reordered: OrderedDictionary<Repository.ID, SidebarState.Section> = [:]
+      for id in ordered {
+        reordered[id] = sidebar.sections[id] ?? .init()
+      }
+      // Keep sections for repositories still loading in their existing order.
+      for (id, section) in sidebar.sections where reordered[id] == nil {
+        reordered[id] = section
+      }
+      sidebar.sections = reordered
+    }
   }
 
   /// Every repository id in sidebar order. The persisted `sidebar.sections`
