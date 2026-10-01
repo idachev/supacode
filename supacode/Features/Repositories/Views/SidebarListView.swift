@@ -47,7 +47,7 @@ struct SidebarListView: View {
 
     return ScrollViewReader { scrollProxy in
       List(selection: selection) {
-        ForEach(structure.sections) { section in
+        let sections = ForEach(structure.sections) { section in
           SidebarSectionDispatcher(
             section: section,
             structure: structure,
@@ -56,15 +56,19 @@ struct SidebarListView: View {
             terminalManager: terminalManager
           )
         }
-        .onMove(
-          perform: sectionSort.allowsReordering
-            ? { offsets, destination in
-              handleRepositoryMove(
-                offsets: offsets,
-                destination: destination,
-                structure: structure
+        if sectionSort.allowsReordering {
+          sections.dropDestination(for: RepositoryGroupDragItem.self) { items, destination in
+            guard
+              let move = structure.repositoryMove(
+                repositoryIDs: Set(items.map { Repository.ID($0.repositoryID) }),
+                destination: destination
               )
-            } : nil)
+            else { return }
+            store.send(.repositoriesMoved(move.offsets, move.destination))
+          }
+        } else {
+          sections
+        }
       }
       .listStyle(.sidebar)
       .onChange(of: settingsFile.repositoryGroups) { _, _ in
@@ -127,21 +131,6 @@ struct SidebarListView: View {
         await revealPendingSidebarWorktree(pendingSidebarReveal, with: scrollProxy)
       }
     }
-  }
-
-  /// SwiftUI's `.onMove` reports offsets in the flat ForEach data array. The
-  /// structure exposes `reorderableRepositoryIDs` so we can translate a flat
-  /// move into the repository index space the `.repositoriesMoved` reducer
-  /// expects. Non-repo sections carry `.moveDisabled(true)` so they can't be
-  /// sources of a drag; the destination clamps below.
-  private func handleRepositoryMove(
-    offsets: IndexSet,
-    destination: Int,
-    structure: SidebarStructure
-  ) {
-    guard let move = structure.repositoryMove(offsets: offsets, destination: destination) else { return }
-    // Drag changes ordering only; group transfer stays explicit in Move to Group.
-    store.send(.repositoriesMoved(move.offsets, move.destination))
   }
 
   @MainActor

@@ -150,6 +150,32 @@ struct RepositoryGroupTests {
 
   }
 
+  @Test func repositoryPayloadReordersAcrossGroupHeadersAndIgnoresUnknownIDs() {
+    let repoA: RepositoryID = "/tmp/repoA"
+    let repoB: RepositoryID = "/tmp/repoB"
+    let repoC: RepositoryID = "/tmp/repoC"
+    let group = RepositoryGroup(name: "Work", repositoryIDs: [repoA.rawValue, repoC.rawValue])
+    var structure = SidebarStructure.empty
+    structure.sections = [
+      .repositoryGroup(group), .repository(repositoryID: repoA, groups: []),
+      .repository(repositoryID: repoC, groups: []), .folder(repositoryID: repoB, rowID: "/tmp/repoB"),
+    ]
+    structure.reorderableRepositoryIDs = [repoA, repoB, repoC]
+
+    let move = structure.repositoryMove(repositoryIDs: [repoA, "/tmp/stale"], destination: 3)
+    #expect(move?.offsets == [0])
+    #expect(move?.destination == 3)
+    var reordered = structure.reorderableRepositoryIDs
+    if let move { reordered.move(fromOffsets: move.offsets, toOffset: move.destination) }
+    #expect(reordered == [repoB, repoC, repoA])
+
+    let multiple = structure.repositoryMove(repositoryIDs: [repoB, repoC], destination: 0)
+    #expect(multiple?.offsets == [1, 2])
+    #expect(multiple?.destination == 0)
+    #expect(structure.repositoryMove(repositoryIDs: ["/tmp/stale"], destination: 1) == nil)
+    #expect(structure.repositoryMove(repositoryIDs: [], destination: 1) == nil)
+  }
+
   @Test(.dependencies) func settingsReducerKeepsCollapseIndependentAndSharesMembership() async {
     @Shared(.settingsFile) var file
     let store = TestStore(initialState: SettingsFeature.State()) { SettingsFeature() }

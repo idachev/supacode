@@ -297,9 +297,21 @@ struct SidebarStructure: Equatable, Sendable {
   /// contributed at least one highlight row.
   var hoistSummaryByRepositoryID: [Repository.ID: SidebarHoistSummary]
   /// Outer-ForEach data ordering for repository sections. The view uses
-  /// this to translate `.onMove` flat offsets into the index space the
+  /// this to translate visual insertion offsets into the index space the
   /// `.repositoriesMoved` reducer action expects.
   var reorderableRepositoryIDs: [Repository.ID]
+
+  /// Both insertion drops and group drops consume the same repository payload.
+  /// Ignore stale or external IDs before translating the visual insertion point.
+  func repositoryMove(
+    repositoryIDs: Set<Repository.ID>, destination: Int
+  ) -> (offsets: IndexSet, destination: Int)? {
+    let offsets = IndexSet(
+      sections.indices.filter { index in
+        sections[index].repositoryID.map { repositoryIDs.contains($0) } ?? false
+      })
+    return repositoryMove(offsets: offsets, destination: destination)
+  }
 
   /// Translate visual indices to persisted indices, including interleaved groups.
   /// At a group boundary the drop follows the previous repository, rather than

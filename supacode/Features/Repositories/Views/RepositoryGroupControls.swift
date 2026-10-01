@@ -81,8 +81,14 @@ struct RepositoryGroupHeader: View {
             .accessibilityHidden(true)
           Label(group.name, systemImage: "folder")
           Spacer()
-          Text("\(group.repositoryIDs.intersection(repositoryIDs).count)")
-            .foregroundStyle(.secondary)
+          if isDropTargeted {
+            Image(systemName: "plus")
+              .foregroundStyle(.secondary)
+              .accessibilityLabel("Move repository to group")
+          } else {
+            Text("\(group.repositoryIDs.intersection(repositoryIDs).count)")
+              .foregroundStyle(.secondary)
+          }
         }
         .appFont(.body)
         .fontWeight(.semibold)
@@ -126,11 +132,15 @@ struct RepositoryGroupHeader: View {
     }
     .dropDestination(for: RepositoryGroupDragItem.self) { items, _ in
       let droppedIDs = Set(items.map(\.repositoryID)).intersection(repositoryIDs)
-      guard !droppedIDs.isEmpty else { return false }
+      guard !droppedIDs.isEmpty else { return }
       send(.assignAll(droppedIDs, group.id))
-      return true
-    } isTargeted: {
-      isDropTargeted = $0
+    }
+    .dropConfiguration { _ in DropConfiguration(operation: .move) }
+    .onDropSessionUpdated { session in
+      switch session.phase {
+      case .entering, .active: isDropTargeted = true
+      default: isDropTargeted = false
+      }
     }
     .alert("Rename Repository Group", isPresented: $isRenaming) {
       TextField("Group name", text: $name)
@@ -190,10 +200,11 @@ nonisolated struct RepositoryGroupDragItem: Codable, Transferable {
   }
 }
 
-/// Explicit previews stay visible when a drag starts from a List section header.
+/// One source serves both native List insertion and drops onto group headers.
 struct RepositoryGroupDragSource: ViewModifier {
   let repositoryID: String
   let name: String
+  @Environment(\.colorScheme) private var colorScheme
 
   func body(content: Content) -> some View {
     content
@@ -201,9 +212,22 @@ struct RepositoryGroupDragSource: ViewModifier {
       .draggable(RepositoryGroupDragItem(repositoryID: repositoryID)) {
         Label(name, systemImage: "folder")
           .appFont(.body)
-          .foregroundStyle(.primary)
-          .padding(8)
-          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+          .foregroundStyle(Color(nsColor: .labelColor))
+          .fixedSize(horizontal: true, vertical: true)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+          .overlay {
+            RoundedRectangle(cornerRadius: 6)
+              .strokeBorder(.separator, lineWidth: 1)
+          }
+          .environment(\.colorScheme, colorScheme)
       }
+      .dragConfiguration(
+        DragConfiguration(
+          operationsWithinApp: .init(allowCopy: false, allowMove: true),
+          operationsOutsideApp: .init(allowCopy: false)
+        )
+      )
   }
 }

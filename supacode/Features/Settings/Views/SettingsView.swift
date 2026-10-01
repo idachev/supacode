@@ -216,8 +216,10 @@ private struct SettingsSidebarView: View {
       repository: repository, settingsStore: settingsStore,
       expandedRepositories: $expandedRepositories
     )
-    .padding(.leading, isGrouped ? 12 : 0)
-    .draggable(RepositoryGroupDragItem(repositoryID: repository.id))
+    // List owns DisclosureGroup row layout; padding its wrapper does not
+    // indent the native disclosure row or its expanded children.
+    .listRowInsets(.leading, isGrouped ? 24 : nil)
+    .modifier(RepositoryGroupDragSource(repositoryID: repository.id, name: repository.name))
     .contextMenu {
       RepositoryGroupAssignmentMenu(
         repositoryID: repository.id,
