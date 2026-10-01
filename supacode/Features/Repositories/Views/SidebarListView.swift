@@ -171,6 +171,11 @@ private struct SidebarSectionDispatcher: View {
   @Bindable var store: StoreOf<RepositoriesFeature>
   let terminalManager: WorktreeTerminalManager
 
+  private var groupIndent: CGFloat {
+    guard let id = section.repositoryID else { return 0 }
+    return structure.groupedRepositoryIDs.contains(id) ? 12 : 0
+  }
+
   var body: some View {
     switch section {
     case .repositoryGroup(let group):
@@ -197,6 +202,7 @@ private struct SidebarSectionDispatcher: View {
     case .failedRepository(let repositoryID, let rootURL, let customTitle, let color, let isRemote):
       SidebarFailedRepositorySection(
         repositoryID: repositoryID,
+        groupIndent: groupIndent,
         rootURL: rootURL,
         customTitle: customTitle,
         color: color,
@@ -206,6 +212,7 @@ private struct SidebarSectionDispatcher: View {
     case .environmentBlockedRepository(let repositoryID, let rootURL, let customTitle, let color):
       SidebarBlockedRepositorySection(
         repositoryID: repositoryID,
+        groupIndent: groupIndent,
         rootURL: rootURL,
         customTitle: customTitle,
         color: color,
@@ -223,6 +230,7 @@ private struct SidebarSectionDispatcher: View {
             store: store,
             terminalManager: terminalManager
           )
+          .padding(.leading, groupIndent)
         } header: {
           EmptyView()
         }
@@ -231,6 +239,7 @@ private struct SidebarSectionDispatcher: View {
       if let repository = store.state.repositories[id: repositoryID] {
         SidebarGitRepositorySection(
           repository: repository,
+          groupIndent: groupIndent,
           groups: groups,
           hoistSummary: structure.hoistSummaryByRepositoryID[repositoryID],
           shortcutHintByID: shortcutHintByID,
@@ -244,6 +253,7 @@ private struct SidebarSectionDispatcher: View {
 
 private struct SidebarGitRepositorySection: View {
   let repository: Repository
+  let groupIndent: CGFloat
   let groups: [SidebarItemGroup]
   /// Non-nil when one or more of this repo's rows were hoisted into the
   /// highlight sections; rendered as a muted summary line under the rows.
@@ -263,12 +273,14 @@ private struct SidebarGitRepositorySection: View {
         store: store,
         terminalManager: terminalManager
       )
+      .padding(.leading, groupIndent)
       if let hoistSummary {
         SidebarHoistSummaryRow(
           repositoryName: Repository.sidebarDisplayName(custom: section?.title, fallback: repository.name),
           summary: hoistSummary,
           store: store
         )
+        .padding(.leading, groupIndent)
       }
     } header: {
       RepoSectionHeaderView(
@@ -279,11 +291,19 @@ private struct SidebarGitRepositorySection: View {
         hostInfo: repository.host?.displayAuthority,
         isResolving: isResolvingRemote
       )
+      .padding(.leading, groupIndent)
+      .draggable(RepositoryGroupDragItem(repositoryID: repository.id.rawValue))
     }
     .contextMenu {
-      RepositoryGroupAssignmentMenu(repositoryID: repository.id.rawValue) {
-        store.send(.repositoryGroupsChanged($0))
-      }
+      RepositoryGroupAssignmentMenu(
+        repositoryID: repository.id.rawValue,
+        requestCreation: {
+          store.send(.repositoryGroupCreation(.request($0)))
+        },
+        send: {
+          store.send(.repositoryGroupsChanged($0))
+        }
+      )
     }
     .sectionActions {
       SidebarSectionActionsView(
@@ -368,9 +388,15 @@ private struct SidebarSectionActionsView: View {
 
   var body: some View {
     Menu {
-      RepositoryGroupAssignmentMenu(repositoryID: repositoryID.rawValue) {
-        store.send(.repositoryGroupsChanged($0))
-      }
+      RepositoryGroupAssignmentMenu(
+        repositoryID: repositoryID.rawValue,
+        requestCreation: {
+          store.send(.repositoryGroupCreation(.request($0)))
+        },
+        send: {
+          store.send(.repositoryGroupsChanged($0))
+        }
+      )
       Button("Customize Appearance…", systemImage: "paintbrush") {
         store.send(.requestCustomizeRepository(repositoryID))
       }
@@ -424,6 +450,7 @@ private struct SidebarSectionActionsView: View {
 
 private struct SidebarFailedRepositorySection: View {
   let repositoryID: Repository.ID
+  let groupIndent: CGFloat
   let rootURL: URL
   let customTitle: String?
   let color: RepositoryColor?
@@ -448,6 +475,7 @@ private struct SidebarFailedRepositorySection: View {
         removeRepository: removeFailedRepository
       )
       .tag(SidebarSelection.failedRepository(repositoryID))
+      .padding(.leading, groupIndent)
       .moveDisabled(true)
     } header: {
       RepoSectionHeaderView(
@@ -457,11 +485,19 @@ private struct SidebarFailedRepositorySection: View {
         isRemoving: false,
         hostInfo: store.state.repositories[id: repositoryID]?.host?.displayAuthority
       )
+      .padding(.leading, groupIndent)
+      .draggable(RepositoryGroupDragItem(repositoryID: repositoryID.rawValue))
     }
     .contextMenu {
-      RepositoryGroupAssignmentMenu(repositoryID: repositoryID.rawValue) {
-        store.send(.repositoryGroupsChanged($0))
-      }
+      RepositoryGroupAssignmentMenu(
+        repositoryID: repositoryID.rawValue,
+        requestCreation: {
+          store.send(.repositoryGroupCreation(.request($0)))
+        },
+        send: {
+          store.send(.repositoryGroupsChanged($0))
+        }
+      )
     }
     .sectionActions {
       // No `+`: the repo isn't loadable, so worktree create is meaningless.
@@ -500,6 +536,7 @@ private struct SidebarFailedRepositorySection: View {
 /// bottom banner owns the remedy, so there's no per-row action here.
 private struct SidebarBlockedRepositorySection: View {
   let repositoryID: Repository.ID
+  let groupIndent: CGFloat
   let rootURL: URL
   let customTitle: String?
   let color: RepositoryColor?
@@ -518,6 +555,7 @@ private struct SidebarBlockedRepositorySection: View {
         // `loadFailuresByID` entry to key on.
         removeRepository: { store.send(.requestRemoveFailedRepository(repositoryID)) }
       )
+      .padding(.leading, groupIndent)
       .moveDisabled(true)
     } header: {
       RepoSectionHeaderView(
@@ -527,6 +565,8 @@ private struct SidebarBlockedRepositorySection: View {
         isRemoving: false,
         hostInfo: nil
       )
+      .padding(.leading, groupIndent)
+      .draggable(RepositoryGroupDragItem(repositoryID: repositoryID.rawValue))
     }
   }
 }

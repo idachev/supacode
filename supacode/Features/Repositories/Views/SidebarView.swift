@@ -21,6 +21,11 @@ struct SidebarView: View {
       store: store,
       terminalManager: terminalManager
     )
+    .modifier(
+      RepositoryGroupNamePrompt(draft: store.repositoryGroupDraft) {
+        store.send(.repositoryGroupCreation($0))
+      }
+    )
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Menu {
@@ -37,7 +42,7 @@ struct SidebarView: View {
           }
           .help("Add a repository or folder on an SSH host")
           Divider()
-          RepositoryGroupCreateButton { store.send(.repositoryGroupsChanged($0)) }
+          RepositoryGroupCreateButton { store.send(.repositoryGroupCreation(.request())) }
           Divider()
           Button {
             store.send(.requestCloneRepository)

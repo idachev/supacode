@@ -68,3 +68,25 @@ extension SettingsFile {
   }
 
 }
+
+/// Uncommitted input for the repository-group name prompt.
+public nonisolated struct RepositoryGroupDraft: Equatable, Sendable {
+  public var name: String
+  public var repositoryID: String?
+
+  public init(name: String = "", repositoryID: String? = nil) {
+    self.name = name
+    self.repositoryID = repositoryID
+  }
+
+  public var canSave: Bool {
+    !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  public enum Action: Equatable, Sendable {
+    case request(String? = nil)
+    case nameChanged(String)
+    case confirm
+    case cancel
+  }
+}

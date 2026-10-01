@@ -86,6 +86,16 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
+			<string>sh.supacode.repositoryId</string>
+			<key>UTTypeDescription</key>
+			<string>Supacode Repository Identifier</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
 			<string>sh.supacode.ghosttySurfaceId</string>
 			<key>UTTypeDescription</key>
 			<string>Supacode Ghostty Surface Identifier</string>

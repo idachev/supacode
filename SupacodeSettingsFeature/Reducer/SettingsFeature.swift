@@ -113,6 +113,7 @@ public struct SettingsFeature {
     /// `nil` when the settings window is closed; non-nil selects the visible section.
     public var selection: SettingsSection?
     public var repositorySummaries: [SettingsRepositorySummary] = []
+    public var repositoryGroupDraft: RepositoryGroupDraft?
     public var repositorySettings: RepositorySettingsFeature.State?
     @Presents public var alert: AlertState<Alert>?
 
@@ -272,6 +273,7 @@ public struct SettingsFeature {
     case agentConfigDirectoriesResolved(Set<AgentInstallTarget>)
     case agentCustomFolderPersistFailed(AgentInstallTarget, reason: String)
     case repositorySettings(RepositorySettingsFeature.Action)
+    case repositoryGroupCreation(RepositoryGroupDraft.Action)
     case repositoryGroupsChanged(RepositoryGroup.Mutation)
     case addGlobalScript
     case removeGlobalScript(ScriptDefinition.ID)
@@ -916,6 +918,32 @@ public struct SettingsFeature {
         state.alert = nil
         state.globalScripts.removeAll { $0.id == id }
         return persist(state)
+
+      case .repositoryGroupCreation(.request(let repositoryID)):
+        state.repositoryGroupDraft = RepositoryGroupDraft(repositoryID: repositoryID)
+        return .none
+
+      case .repositoryGroupCreation(.nameChanged(let name)):
+        state.repositoryGroupDraft?.name = name
+        return .none
+
+      case .repositoryGroupCreation(.cancel):
+        state.repositoryGroupDraft = nil
+        return .none
+
+      case .repositoryGroupCreation(.confirm):
+        guard let draft = state.repositoryGroupDraft, draft.canSave else { return .none }
+        @Dependency(\.uuid) var uuid
+        let id = uuid()
+        @Shared(.settingsFile) var settingsFile
+        $settingsFile.withLock { file in
+          file.updateRepositoryGroups(.create(id, draft.name))
+          if let repositoryID = draft.repositoryID {
+            file.updateRepositoryGroups(.assign(repositoryID, id))
+          }
+        }
+        state.repositoryGroupDraft = nil
+        return .none
 
       case .repositoryGroupsChanged(let mutation):
         @Shared(.settingsFile) var settingsFile

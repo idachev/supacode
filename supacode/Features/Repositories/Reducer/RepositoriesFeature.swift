@@ -258,6 +258,7 @@ struct RepositoriesFeature {
     /// atomic file update per reducer action.
     @Shared(.sidebar) var sidebar: SidebarState
     @Shared(.settingsFile) var settingsFile: SettingsFile
+    var repositoryGroupDraft: RepositoryGroupDraft?
     /// Mirrors the View menu's "Nest Worktrees by Branch" toggle. Owned by
     /// State so the reducer's hotkey / arrow navigation walks the same
     /// trie-filtered row list the sidebar actually renders.
@@ -519,6 +520,7 @@ struct RepositoriesFeature {
       selectionWasRemoved: Bool,
       nextSelection: Worktree.ID?
     )
+    case repositoryGroupCreation(RepositoryGroupDraft.Action)
     case repositoryGroupsChanged(RepositoryGroup.Mutation)
     case repositoryGroupsReloaded
     case repositoriesMoved(IndexSet, Int)
@@ -1558,6 +1560,32 @@ struct RepositoriesFeature {
           .merge(immediateEffects),
           .merge(followupEffects)
         )
+
+      case .repositoryGroupCreation(.request(let repositoryID)):
+        state.repositoryGroupDraft = RepositoryGroupDraft(repositoryID: repositoryID)
+        return .none
+
+      case .repositoryGroupCreation(.nameChanged(let name)):
+        state.repositoryGroupDraft?.name = name
+        return .none
+
+      case .repositoryGroupCreation(.cancel):
+        state.repositoryGroupDraft = nil
+        return .none
+
+      case .repositoryGroupCreation(.confirm):
+        guard let draft = state.repositoryGroupDraft, draft.canSave else { return .none }
+        @Dependency(\.uuid) var uuid
+        let id = uuid()
+        @Shared(.settingsFile) var settingsFile
+        $settingsFile.withLock { file in
+          file.updateRepositoryGroups(.create(id, draft.name))
+          if let repositoryID = draft.repositoryID {
+            file.updateRepositoryGroups(.assign(repositoryID, id))
+          }
+        }
+        state.repositoryGroupDraft = nil
+        return .none
 
       case .repositoryGroupsChanged(let mutation):
         @Shared(.settingsFile) var settingsFile
@@ -4589,7 +4617,7 @@ struct RepositoriesFeature {
         return .none
 
       case .deleteSidebarItemConfirmed, .deleteScriptCompleted, .deleteWorktreeApply, .worktreeDeleted,
-        .repositoryGroupsChanged, .repositoryGroupsReloaded,
+        .repositoryGroupCreation, .repositoryGroupsChanged, .repositoryGroupsReloaded,
         .repositoriesMoved, .pinnedWorktreesMoved, .unpinnedWorktreesMoved, .deleteWorktreeFailed,
         .requestDeleteRepository, .requestRemoveFailedRepository, .removeFailedRepository,
         .repositoryRemovalCompleted, .repositoriesRemoved:

@@ -91,6 +91,7 @@ struct RepositoryGroupTests {
     await store.send(.repositoryGroupsChanged(.create(id, "Work")))
     await store.send(.repositoryGroupsChanged(.assign(repository.id.rawValue, id)))
     #expect(store.state.sidebarStructure.sections.first?.id == .repositoryGroup(id))
+    #expect(store.state.sidebarStructure.groupedRepositoryIDs == [repository.id])
     #expect(store.state.sidebarStructure.slotByID[worktree.id] != nil)
     await store.send(.repositoryGroupsChanged(.sidebarExpanded(id, false)))
     #expect(store.state.sidebarStructure.sections.count == 1)
@@ -106,6 +107,15 @@ struct RepositoryGroupTests {
     await store.send(.repositoriesMoved([0], 1))
     @Shared(.settingsFile) var file
     #expect(file.repositoryGroups[0].repositoryIDs == [repository.id.rawValue])
+    let destinationID = UUID()
+    await store.send(.repositoryGroupsChanged(.create(destinationID, "Destination")))
+    await store.send(.repositoryGroupsChanged(.sidebarExpanded(destinationID, false)))
+    await store.send(.repositoryGroupsChanged(.assignAll([repository.id.rawValue], destinationID)))
+    #expect(file.repositoryGroups[0].repositoryIDs.isEmpty)
+    #expect(file.repositoryGroups[1].repositoryIDs == [repository.id.rawValue])
+    #expect(file.repositoryGroups[1].sidebarCollapsed)
+    #expect(store.state.sidebarStructure.hotkeySlots.isEmpty)
+
   }
 
   @Test func dragAtGroupBoundaryUsesPreviousRepositoryInPersistedOrder() {
@@ -153,4 +163,68 @@ struct RepositoryGroupTests {
     await store.send(.repositoryGroupsChanged(.rename(id, "Renamed")))
     #expect(file.repositoryGroups[0].name == "Renamed")
   }
+
+  @Test(.dependencies) func sidebarCreationAsksForNameAndCancelKeepsMembership() async {
+    @Shared(.settingsFile) var file
+    let existingID = UUID()
+    $file.withLock {
+      $0.updateRepositoryGroups(.create(existingID, "Existing"))
+      $0.updateRepositoryGroups(.assign("/tmp/repo", existingID))
+    }
+    let store = TestStore(initialState: RepositoriesFeature.State()) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+    }
+    store.exhaustivity = .off
+    await store.send(.repositoryGroupCreation(.request("/tmp/repo")))
+    #expect(store.state.repositoryGroupDraft == RepositoryGroupDraft(repositoryID: "/tmp/repo"))
+    #expect(file.repositoryGroups.count == 1)
+    await store.send(.repositoryGroupCreation(.nameChanged("  ")))
+    await store.send(.repositoryGroupCreation(.confirm))
+    #expect(store.state.repositoryGroupDraft != nil)
+    #expect(file.repositoryGroups.count == 1)
+    await store.send(.repositoryGroupCreation(.cancel))
+    #expect(store.state.repositoryGroupDraft == nil)
+    #expect(file.repositoryGroups[0].repositoryIDs == ["/tmp/repo"])
+    await store.send(.repositoryGroupCreation(.request("/tmp/repo")))
+    await store.send(.repositoryGroupCreation(.nameChanged("  My Work  ")))
+    await store.send(.repositoryGroupCreation(.confirm))
+    #expect(store.state.repositoryGroupDraft == nil)
+    #expect(file.repositoryGroups.map(\.name) == ["Existing", "My Work"])
+    #expect(file.repositoryGroups[0].repositoryIDs.isEmpty)
+    #expect(file.repositoryGroups[1].repositoryIDs == ["/tmp/repo"])
+  }
+
+  @Test(.dependencies, arguments: [false, true])
+  func settingsCreationOnlyPersistsAfterNamedConfirmation(includeRepository: Bool) async {
+    @Shared(.settingsFile) var file
+    let repositoryID: String? = includeRepository ? "/tmp/repo" : nil
+    let store = TestStore(initialState: SettingsFeature.State()) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+    }
+    await store.send(.repositoryGroupCreation(.request(repositoryID))) {
+      $0.repositoryGroupDraft = RepositoryGroupDraft(repositoryID: repositoryID)
+    }
+    #expect(file.repositoryGroups.isEmpty)
+    await store.send(.repositoryGroupCreation(.nameChanged(" \n "))) {
+      $0.repositoryGroupDraft?.name = " \n "
+    }
+    await store.send(.repositoryGroupCreation(.confirm))
+    #expect(file.repositoryGroups.isEmpty)
+    await store.send(.repositoryGroupCreation(.cancel)) { $0.repositoryGroupDraft = nil }
+    #expect(file.repositoryGroups.isEmpty)
+    await store.send(.repositoryGroupCreation(.request(repositoryID))) {
+      $0.repositoryGroupDraft = RepositoryGroupDraft(repositoryID: repositoryID)
+    }
+    await store.send(.repositoryGroupCreation(.nameChanged("  Personal  "))) {
+      $0.repositoryGroupDraft?.name = "  Personal  "
+    }
+    await store.send(.repositoryGroupCreation(.confirm)) { $0.repositoryGroupDraft = nil }
+    #expect(file.repositoryGroups.map(\.name) == ["Personal"])
+    #expect(file.repositoryGroups[0].repositoryIDs == (includeRepository ? ["/tmp/repo"] : []))
+  }
+
 }

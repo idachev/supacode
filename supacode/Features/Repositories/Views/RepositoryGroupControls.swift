@@ -1,20 +1,23 @@
+import CoreTransferable
 import Sharing
 import SupacodeSettingsShared
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RepositoryGroupCreateButton: View {
-  let send: (RepositoryGroup.Mutation) -> Void
+  let request: () -> Void
 
   var body: some View {
     Button("New Repository Group…", systemImage: "folder.badge.plus") {
-      send(.create(UUID(), "New Group"))
+      request()
     }
-    .help("Create a repository group. Rename it from its menu.")
+    .help("Name and create a repository group")
   }
 }
 
 struct RepositoryGroupAssignmentMenu: View {
   let repositoryID: String
+  let requestCreation: (String) -> Void
   let send: (RepositoryGroup.Mutation) -> Void
   @Shared(.settingsFile) private var settingsFile
 
@@ -36,9 +39,7 @@ struct RepositoryGroupAssignmentMenu: View {
       }
       Divider()
       Button("New Group with This Repository…", systemImage: "folder.badge.plus") {
-        let id = UUID()
-        send(.create(id, "New Group"))
-        send(.assign(repositoryID, id))
+        requestCreation(repositoryID)
       }
       .help("Create a group containing this repository")
     }
@@ -58,6 +59,7 @@ struct RepositoryGroupHeader: View {
   let send: (RepositoryGroup.Mutation) -> Void
   @State private var isRenaming = false
   @State private var name = ""
+  @State private var isDropTargeted = false
 
   private var isCollapsed: Bool {
     surface == .sidebar ? group.sidebarCollapsed : group.settingsCollapsed
@@ -81,6 +83,7 @@ struct RepositoryGroupHeader: View {
         }
         .appFont(.body)
         .fontWeight(.semibold)
+        .foregroundStyle(Color.primary)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -102,10 +105,25 @@ struct RepositoryGroupHeader: View {
       } label: {
         Image(systemName: "ellipsis")
           .accessibilityLabel("Group options")
+          .foregroundStyle(Color.primary)
       }
       .menuStyle(.borderlessButton)
       .fixedSize()
       .help("Manage \(group.name)")
+    }
+    .foregroundStyle(Color.primary)
+    .contentShape(Rectangle())
+    .background {
+      RoundedRectangle(cornerRadius: 4)
+        .fill(Color.accentColor.opacity(isDropTargeted ? 0.15 : 0))
+    }
+    .dropDestination(for: RepositoryGroupDragItem.self) { items, _ in
+      let droppedIDs = Set(items.map(\.repositoryID)).intersection(repositoryIDs)
+      guard !droppedIDs.isEmpty else { return false }
+      send(.assignAll(droppedIDs, group.id))
+      return true
+    } isTargeted: {
+      isDropTargeted = $0
     }
     .alert("Rename Repository Group", isPresented: $isRenaming) {
       TextField("Group name", text: $name)
@@ -114,5 +132,41 @@ struct RepositoryGroupHeader: View {
         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     .accessibilityElement(children: .contain)
+  }
+}
+
+/// Present on the stable sidebar, since toolbar and context menus disappear
+/// before their actions can present a text-input alert.
+struct RepositoryGroupNamePrompt: ViewModifier {
+  let draft: RepositoryGroupDraft?
+  let send: (RepositoryGroupDraft.Action) -> Void
+
+  func body(content: Content) -> some View {
+    content.alert(
+      "New Repository Group",
+      isPresented: Binding(
+        get: { draft != nil },
+        set: { if !$0 { send(.cancel) } }
+      )
+    ) {
+      TextField(
+        "Group name",
+        text: Binding(
+          get: { draft?.name ?? "" },
+          set: { send(.nameChanged($0)) }
+        ))
+      Button("Cancel", role: .cancel) { send(.cancel) }
+      Button("Create") { send(.confirm) }
+        .disabled(draft?.canSave != true)
+    }
+  }
+}
+
+/// A repository-only drag type keeps worktree reordering and file drops separate.
+nonisolated struct RepositoryGroupDragItem: Codable, Transferable {
+  let repositoryID: String
+
+  static var transferRepresentation: some TransferRepresentation {
+    CodableRepresentation(contentType: UTType(exportedAs: "sh.supacode.repositoryId", conformingTo: .json))
   }
 }

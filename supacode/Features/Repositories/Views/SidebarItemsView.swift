@@ -560,6 +560,7 @@ struct SidebarFolderRow: View {
       moveMode: .alwaysEnabled,
       shortcutHint: shortcutHint
     )
+    .draggable(RepositoryGroupDragItem(repositoryID: repository.id.rawValue))
   }
 }
 
@@ -649,9 +650,15 @@ private struct SidebarItemContextMenu: View {
     overrides: [AppShortcutID: AppShortcutOverride]
   ) -> some View {
     if rowIsFolder, !isBulkSelection {
-      RepositoryGroupAssignmentMenu(repositoryID: repositoryID.rawValue) {
-        store.send(.repositoryGroupsChanged($0))
-      }
+      RepositoryGroupAssignmentMenu(
+        repositoryID: repositoryID.rawValue,
+        requestCreation: {
+          store.send(.repositoryGroupCreation(.request($0)))
+        },
+        send: {
+          store.send(.repositoryGroupsChanged($0))
+        }
+      )
     }
     let archiveShortcut = AppShortcuts.archiveWorktree.effective(from: overrides)
     let deleteShortcut = AppShortcuts.deleteWorktree.effective(from: overrides)

@@ -176,7 +176,7 @@ private struct SettingsSidebarView: View {
               group.repositoryIDs.contains($0.id)
             }, id: \.id
           ) { repository in
-            repositoryRow(repository)
+            repositoryRow(repository, isGrouped: true)
           }
         }
       }
@@ -198,23 +198,36 @@ private struct SettingsSidebarView: View {
     .listStyle(.sidebar)
     .frame(minWidth: 220, maxHeight: .infinity)
     .navigationSplitViewColumnWidth(220)
+    .modifier(
+      RepositoryGroupNamePrompt(draft: settingsStore.repositoryGroupDraft) {
+        settingsStore.send(.repositoryGroupCreation($0))
+      }
+    )
     .toolbar(removing: .sidebarToggle)
     .toolbar {
       ToolbarItem {
-        RepositoryGroupCreateButton { settingsStore.send(.repositoryGroupsChanged($0)) }
+        RepositoryGroupCreateButton { settingsStore.send(.repositoryGroupCreation(.request())) }
       }
     }
   }
 
-  private func repositoryRow(_ repository: SettingsRepositorySummary) -> some View {
+  private func repositoryRow(_ repository: SettingsRepositorySummary, isGrouped: Bool = false) -> some View {
     SettingsRepositoryRow(
       repository: repository, settingsStore: settingsStore,
       expandedRepositories: $expandedRepositories
     )
+    .padding(.leading, isGrouped ? 12 : 0)
+    .draggable(RepositoryGroupDragItem(repositoryID: repository.id))
     .contextMenu {
-      RepositoryGroupAssignmentMenu(repositoryID: repository.id) {
-        settingsStore.send(.repositoryGroupsChanged($0))
-      }
+      RepositoryGroupAssignmentMenu(
+        repositoryID: repository.id,
+        requestCreation: {
+          settingsStore.send(.repositoryGroupCreation(.request($0)))
+        },
+        send: {
+          settingsStore.send(.repositoryGroupsChanged($0))
+        }
+      )
     }
   }
 }

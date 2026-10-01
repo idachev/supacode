@@ -278,6 +278,7 @@ struct SidebarStructure: Equatable, Sendable {
     }
   }
 
+  var groupedRepositoryIDs: Set<Repository.ID> = []
   var sections: [Section]
   /// Union of every hoisted row across the highlight sections. Per-repo
   /// payloads have already filtered against this set; exposed for hotkey
@@ -515,7 +516,8 @@ extension RepositoriesFeature.Action {
     // highlight sections (unread float), so a runtime toggle must recompute.
     // `sidebarSectionSortChanged` re-orders repo/folder sections
     // without rewriting persisted drag order.
-    case .repositoryGroupsChanged, .repositoryGroupsReloaded, .revealSelectedWorktreeInSidebar,
+    case .repositoryGroupCreation(.confirm),
+      .repositoryGroupsChanged, .repositoryGroupsReloaded, .revealSelectedWorktreeInSidebar,
       .sidebarGroupingTogglesChanged, .sidebarNestByBranchChanged,
       .sidebarSectionSortChanged,
       .repositoryExpansionChanged, .branchNestExpansionChanged,
@@ -655,6 +657,9 @@ extension RepositoriesFeature.Action {
       .alert(.presented(.confirmRemoveFailedRepository)),
       .alert(.presented(.viewTerminalTab)),
       .alert(.dismiss):
+      return []
+
+    case .repositoryGroupCreation:
       return []
 
     // Everything else is UI / effects / transient state, no cache touched.
@@ -835,6 +840,7 @@ extension RepositoriesFeature.State {
     )
 
     return SidebarStructure(
+      groupedRepositoryIDs: Set(groupedRepositoryIDs.map(RepositoryID.init)),
       sections: sections,
       hoistedRowIDs: hoists.hoistedSet,
       hotkeySlots: hotkey.slots,
