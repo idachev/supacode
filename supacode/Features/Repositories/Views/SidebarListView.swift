@@ -55,7 +55,20 @@ struct SidebarListView: View {
             store: store,
             terminalManager: terminalManager
           )
+          .itemProvider {
+            guard let id = section.repositoryID else { return nil }
+            return RepositoryGroupDragItem(repositoryID: id.rawValue).itemProvider()
+          }
         }
+        .onMove(
+          perform: sectionSort.allowsReordering
+            ? { offsets, destination in
+              guard let drop = structure.nativeRepositoryDrop(offsets: offsets, destination: destination) else {
+                return
+              }
+              store.send(.repositoryDropped(drop.repositoryIDs, relativeTo: drop.targetID, after: drop.after))
+            } : nil
+        )
       }
       .listStyle(.sidebar)
       .onChange(of: settingsFile.repositoryGroups) { _, _ in
@@ -268,13 +281,7 @@ private struct SidebarGitRepositorySection: View {
         isResolving: isResolvingRemote
       )
       .padding(.leading, groupIndent)
-      .modifier(
-        RepositoryGroupDragSource(
-          repositoryID: repository.id.rawValue,
-          name: Repository.sidebarDisplayName(custom: section?.title, fallback: repository.name)
-        )
-      )
-      .modifier(RepositoryReorderDropTarget(repositoryID: repository.id, store: store))
+      .contentShape(.dragPreview, .rect)
     }
     // Keep repository actions in the header menu. A context menu on the
     // Section overrides the worktree row menus, including Pin / Unpin.
@@ -459,8 +466,7 @@ private struct SidebarFailedRepositorySection: View {
         hostInfo: store.state.repositories[id: repositoryID]?.host?.displayAuthority
       )
       .padding(.leading, groupIndent)
-      .modifier(RepositoryGroupDragSource(repositoryID: repositoryID.rawValue, name: displayName))
-      .modifier(RepositoryReorderDropTarget(repositoryID: repositoryID, store: store))
+      .contentShape(.dragPreview, .rect)
     }
     .sectionActions {
       // No `+`: the repo isn't loadable, so worktree create is meaningless.
@@ -538,8 +544,7 @@ private struct SidebarBlockedRepositorySection: View {
         hostInfo: nil
       )
       .padding(.leading, groupIndent)
-      .modifier(RepositoryGroupDragSource(repositoryID: repositoryID.rawValue, name: displayName))
-      .modifier(RepositoryReorderDropTarget(repositoryID: repositoryID, store: store))
+      .contentShape(.dragPreview, .rect)
     }
   }
 }

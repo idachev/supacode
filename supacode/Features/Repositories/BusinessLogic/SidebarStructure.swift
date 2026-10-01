@@ -300,6 +300,30 @@ struct SidebarStructure: Equatable, Sendable {
   /// into the index space of the sidebar sections.
   var reorderableRepositoryIDs: [Repository.ID]
 
+  struct NativeRepositoryDrop: Equatable {
+    let repositoryIDs: Set<Repository.ID>
+    let targetID: Repository.ID
+    let after: Bool
+  }
+
+  /// Native onMove offsets address this ForEach, unlike transferable insertion
+  /// callbacks inside nested List sections. Resolve the gap to a stable anchor.
+  func nativeRepositoryDrop(offsets: IndexSet, destination: Int) -> NativeRepositoryDrop? {
+    let ids = Set(
+      offsets.compactMap { index in
+        sections.indices.contains(index) ? sections[index].repositoryID : nil
+      })
+    guard !ids.isEmpty, (0...sections.count).contains(destination) else { return nil }
+    if destination < sections.count, let targetID = sections[destination].repositoryID {
+      return NativeRepositoryDrop(repositoryIDs: ids, targetID: targetID, after: false)
+    }
+    if let targetID = sections.prefix(destination).reversed().compactMap(\.repositoryID).first {
+      return NativeRepositoryDrop(repositoryIDs: ids, targetID: targetID, after: true)
+    }
+    guard let targetID = sections.dropFirst(destination).compactMap(\.repositoryID).first else { return nil }
+    return NativeRepositoryDrop(repositoryIDs: ids, targetID: targetID, after: false)
+  }
+
   /// Resolve a drop against an explicit repository, never a section-local List
   /// index. The reducer applies the target membership together with this order.
   func repositoryMove(

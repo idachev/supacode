@@ -118,6 +118,45 @@ struct RepositoryGroupTests {
 
   }
 
+  @Test func nativeRepositoryDragResolvesSectionGapsWithoutLosingTheSource() {
+    let repoA: RepositoryID = "/tmp/a"
+    let repoB: RepositoryID = "/tmp/b"
+    let repoC: RepositoryID = "/tmp/c"
+    let group = RepositoryGroup(name: "Work", repositoryIDs: [repoB.rawValue, repoC.rawValue])
+    var structure = SidebarStructure.empty
+    structure.sections = [
+      .highlight(kind: .pinned, rowIDs: []),
+      .repository(repositoryID: repoA, groups: []),
+      .repositoryGroup(group),
+      .repository(repositoryID: repoB, groups: []),
+      .repository(repositoryID: repoC, groups: []),
+    ]
+    #expect(
+      structure.nativeRepositoryDrop(offsets: [1], destination: 4)
+        == .init(repositoryIDs: [repoA], targetID: repoC, after: false))
+    #expect(
+      structure.nativeRepositoryDrop(offsets: [1], destination: 5)
+        == .init(repositoryIDs: [repoA], targetID: repoC, after: true))
+    #expect(
+      structure.nativeRepositoryDrop(offsets: [4], destination: 2)
+        == .init(repositoryIDs: [repoC], targetID: repoA, after: true))
+    #expect(
+      structure.nativeRepositoryDrop(offsets: [4], destination: 0)
+        == .init(repositoryIDs: [repoC], targetID: repoA, after: false))
+    #expect(structure.nativeRepositoryDrop(offsets: [0, 2], destination: 3) == nil)
+    #expect(structure.nativeRepositoryDrop(offsets: [1], destination: 99) == nil)
+  }
+
+  @Test func nativeRepositoryItemProviderCarriesTheGroupPayload() async throws {
+    let payload = RepositoryGroupDragItem(repositoryID: "/tmp/native-drag")
+    let restored: RepositoryGroupDragItem = try await withCheckedThrowingContinuation { continuation in
+      _ = payload.itemProvider().loadTransferable(type: RepositoryGroupDragItem.self) {
+        continuation.resume(with: $0)
+      }
+    }
+    #expect(restored.repositoryID == payload.repositoryID)
+  }
+
   @Test(arguments: [false, true])
   func repositoryDropUsesTargetIdentityWithInterleavedGroups(after: Bool) {
     let repoA: RepositoryID = "/tmp/repoA"

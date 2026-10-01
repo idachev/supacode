@@ -1,4 +1,3 @@
-import ComposableArchitecture
 import CoreTransferable
 import Sharing
 import SupacodeSettingsShared
@@ -198,12 +197,20 @@ struct RepositoryGroupNamePrompt: ViewModifier {
 nonisolated struct RepositoryGroupDragItem: Codable, Transferable {
   let repositoryID: String
 
+  /// Supply payload data to List's existing drag, without adding a competing
+  /// drag gesture to a Section header.
+  func itemProvider() -> NSItemProvider {
+    let provider = NSItemProvider()
+    provider.register(self)
+    return provider
+  }
+
   static var transferRepresentation: some TransferRepresentation {
     CodableRepresentation(contentType: UTType(exportedAs: "sh.supacode.repositoryId", conformingTo: .json))
   }
 }
 
-/// One source serves repository reordering and drops onto group names.
+/// Settings rows use a standalone drag; the main sidebar uses native List dragging.
 struct RepositoryGroupDragSource: ViewModifier {
   let repositoryID: String
   let name: String
@@ -232,50 +239,5 @@ struct RepositoryGroupDragSource: ViewModifier {
           operationsOutsideApp: .init(allowCopy: false)
         )
       )
-  }
-}
-
-/// Anchor insertion to a repository ID. A List containing nested Sections does
-/// not provide a reliable outer-ForEach index for insertion drops.
-struct RepositoryReorderDropTarget: ViewModifier {
-  let repositoryID: Repository.ID
-  let store: StoreOf<RepositoriesFeature>
-  @Shared(.sidebarSectionSort) private var sectionSort: SidebarSectionSort
-  @State private var height: CGFloat = 0
-  @State private var insertAfter: Bool?
-
-  func body(content: Content) -> some View {
-    content
-      .onGeometryChange(for: CGFloat.self) {
-        $0.size.height
-      } action: {
-        height = $0
-      }
-      .dropDestination(for: RepositoryGroupDragItem.self, isEnabled: sectionSort.allowsReordering) { items, session in
-        store.send(
-          .repositoryDropped(
-            Set(items.map { Repository.ID($0.repositoryID) }),
-            relativeTo: repositoryID,
-            after: session.location.y >= height / 2
-          )
-        )
-      }
-      .dropConfiguration { _ in DropConfiguration(operation: .move) }
-      .onDropSessionUpdated { session in
-        switch session.phase {
-        case .entering, .active:
-          insertAfter = session.location.y >= height / 2
-        default:
-          insertAfter = nil
-        }
-      }
-      .overlay(alignment: insertAfter == true ? .bottom : .top) {
-        if insertAfter != nil {
-          Rectangle()
-            .fill(Color.accentColor)
-            .frame(height: 2)
-            .allowsHitTesting(false)
-        }
-      }
   }
 }

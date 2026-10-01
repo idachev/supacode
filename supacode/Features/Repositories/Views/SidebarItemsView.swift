@@ -539,7 +539,7 @@ private struct SidebarItemBody: View {
   }
 }
 
-/// Folder repos expose repository drag/drop on their sole row. The structure
+/// Folder repos use the outer List’s native drag on their sole row. The structure
 /// pre-resolves the synthetic worktree id and the shortcut hint.
 struct SidebarFolderRow: View {
   let repository: Repository
@@ -559,14 +559,7 @@ struct SidebarFolderRow: View {
       moveMode: .alwaysEnabled,
       shortcutHint: shortcutHint
     )
-    .modifier(
-      RepositoryGroupDragSource(
-        repositoryID: repository.id.rawValue,
-        name: Repository.sidebarDisplayName(
-          custom: store.state.sidebar.sections[repository.id]?.title, fallback: repository.name)
-      )
-    )
-    .modifier(RepositoryReorderDropTarget(repositoryID: repository.id, store: store))
+
   }
 }
 
