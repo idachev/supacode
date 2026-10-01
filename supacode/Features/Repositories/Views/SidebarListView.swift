@@ -292,7 +292,12 @@ private struct SidebarGitRepositorySection: View {
         isResolving: isResolvingRemote
       )
       .padding(.leading, groupIndent)
-      .draggable(RepositoryGroupDragItem(repositoryID: repository.id.rawValue))
+      .modifier(
+        RepositoryGroupDragSource(
+          repositoryID: repository.id.rawValue,
+          name: Repository.sidebarDisplayName(custom: section?.title, fallback: repository.name)
+        )
+      )
     }
     .contextMenu {
       RepositoryGroupAssignmentMenu(
@@ -486,7 +491,7 @@ private struct SidebarFailedRepositorySection: View {
         hostInfo: store.state.repositories[id: repositoryID]?.host?.displayAuthority
       )
       .padding(.leading, groupIndent)
-      .draggable(RepositoryGroupDragItem(repositoryID: repositoryID.rawValue))
+      .modifier(RepositoryGroupDragSource(repositoryID: repositoryID.rawValue, name: displayName))
     }
     .contextMenu {
       RepositoryGroupAssignmentMenu(
@@ -566,7 +571,7 @@ private struct SidebarBlockedRepositorySection: View {
         hostInfo: nil
       )
       .padding(.leading, groupIndent)
-      .draggable(RepositoryGroupDragItem(repositoryID: repositoryID.rawValue))
+      .modifier(RepositoryGroupDragSource(repositoryID: repositoryID.rawValue, name: displayName))
     }
   }
 }

@@ -560,7 +560,13 @@ struct SidebarFolderRow: View {
       moveMode: .alwaysEnabled,
       shortcutHint: shortcutHint
     )
-    .draggable(RepositoryGroupDragItem(repositoryID: repository.id.rawValue))
+    .modifier(
+      RepositoryGroupDragSource(
+        repositoryID: repository.id.rawValue,
+        name: Repository.sidebarDisplayName(
+          custom: store.state.sidebar.sections[repository.id]?.title, fallback: repository.name)
+      )
+    )
   }
 }
 

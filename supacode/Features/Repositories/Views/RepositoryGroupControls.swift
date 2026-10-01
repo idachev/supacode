@@ -60,6 +60,9 @@ struct RepositoryGroupHeader: View {
   @State private var isRenaming = false
   @State private var name = ""
   @State private var isDropTargeted = false
+  @State private var isHovering = false
+  @State private var isConfirmingRemoval = false
+  @State private var isConfirmingMoveAll = false
 
   private var isCollapsed: Bool {
     surface == .sidebar ? group.sidebarCollapsed : group.settingsCollapsed
@@ -95,24 +98,28 @@ struct RepositoryGroupHeader: View {
         }
         .help("Change the group name")
         Button("Move All Repositories Here", systemImage: "folder.badge.plus") {
-          send(.assignAll(repositoryIDs, group.id))
+          isConfirmingMoveAll = true
         }
         .help("Put all added repositories in this group")
         Button("Delete Group", systemImage: "trash", role: .destructive) {
-          send(.remove(group.id))
+          isConfirmingRemoval = true
         }
         .help("Delete the group and keep its repositories")
       } label: {
         Image(systemName: "ellipsis")
           .accessibilityLabel("Group options")
-          .foregroundStyle(Color.primary)
+          .frame(maxHeight: .infinity)
+          .contentShape(Rectangle())
       }
-      .menuStyle(.borderlessButton)
+      .menuStyle(.secondaryToolbar)
       .fixedSize()
       .help("Manage \(group.name)")
+      .opacity(isHovering ? 1 : 0)
+      .allowsHitTesting(isHovering)
     }
     .foregroundStyle(Color.primary)
     .contentShape(Rectangle())
+    .onHover { isHovering = $0 }
     .background {
       RoundedRectangle(cornerRadius: 4)
         .fill(Color.accentColor.opacity(isDropTargeted ? 0.15 : 0))
@@ -130,6 +137,18 @@ struct RepositoryGroupHeader: View {
       Button("Cancel", role: .cancel) {}
       Button("Save") { send(.rename(group.id, name)) }
         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+    .alert("Delete Repository Group?", isPresented: $isConfirmingRemoval) {
+      Button("Cancel", role: .cancel) {}
+      Button("Delete Group", role: .destructive) { send(.remove(group.id)) }
+    } message: {
+      Text("Delete “\(group.name)”? Its repositories will become ungrouped. Files on disk are untouched.")
+    }
+    .alert("Move All Repositories?", isPresented: $isConfirmingMoveAll) {
+      Button("Cancel", role: .cancel) {}
+      Button("Move All Repositories") { send(.assignAll(repositoryIDs, group.id)) }
+    } message: {
+      Text("Move all added repositories to “\(group.name)”? Repositories in other groups will leave those groups.")
     }
     .accessibilityElement(children: .contain)
   }
@@ -168,5 +187,23 @@ nonisolated struct RepositoryGroupDragItem: Codable, Transferable {
 
   static var transferRepresentation: some TransferRepresentation {
     CodableRepresentation(contentType: UTType(exportedAs: "sh.supacode.repositoryId", conformingTo: .json))
+  }
+}
+
+/// Explicit previews stay visible when a drag starts from a List section header.
+struct RepositoryGroupDragSource: ViewModifier {
+  let repositoryID: String
+  let name: String
+
+  func body(content: Content) -> some View {
+    content
+      .contentShape(.dragPreview, .rect)
+      .draggable(RepositoryGroupDragItem(repositoryID: repositoryID)) {
+        Label(name, systemImage: "folder")
+          .appFont(.body)
+          .foregroundStyle(.primary)
+          .padding(8)
+          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+      }
   }
 }
