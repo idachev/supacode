@@ -288,17 +288,8 @@ private struct SidebarGitRepositorySection: View {
         )
       )
     }
-    .contextMenu {
-      RepositoryGroupAssignmentMenu(
-        repositoryID: repository.id.rawValue,
-        requestCreation: {
-          store.send(.repositoryGroupCreation(.request($0)))
-        },
-        send: {
-          store.send(.repositoryGroupsChanged($0))
-        }
-      )
-    }
+    // Keep repository actions in the header menu. A context menu on the
+    // Section overrides the worktree row menus, including Pin / Unpin.
     .sectionActions {
       SidebarSectionActionsView(
         repositoryID: repository.id,
@@ -482,20 +473,18 @@ private struct SidebarFailedRepositorySection: View {
       .padding(.leading, groupIndent)
       .modifier(RepositoryGroupDragSource(repositoryID: repositoryID.rawValue, name: displayName))
     }
-    .contextMenu {
-      RepositoryGroupAssignmentMenu(
-        repositoryID: repositoryID.rawValue,
-        requestCreation: {
-          store.send(.repositoryGroupCreation(.request($0)))
-        },
-        send: {
-          store.send(.repositoryGroupsChanged($0))
-        }
-      )
-    }
     .sectionActions {
       // No `+`: the repo isn't loadable, so worktree create is meaningless.
       Menu {
+        RepositoryGroupAssignmentMenu(
+          repositoryID: repositoryID.rawValue,
+          requestCreation: {
+            store.send(.repositoryGroupCreation(.request($0)))
+          },
+          send: {
+            store.send(.repositoryGroupsChanged($0))
+          }
+        )
         if isRemote {
           Button("Edit Connection…", systemImage: "wifi") {
             store.send(.requestEditRemoteRepository(repositoryID))
