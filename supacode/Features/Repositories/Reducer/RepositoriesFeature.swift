@@ -187,6 +187,9 @@ struct RepositoriesFeature {
     /// Global fallback applied when a repository has no `mergedWorktreeAction` override.
     var mergedWorktreeAction: MergedWorktreeAction = .ignore
     var moveNotifiedWorktreeToTop = false
+    /// Pins a worktree automatically when its last coding agent leaves, so it
+    /// stays at the top of the sidebar for review instead of dropping out of Active.
+    var pinWorktreeWhenAgentSessionEnds = true
     /// Installed editors in menu order, mirrored down from `AppFeature` so the
     /// sidebar context menu never probes LaunchServices while building.
     var installedOpenActions: [OpenWorktreeAction] = []
@@ -588,6 +591,7 @@ struct RepositoriesFeature {
     case setAutoDeleteArchivedWorktreesAfterDays(AutoDeletePeriod?)
     case autoDeleteExpiredArchivedWorktrees
     case setMoveNotifiedWorktreeToTop(Bool)
+    case setPinWorktreeWhenAgentSessionEnds(Bool)
     case pullRequestAction(Worktree.ID, PullRequestAction)
     /// Open the selected worktree's PR, re-fetching first when none is known.
     case openSelectedWorktreePullRequest
@@ -3250,6 +3254,10 @@ struct RepositoriesFeature {
         state.moveNotifiedWorktreeToTop = isEnabled
         return .none
 
+      case .setPinWorktreeWhenAgentSessionEnds(let isEnabled):
+        state.pinWorktreeWhenAgentSessionEnds = isEnabled
+        return .none
+
       case .setInstalledOpenActions(let installed):
         guard state.installedOpenActions != installed else { return .none }
         state.installedOpenActions = installed
@@ -3594,6 +3602,15 @@ struct RepositoriesFeature {
   var body: some Reducer<State, Action> {
     Scope(state: \.fileExplorer, action: \.fileExplorer) {
       FileExplorerFeature()
+    }
+    // Auto-pin when the last agent leaves. A standalone `Reduce` ahead of the main one
+    // because `.forEach` runs the row reducer before its parent `Reduce`; only here does
+    // the row still hold the previous snapshot to compare against.
+    Reduce { state, action in
+      guard case .sidebarItems(.element(let id, .agentSnapshotChanged(let snapshot))) = action,
+        state.shouldAutoPinWhenAgentSessionEnds(id, newSnapshot: snapshot)
+      else { return .none }
+      return .send(.pinWorktree(id))
     }
     Reduce { state, action in
       switch action {
@@ -4643,7 +4660,8 @@ struct RepositoriesFeature {
         .forgeIntegrationDisabled, .pullRequestAction, .setGithubIntegrationEnabled, .setMergedWorktreeAction,
         .openSelectedWorktreePullRequest, .pullRequestOpenFetchLoaded, .pullRequestOpenFetchFailed,
         .setAutoDeleteArchivedWorktreesAfterDays, .autoDeleteExpiredArchivedWorktrees, .setMoveNotifiedWorktreeToTop,
-        .setInstalledOpenActions, .openActionSettingsChanged, .resolveOpenActions, .openActionsResolved:
+        .setPinWorktreeWhenAgentSessionEnds, .setInstalledOpenActions, .openActionSettingsChanged,
+        .resolveOpenActions, .openActionsResolved:
         // Real handling lives in `githubIntegrationReducer` (combined below) to keep `body`
         // under the type-checker's complexity limit.
         return .none
@@ -6140,6 +6158,29 @@ extension RepositoriesFeature.State {
     ordered.append(contentsOf: orderedPinnedWorktrees(in: repository))
     ordered.append(contentsOf: orderedUnpinnedWorktrees(in: repository))
     return ordered
+  }
+
+  /// True when the row's last coding agent just left (agents non-empty to empty)
+  /// and the row is eligible for an automatic pin. busy to idle alone keeps the
+  /// agent list, so it never pins.
+  func shouldAutoPinWhenAgentSessionEnds(
+    _ id: SidebarItemID,
+    newSnapshot: AgentPresenceFeature.RowSnapshot
+  ) -> Bool {
+    guard pinWorktreeWhenAgentSessionEnds, newSnapshot.agents.isEmpty,
+      let row = sidebarItems[id: id], !row.agents.isEmpty
+    else { return false }
+    // With badges off every snapshot carries an empty agent list, so flipping the
+    // badge toggle off would look like every agent leaving at once.
+    @Shared(.settingsFile) var settingsFile: SettingsFile
+    guard settingsFile.global.agentPresenceBadgesEnabled else { return false }
+    guard !row.isPinned, row.lifecycle == .idle,
+      removingRepositoryIDs[row.repositoryID] == nil,
+      !pendingWorktrees.contains(where: { $0.id == id }),
+      !isWorktreeArchived(id),
+      let worktree = worktree(for: id)
+    else { return false }
+    return !isWorktreePinned(worktree)
   }
 
   func isWorktreePinned(_ worktree: Worktree) -> Bool {

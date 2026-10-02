@@ -57,6 +57,7 @@ public struct SettingsFeature {
     public var systemNotificationsEnabled: Bool
     public var muteNotificationsForActiveSurface: Bool
     public var moveNotifiedWorktreeToTop: Bool
+    public var pinWorktreeWhenAgentSessionEnds: Bool
     public var notificationRetentionLimit: NotificationRetentionLimit
     public var analyticsEnabled: Bool
     public var crashReportsEnabled: Bool
@@ -195,6 +196,7 @@ public struct SettingsFeature {
       systemNotificationsEnabled = settings.systemNotificationsEnabled
       muteNotificationsForActiveSurface = settings.muteNotificationsForActiveSurface
       moveNotifiedWorktreeToTop = settings.moveNotifiedWorktreeToTop
+      pinWorktreeWhenAgentSessionEnds = settings.pinWorktreeWhenAgentSessionEnds
       notificationRetentionLimit = settings.notificationRetentionLimit
       analyticsEnabled = settings.analyticsEnabled
       crashReportsEnabled = settings.crashReportsEnabled
@@ -387,6 +389,7 @@ public struct SettingsFeature {
         state.systemNotificationsEnabled = normalizedSettings.systemNotificationsEnabled
         state.muteNotificationsForActiveSurface = normalizedSettings.muteNotificationsForActiveSurface
         state.moveNotifiedWorktreeToTop = normalizedSettings.moveNotifiedWorktreeToTop
+        state.pinWorktreeWhenAgentSessionEnds = normalizedSettings.pinWorktreeWhenAgentSessionEnds
         state.notificationRetentionLimit = normalizedSettings.notificationRetentionLimit
         state.analyticsEnabled = normalizedSettings.analyticsEnabled
         state.crashReportsEnabled = normalizedSettings.crashReportsEnabled
@@ -1192,6 +1195,7 @@ extension SettingsFeature.State {
     settings.systemNotificationsEnabled = systemNotificationsEnabled
     settings.muteNotificationsForActiveSurface = muteNotificationsForActiveSurface
     settings.moveNotifiedWorktreeToTop = moveNotifiedWorktreeToTop
+    settings.pinWorktreeWhenAgentSessionEnds = pinWorktreeWhenAgentSessionEnds
     settings.notificationRetentionLimit = notificationRetentionLimit
     settings.analyticsEnabled = analyticsEnabled
     settings.crashReportsEnabled = crashReportsEnabled

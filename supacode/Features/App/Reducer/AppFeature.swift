@@ -793,6 +793,9 @@ struct AppFeature {
           .merge(forgeTeardownEffects),
           .send(.repositories(.setMergedWorktreeAction(settings.mergedWorktreeAction))),
           .send(.repositories(.setMoveNotifiedWorktreeToTop(settings.moveNotifiedWorktreeToTop))),
+          .send(
+            .repositories(.setPinWorktreeWhenAgentSessionEnds(settings.pinWorktreeWhenAgentSessionEnds))
+          ),
           // The global default editor feeds every repo's resolved open action, and the
           // selected worktree's own open action resolves against it too.
           .send(.repositories(.openActionSettingsChanged)),

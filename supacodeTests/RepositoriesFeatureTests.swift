@@ -12455,3 +12455,163 @@ struct RepositoriesFeatureTests {
     }
   }
 }
+
+// MARK: - Auto-pin when the last agent leaves.
+
+extension RepositoriesFeatureTests {
+  private struct AutoPinFixture {
+    let repository: Repository
+    let worktree: Worktree
+    let agent: AgentPresenceFeature.AgentInstance
+  }
+
+  private func makeAutoPinFixture() -> AutoPinFixture {
+    let root = "/tmp/auto-pin-\(UUID().uuidString)"
+    let main = makeWorktree(id: root, name: "main", repoRoot: root)
+    let feature = makeWorktree(id: "\(root)/feature", name: "feature", repoRoot: root)
+    return AutoPinFixture(
+      repository: makeRepository(id: root, worktrees: [main, feature]),
+      worktree: feature,
+      agent: AgentPresenceFeature.AgentInstance(agent: .claude, activity: .idle)
+    )
+  }
+
+  private func makeAutoPinStore(
+    _ fixture: AutoPinFixture,
+    initialAgents: [AgentPresenceFeature.AgentInstance],
+    badgesEnabled: Bool = true,
+    analyticsEvents: LockIsolated<[String]> = LockIsolated([]),
+    configure: (inout RepositoriesFeature.State) -> Void = { _ in }
+  ) -> TestStoreOf<RepositoriesFeature> {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global.agentPresenceBadgesEnabled = badgesEnabled }
+    var state = makeState(repositories: [fixture.repository])
+    RepositoriesFeature.syncSidebar(&state)
+    #expect(state.sidebarItems[id: fixture.worktree.id] != nil)
+    state.sidebarItems[id: fixture.worktree.id]?.agentSnapshot.agents = initialAgents
+    configure(&state)
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.analyticsClient.capture = { event, _ in analyticsEvents.withValue { $0.append(event) } }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    return store
+  }
+
+  @Test(.dependencies) func lastAgentLeavingPinsUnpinnedWorktree() async {
+    let fixture = makeAutoPinFixture()
+    let captured = LockIsolated<[String]>([])
+    let store = makeAutoPinStore(fixture, initialAgents: [fixture.agent], analyticsEvents: captured)
+    #expect(!store.state.isWorktreePinned(fixture.worktree))
+
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init()))))
+    await store.receive(\.pinWorktree, fixture.worktree.id)
+    await store.finish()
+    // The pin goes through the shared `pinWorktree` path (its analytics fire once).
+    #expect(captured.value.filter { $0 == "worktree_pinned" }.count == 1)
+    #expect(store.state.isWorktreePinned(fixture.worktree))
+    #expect(store.state.orderedHighlightPinnedIDs() == [fixture.worktree.id])
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.agents.isEmpty == true)
+  }
+
+  @Test(.dependencies) func lastAgentLeavingDoesNotPinWhenSettingIsOff() async {
+    let fixture = makeAutoPinFixture()
+    let store = makeAutoPinStore(fixture, initialAgents: [fixture.agent])
+
+    await store.send(.setPinWorktreeWhenAgentSessionEnds(false)) {
+      $0.pinWorktreeWhenAgentSessionEnds = false
+    }
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init()))))
+    await store.finish()
+    #expect(!store.state.isWorktreePinned(fixture.worktree))
+  }
+
+  @Test(.dependencies) func lastAgentLeavingDoesNotRepinAlreadyPinnedWorktree() async {
+    let fixture = makeAutoPinFixture()
+    let captured = LockIsolated<[String]>([])
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global.agentPresenceBadgesEnabled = true }
+    var state = makeState(repositories: [fixture.repository])
+    state.$sidebar.withLock { $0.pin(worktree: fixture.worktree.id, in: fixture.repository.id) }
+    RepositoriesFeature.syncSidebar(&state)
+    state.sidebarItems[id: fixture.worktree.id]?.agentSnapshot.agents = [fixture.agent]
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.analyticsClient.capture = { event, _ in captured.withValue { $0.append(event) } }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    #expect(store.state.isWorktreePinned(fixture.worktree))
+
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init()))))
+    await store.finish()
+    #expect(store.state.isWorktreePinned(fixture.worktree))
+    #expect(!captured.value.contains("worktree_pinned"))
+  }
+
+  @Test(.dependencies) func lastAgentLeavingDoesNotPinArchivedWorktree() async {
+    let fixture = makeAutoPinFixture()
+    let store = makeAutoPinStore(fixture, initialAgents: [fixture.agent]) { state in
+      state.$sidebar.withLock {
+        $0.archive(
+          worktree: fixture.worktree.id, in: fixture.repository.id, from: .unpinned,
+          at: Date(timeIntervalSince1970: 0)
+        )
+      }
+    }
+    #expect(store.state.isWorktreeArchived(fixture.worktree.id))
+
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init()))))
+    await store.finish()
+    #expect(!store.state.isWorktreePinned(fixture.worktree))
+    #expect(store.state.isWorktreeArchived(fixture.worktree.id))
+  }
+
+  @Test(.dependencies) func lastAgentLeavingDoesNotPinTerminatingWorktree() async {
+    let fixture = makeAutoPinFixture()
+    let store = makeAutoPinStore(fixture, initialAgents: [fixture.agent]) { state in
+      state.sidebarItems[id: fixture.worktree.id]?.lifecycle = .archiving
+    }
+
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init()))))
+    await store.finish()
+    #expect(!store.state.isWorktreePinned(fixture.worktree))
+  }
+
+  @Test(.dependencies) func busyToIdleWithAgentStillPresentDoesNotPin() async {
+    let fixture = makeAutoPinFixture()
+    let busy = AgentPresenceFeature.AgentInstance(agent: .claude, activity: .busy)
+    let store = makeAutoPinStore(fixture, initialAgents: [busy]) { state in
+      state.sidebarItems[id: fixture.worktree.id]?.agentSnapshot.isWorking = true
+    }
+
+    await store.send(
+      .sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init(agents: [fixture.agent]))))
+    )
+    await store.finish()
+    #expect(!store.state.isWorktreePinned(fixture.worktree))
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.agents == [fixture.agent])
+  }
+
+  @Test(.dependencies) func emptyToEmptySnapshotDoesNotPin() async {
+    let fixture = makeAutoPinFixture()
+    let store = makeAutoPinStore(fixture, initialAgents: [])
+
+    await store.send(
+      .sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init(isWorking: true))))
+    )
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init()))))
+    await store.finish()
+    #expect(!store.state.isWorktreePinned(fixture.worktree))
+  }
+
+  @Test(.dependencies) func agentListDrainedByBadgesOffDoesNotPin() async {
+    let fixture = makeAutoPinFixture()
+    let store = makeAutoPinStore(fixture, initialAgents: [fixture.agent], badgesEnabled: false)
+
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(.init()))))
+    await store.finish()
+    #expect(!store.state.isWorktreePinned(fixture.worktree))
+  }
+}

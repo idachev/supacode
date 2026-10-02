@@ -431,6 +431,8 @@ struct SettingsFilePersistenceTests {
     #expect(settings.global.systemNotificationsEnabled == false)
     // Missing key (pre-feature file) decodes to the default, now false.
     #expect(settings.global.moveNotifiedWorktreeToTop == false)
+    // Missing key (pre-feature file) decodes to the default, on.
+    #expect(settings.global.pinWorktreeWhenAgentSessionEnds == true)
     #expect(settings.global.analyticsEnabled == true)
     #expect(settings.global.crashReportsEnabled == true)
     #expect(settings.global.githubIntegrationEnabled == true)
@@ -443,6 +445,24 @@ struct SettingsFilePersistenceTests {
     #expect(settings.pinnedWorktreeIDs.isEmpty)
     // Pre-existing files must not flip the toggle on upgrade.
     #expect(settings.global.terminalThemeSyncEnabled == false)
+  }
+
+  @Test func pinWorktreeWhenAgentSessionEndsDefaultsOnWhenKeyIsMissing() throws {
+    #expect(GlobalSettings.default.pinWorktreeWhenAgentSessionEnds == true)
+    var object =
+      try JSONSerialization.jsonObject(with: JSONEncoder().encode(GlobalSettings.default)) as? [String: Any] ?? [:]
+    #expect(object["pinWorktreeWhenAgentSessionEnds"] as? Bool == true)
+    object.removeValue(forKey: "pinWorktreeWhenAgentSessionEnds")
+    let decoded = try JSONDecoder().decode(GlobalSettings.self, from: JSONSerialization.data(withJSONObject: object))
+    #expect(decoded.pinWorktreeWhenAgentSessionEnds == true)
+  }
+
+  @Test func pinWorktreeWhenAgentSessionEndsRoundTrips() throws {
+    var settings = GlobalSettings.default
+    settings.pinWorktreeWhenAgentSessionEnds = false
+    let decoded = try JSONDecoder().decode(GlobalSettings.self, from: JSONEncoder().encode(settings))
+    #expect(decoded.pinWorktreeWhenAgentSessionEnds == false)
+    #expect(decoded == settings)
   }
 
   @Test func freshInstallDefaultsTerminalThemeSyncEnabledToTrue() {

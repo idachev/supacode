@@ -64,6 +64,12 @@ public struct NotificationsSettingsView: View {
           Text("Prioritize unread in Active and Pinned sections")
           Text("Worktrees with unread notifications will be shown first.")
         }
+        Toggle(
+          isOn: $store.pinWorktreeWhenAgentSessionEnds
+        ) {
+          Text("Pin worktree when its agent session ends")
+          Text("When the last coding agent leaves a worktree, pin it so it stays at the top for review.")
+        }
       }
     }
     .formStyle(.grouped)

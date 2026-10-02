@@ -118,6 +118,8 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   public var systemNotificationsEnabled: Bool
   public var muteNotificationsForActiveSurface: Bool
   public var moveNotifiedWorktreeToTop: Bool
+  /// Whether a worktree is pinned automatically when its last coding agent leaves.
+  public var pinWorktreeWhenAgentSessionEnds: Bool
   public var notificationRetentionLimit: NotificationRetentionLimit
   public var notificationScope: NotificationScope
   /// Whether the notification inspector groups its list into worktree sections.
@@ -194,6 +196,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     systemNotificationsEnabled: false,
     muteNotificationsForActiveSurface: true,
     moveNotifiedWorktreeToTop: false,
+    pinWorktreeWhenAgentSessionEnds: true,
     notificationRetentionLimit: .defaultValue,
     notificationScope: .defaultValue,
     notificationsGroupedByWorktree: false,
@@ -239,6 +242,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     systemNotificationsEnabled: Bool = false,
     muteNotificationsForActiveSurface: Bool = true,
     moveNotifiedWorktreeToTop: Bool,
+    pinWorktreeWhenAgentSessionEnds: Bool = true,
     notificationRetentionLimit: NotificationRetentionLimit = .defaultValue,
     notificationScope: NotificationScope = .defaultValue,
     notificationsGroupedByWorktree: Bool = false,
@@ -286,6 +290,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.systemNotificationsEnabled = systemNotificationsEnabled
     self.muteNotificationsForActiveSurface = muteNotificationsForActiveSurface
     self.moveNotifiedWorktreeToTop = moveNotifiedWorktreeToTop
+    self.pinWorktreeWhenAgentSessionEnds = pinWorktreeWhenAgentSessionEnds
     self.notificationRetentionLimit = notificationRetentionLimit
     self.notificationScope = notificationScope
     self.notificationsGroupedByWorktree = notificationsGroupedByWorktree
@@ -370,6 +375,9 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     moveNotifiedWorktreeToTop =
       try container.decodeIfPresent(Bool.self, forKey: .moveNotifiedWorktreeToTop)
       ?? Self.default.moveNotifiedWorktreeToTop
+    pinWorktreeWhenAgentSessionEnds =
+      try container.decodeIfPresent(Bool.self, forKey: .pinWorktreeWhenAgentSessionEnds)
+      ?? Self.default.pinWorktreeWhenAgentSessionEnds
     // Reject unrecognized values from corrupted or hand-edited settings files.
     notificationRetentionLimit =
       (try container.decodeIfPresent(Int.self, forKey: .notificationRetentionLimit))

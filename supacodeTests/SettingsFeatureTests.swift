@@ -130,6 +130,22 @@ struct SettingsFeatureTests {
     #expect(settingsFile.global.terminalHibernationEnabled == false)
   }
 
+  @Test(.dependencies) func togglingPinWorktreeWhenAgentSessionEndsPersistsChanges() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global = .default }
+    #expect(SettingsFeature.State().pinWorktreeWhenAgentSessionEnds == true)
+
+    let store = TestStore(initialState: SettingsFeature.State()) {
+      SettingsFeature()
+    }
+
+    await store.send(.binding(.set(\.pinWorktreeWhenAgentSessionEnds, false))) {
+      $0.pinWorktreeWhenAgentSessionEnds = false
+    }
+    await store.receive(\.delegate.settingsChanged)
+    #expect(settingsFile.global.pinWorktreeWhenAgentSessionEnds == false)
+  }
+
   @Test(.dependencies) func chromeTextSizePersistsChanges() async {
     @Shared(.settingsFile) var settingsFile
     $settingsFile.withLock { $0.global = .default }

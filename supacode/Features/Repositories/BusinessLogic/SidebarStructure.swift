@@ -695,6 +695,7 @@ extension RepositoriesFeature.Action {
       .setGithubIntegrationEnabled,
       .setMergedWorktreeAction,
       .setAutoDeleteArchivedWorktreesAfterDays,
+      .setPinWorktreeWhenAgentSessionEnds,
       .pullRequestAction,
       .openSelectedWorktreePullRequest, .pullRequestOpenFetchFailed,
       .showToast, .dismissToast,
