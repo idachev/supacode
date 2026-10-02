@@ -16,7 +16,7 @@ if git -C "${SRCROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     sha="${sha}-dirty"
   fi
 fi
-when="$(date '+%Y-%m-%d %H:%M')"
+when="$(date '+%Y-%m-%d %H:%M:%S')"
 
 write_key() {
   local key="$1"
