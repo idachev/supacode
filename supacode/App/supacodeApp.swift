@@ -691,6 +691,12 @@ struct SupacodeApp: App {
         .appKeyboardShortcut(AppShortcuts.commandPalette.effective(from: store.settings.shortcutOverrides))
         .help("Command Palette")
       }
+      CommandGroup(replacing: .appInfo) {
+        Button("About Supacode") {
+          AppBuildStamp.showAboutPanel()
+        }
+        .help("About Supacode")
+      }
       UpdateCommands(store: store.scope(state: \.updates, action: \.updates))
       CommandGroup(replacing: .singleWindowList) {
         Button("Supacode") {

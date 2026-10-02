@@ -9,6 +9,7 @@ let zmxBuildScriptPath: Path = "scripts/build-zmx.sh"
 let zmxBinaryPath: Path = ".build/zmx/bin/zmx"
 let embedGhosttyResourcesScriptPath: Path = "scripts/embed-ghostty-resources.sh"
 let embedRuntimeAssetsScriptPath: Path = "scripts/embed-runtime-assets.sh"
+let stampBuildInfoScriptPath: Path = "scripts/stamp-build-info.sh"
 
 func shellScript(_ path: Path) -> String {
   "\"${SRCROOT}/\(path.pathString)\""
@@ -301,6 +302,11 @@ let project = Project(
           name: "Embed Runtime Assets",
           inputPaths: embedRuntimeAssetsInputPaths,
           outputPaths: embedRuntimeAssetsOutputPaths,
+          basedOnDependencyAnalysis: false
+        ),
+        .post(
+          script: shellScript(stampBuildInfoScriptPath),
+          name: "Stamp build info",
           basedOnDependencyAnalysis: false
         ),
       ],
