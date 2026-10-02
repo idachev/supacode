@@ -75,6 +75,24 @@ struct AppShortcutsTests {
     #expect(AppShortcuts.worktreeSwitcher.effective(from: overrides) == nil)
   }
 
+  @Test func newTerminalTabMatchesThePhysicalTKey() {
+    // The helper's characters are "p". The match is the US key code, so a Cyrillic
+    // "t" key still opens a tab.
+    let event = Self.keyEvent(keyCode: kVK_ANSI_T, modifiers: .command)
+    #expect(AppShortcuts.newTerminalTab.matches(event))
+    #expect(AppShortcuts.newTerminalTab.ghosttyUnbindConfigLine == "keybind = super+t=unbind")
+    let lines = AppShortcuts.ghosttyKeybindConfigLines(from: [:])
+    #expect(lines.contains("keybind = super+t=unbind"))
+    #expect(lines.contains("keybind = super+key_t=unbind"))
+  }
+
+  @Test func printableShortcutsUnbindThePhysicalGhosttyTrigger() {
+    let lines = AppShortcuts.ghosttyKeybindConfigLines(from: [:])
+    #expect(lines.contains("keybind = super+comma=unbind"))
+    #expect(lines.contains("keybind = super+bracket_left=unbind"))
+    #expect(lines.contains("keybind = super+digit_1=unbind"))
+  }
+
   @Test func matchesResolvesSpecialKeyShortcutsThroughTheFixedTable() {
     // Shortcuts built from a bare key equivalent (⌘⌫, ⌘⏎, ...) carry no key
     // code; the fixed special-key table supplies it so pane windows can match
@@ -171,6 +189,7 @@ struct AppShortcutsTests {
     let lines = AppShortcuts.ghosttyKeybindConfigLines(from: [.selectWorktree(6): .disabled])
     // No unbind remains, so a user-configured ⌃6 terminal binding keeps working.
     #expect(lines.contains { $0.hasPrefix("keybind = ctrl+6=") } == false)
+    #expect(lines.contains { $0.hasPrefix("keybind = ctrl+digit_6=") } == false)
     #expect(lines.contains { $0 == AppShortcuts.selectWorktree6.ghosttyUnbindConfigLine } == false)
   }
 
@@ -263,8 +282,12 @@ struct AppShortcutsTests {
 
   @Test func effectiveIgnoresOverridesForNonCustomizableShortcut() {
     let rebound = AppShortcutOverride(keyCode: UInt16(kVK_ANSI_K), modifiers: [.command])
-    #expect(AppShortcuts.closeTab.effective(from: [.closeTab: rebound])?.display == "⌘W")
-    #expect(AppShortcuts.closeTab.effective(from: [.closeTab: .disabled])?.display == "⌘W")
+    // The legend follows the live layout, so this pins the chord by the physical W key.
+    let close = AppShortcuts.closeTab
+    #expect(close.effective(from: [.closeTab: rebound])?.display == close.display)
+    #expect(close.effective(from: [.closeTab: .disabled])?.display == close.display)
+    #expect(close.matches(Self.keyEvent(keyCode: kVK_ANSI_W, modifiers: .command)))
+    #expect(close.matches(Self.keyEvent(keyCode: kVK_ANSI_K, modifiers: .command)) == false)
   }
 
   // MARK: - Effective shortcut resolution.
@@ -280,7 +303,8 @@ struct AppShortcutsTests {
       modifiers: [.command, .shift]
     )
     let result = AppShortcuts.newWorktree.effective(from: [.newWorktree: override])
-    #expect(result?.display == "⌘⇧R")
+    // Same physical key the override recorded. The glyph is the live layout's cap.
+    #expect(result?.display == override.displayString)
   }
 
   @Test func ghosttyKeybindConfigLinesWithOverrides() {

@@ -245,9 +245,9 @@ public struct AppShortcut: Identifiable {
   public let keyEquivalent: KeyEquivalent
   public let modifiers: EventModifiers
   private let keyCode: UInt16?
-  // True when the key code came from a rebind, where it is the physical key the user
-  // actually pressed. The defaults instead derive theirs from a character, so theirs is
-  // only ever as good as the layout that was active when the shortcut was built.
+  // True when the key code came from a rebind. A rebind's code is the physical key the
+  // user pressed, including keypad and special keys. A default letter stores the US
+  // QWERTY code for that character, so Cyrillic and Latin share one physical key.
   private let keyCodeIsExplicit: Bool
   private let ghosttyKeyName: String
   // Whether the binding is active with no user override; `false` ships the
@@ -270,7 +270,9 @@ public struct AppShortcut: Identifiable {
     self.isEnabledByDefault = isEnabledByDefault
     self.isCustomizable = isCustomizable
     self.keyCodeIsExplicit = false
-    let code = AppShortcutOverride.keyCode(forDisplayedKeyEquivalent: key) ?? AppShortcutOverride.keyCode(for: key)
+    // US physical key first. The live layout is only a fallback for a character with no
+    // US key, so a Cyrillic input source still matches the same key as Ghostty `key_*`.
+    let code = AppShortcutOverride.keyCode(for: key) ?? AppShortcutOverride.keyCode(forDisplayedKeyEquivalent: key)
     self.keyCode = code
     if let code {
       self.ghosttyKeyName = AppShortcutOverride.resolvedGhosttyKeyName(for: code)
@@ -316,6 +318,19 @@ public struct AppShortcut: Identifiable {
     return "keybind = \(ghosttyKeybind)=unbind"
   }
 
+  // Unicode US name plus the physical Ghostty trigger (`key_t`, `digit_1`, …) when
+  // they differ. Unbinding only one leaves the other bound, so the chord still
+  // dies inside the terminal on the other layout.
+  public var ghosttyUnbindConfigLines: [String] {
+    guard let primary = ghosttyUnbindConfigLine else { return [] }
+    guard let keyCode,
+      let physical = AppShortcutOverride.physicalGhosttyKeyName(for: keyCode),
+      physical != ghosttyKeyName
+    else { return [primary] }
+    let bind = (ghosttyModifierParts + [physical]).joined(separator: "+")
+    return [primary, "keybind = \(bind)=unbind"]
+  }
+
   // Layout-aware display string.
   public var display: String {
     displaySymbols.joined()
@@ -349,15 +364,13 @@ public struct AppShortcut: Identifiable {
 
   // A rebind recorded the physical key, so its code is authoritative: reverse-resolving it
   // from the character would snap a keypad or special key back onto the main-row key that
-  // prints the same thing. A default only carries a character, so its code has to track
-  // the live layout, or an input source switch would strand it on the wrong physical key.
-  // Special-key defaults resolve through the fixed key-code table.
+  // prints the same thing. Letter defaults store the US physical code and must not be
+  // re-scanned against the live layout, or Bulgarian phonetic leaves the chord unmatched.
+  // Special-key defaults have no stored code and resolve through the fixed table.
   private var resolvedKeyCode: UInt16? {
-    guard !keyCodeIsExplicit else { return keyCode }
-    if let resolved = AppShortcutOverride.keyCode(forDisplayedKeyEquivalent: keyEquivalent.character) {
-      return resolved
-    }
-    return keyCode ?? AppShortcutOverride.specialKeyCode(for: keyEquivalent)
+    if keyCodeIsExplicit { return keyCode }
+    if let keyCode { return keyCode }
+    return AppShortcutOverride.specialKeyCode(for: keyEquivalent)
   }
 
   private static func rawModifierFlags(of event: NSEvent) -> AppShortcutOverride.ModifierFlags {
@@ -698,13 +711,13 @@ public enum AppShortcuts {
   public static func ghosttyKeybindConfigLines(
     from overrides: [AppShortcutID: AppShortcutOverride]
   ) -> [String] {
-    all.compactMap { shortcut in
-      guard let effective = shortcut.effective(from: overrides) else { return nil }
-      guard let line = effective.ghosttyUnbindConfigLine else {
+    all.flatMap { shortcut in
+      guard let effective = shortcut.effective(from: overrides) else { return [String]() }
+      let lines = effective.ghosttyUnbindConfigLines
+      if lines.isEmpty {
         shortcutLogger.error("No Ghostty key name for \(effective.displayName); the terminal keeps this chord.")
-        return nil
       }
-      return line
+      return lines
     }
   }
 

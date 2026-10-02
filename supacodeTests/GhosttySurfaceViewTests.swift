@@ -1,10 +1,13 @@
 import AppKit
+import Carbon.HIToolbox
 import Foundation
 import GhosttyKit
 import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
+
+private final class HotkeyRecorderNSView: NSView {}
 
 @MainActor
 struct GhosttySurfaceViewTests {
@@ -114,7 +117,8 @@ struct GhosttySurfaceViewTests {
   private static func keyEvent(
     chars: String,
     ignoringModifiers: String,
-    modifiers: NSEvent.ModifierFlags
+    modifiers: NSEvent.ModifierFlags,
+    keyCode: UInt16 = 4
   ) -> NSEvent {
     NSEvent.keyEvent(
       with: .keyDown,
@@ -126,7 +130,7 @@ struct GhosttySurfaceViewTests {
       characters: chars,
       charactersIgnoringModifiers: ignoringModifiers,
       isARepeat: false,
-      keyCode: 4
+      keyCode: keyCode
     )!
   }
 
@@ -428,6 +432,86 @@ struct GhosttySurfaceViewTests {
 
     #expect(GhosttySurfaceView.menuItem(item, matches: shiftEvent))
     #expect(!GhosttySurfaceView.menuItem(item, matches: plainEvent))
+  }
+
+  @Test func menuItemMatchesPhysicalKeyWhenCharactersAreNotTheEquivalent() {
+    let event = Self.keyEvent(
+      chars: "т",
+      ignoringModifiers: "т",
+      modifiers: [.command],
+      keyCode: UInt16(kVK_ANSI_T)
+    )
+    let item = Self.item(action: Selector(("appOwnedAction:")), keyEquivalent: "t", mask: [.command])
+
+    #expect(GhosttySurfaceView.menuItem(item, matches: event))
+    #expect(!GhosttySurfaceView.menuItemMatchesProducedCharacter(item, event: event))
+  }
+
+  @Test func dispatchForwardableChordFiresPhysicalMatchDirectly() {
+    let target = MenuActionTarget()
+    let event = Self.keyEvent(
+      chars: "т",
+      ignoringModifiers: "т",
+      modifiers: [.command],
+      keyCode: UInt16(kVK_ANSI_T)
+    )
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    let item = NSMenuItem(title: "New Tab", action: #selector(MenuActionTarget.fire(_:)), keyEquivalent: "t")
+    item.keyEquivalentModifierMask = [.command]
+    item.target = target
+    item.isEnabled = true
+    menu.addItem(item)
+
+    #expect(GhosttySurfaceView.dispatchForwardableChord(item, for: event, in: menu))
+    #expect(target.fired)
+  }
+
+  @Test func physicalShortcutDispatchConsumesOnlyAPhysicalMenuMatch() {
+    let target = MenuActionTarget()
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    let item = NSMenuItem(title: "New Tab", action: #selector(MenuActionTarget.fire(_:)), keyEquivalent: "t")
+    item.keyEquivalentModifierMask = [.command]
+    item.target = target
+    item.isEnabled = true
+    menu.addItem(item)
+    let physical = Self.keyEvent(
+      chars: "т",
+      ignoringModifiers: "т",
+      modifiers: [.command],
+      keyCode: UInt16(kVK_ANSI_T)
+    )
+    let latin = Self.keyEvent(chars: "t", ignoringModifiers: "t", modifiers: [.command], keyCode: UInt16(kVK_ANSI_T))
+    let responder = NSView()
+
+    #expect(
+      GhosttySurfaceView.eventAfterPhysicalShortcutDispatch(physical, firstResponder: responder, menu: menu) == nil
+    )
+    #expect(target.fired)
+    target.fired = false
+    #expect(
+      GhosttySurfaceView.eventAfterPhysicalShortcutDispatch(latin, firstResponder: responder, menu: menu) === latin
+    )
+    #expect(!target.fired)
+  }
+
+  @Test func physicalShortcutDispatchLeavesTheShortcutRecorderAlone() {
+    let recorder = HotkeyRecorderNSView()
+    let event = Self.keyEvent(
+      chars: "т",
+      ignoringModifiers: "т",
+      modifiers: [.command],
+      keyCode: UInt16(kVK_ANSI_T)
+    )
+    let menu = NSMenu()
+    let item = NSMenuItem(title: "New Tab", action: Selector(("appOwnedAction:")), keyEquivalent: "t")
+    item.keyEquivalentModifierMask = [.command]
+    menu.addItem(item)
+
+    #expect(
+      GhosttySurfaceView.eventAfterPhysicalShortcutDispatch(event, firstResponder: recorder, menu: menu) === event
+    )
   }
 
   private final class MenuActionTarget: NSObject {

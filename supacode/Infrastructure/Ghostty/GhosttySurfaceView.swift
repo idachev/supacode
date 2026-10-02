@@ -1308,6 +1308,17 @@ final class GhosttySurfaceView: NSView, Identifiable {
       return true
     }
 
+    // No Ghostty binding. A Latin chord still reaches the menu through AppKit.
+    // A Cyrillic chord does not: the menu item is the US letter, so dispatch the
+    // physical key here. Character matches stay on the native path (one fire).
+    if let menu = NSApp.mainMenu,
+      let item = Self.forwardableMenuItem(for: event, in: menu),
+      !Self.menuItemMatchesProducedCharacter(item, event: event),
+      Self.dispatchForwardableChord(item, for: event, in: menu)
+    {
+      return true
+    }
+
     guard let equivalent = equivalentKey(for: event) else { return false }
 
     guard
@@ -1385,8 +1396,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
 
   private static func isExactCommandV(_ event: NSEvent) -> Bool {
     let shortcutMask: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
-    return event.charactersIgnoringModifiers?.lowercased() == "v"
-      && event.modifierFlags.intersection(shortcutMask) == [.command]
+    guard event.modifierFlags.intersection(shortcutMask) == [.command] else { return false }
+    if event.charactersIgnoringModifiers?.lowercased() == "v" { return true }
+    // Bulgarian phonetic does not produce "v" from the physical V key.
+    return event.keyCode == UInt16(kVK_ANSI_V)
   }
 
   private static func isTextOrFilePasteboardType(_ type: NSPasteboard.PasteboardType) -> Bool {
@@ -1580,19 +1593,42 @@ final class GhosttySurfaceView: NSView, Identifiable {
     return systemManagedMenuActions.contains(action)
   }
 
-  /// True when `item`'s key equivalent and modifier mask match `event` exactly. An exact
-  /// modifier match keeps a shortcut like `⌘,` (Settings) from eating `⌘⇧,` (Ghostty's
-  /// `reload_config`). An uppercase `keyEquivalent` encodes shift implicitly (AppKit
-  /// convention), so we fold that into the item's effective mask before comparing.
+  /// True when `item`'s modifiers match `event` and either the produced characters or the
+  /// US physical key matches the key equivalent. An exact modifier match keeps `⌘,`
+  /// (Settings) from eating `⌘⇧,` (Ghostty's `reload_config`). An uppercase key equivalent
+  /// encodes shift implicitly (AppKit convention), so that folds into the item's mask.
   static func menuItem(_ item: NSMenuItem, matches event: NSEvent) -> Bool {
     guard !item.keyEquivalent.isEmpty else { return false }
-    guard let characters = event.charactersIgnoringModifiers?.lowercased(), !characters.isEmpty else { return false }
+    guard modifierMask(of: item) == event.modifierFlags.intersection(shortcutModifierMask) else { return false }
+    if menuItemMatchesProducedCharacter(item, event: event) { return true }
+    return menuItemMatchesPhysicalKey(item, event: event)
+  }
+
+  /// True when the event's produced characters are the item's key equivalent.
+  /// A physical-only match (Cyrillic on a US letter item) is false.
+  static func menuItemMatchesProducedCharacter(_ item: NSMenuItem, event: NSEvent) -> Bool {
+    guard let characters = event.charactersIgnoringModifiers?.lowercased(), !characters.isEmpty else {
+      return false
+    }
+    return item.keyEquivalent.lowercased() == characters
+  }
+
+  /// US-physical key of a one-character key equivalent. Arrows and other specials
+  /// stay on the produced-character path.
+  static func menuItemMatchesPhysicalKey(_ item: NSMenuItem, event: NSEvent) -> Bool {
+    let itemKey = item.keyEquivalent.lowercased()
+    guard itemKey.count == 1, let character = itemKey.first else { return false }
+    guard let code = AppShortcutOverride.keyCode(for: character) else { return false }
+    return event.keyCode == code
+  }
+
+  private static let shortcutModifierMask: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+
+  private static func modifierMask(of item: NSMenuItem) -> NSEvent.ModifierFlags {
     let itemKey = item.keyEquivalent
-    guard itemKey.lowercased() == characters else { return false }
-    let shortcutMask: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
-    var itemMask = item.keyEquivalentModifierMask.intersection(shortcutMask)
+    var itemMask = item.keyEquivalentModifierMask.intersection(shortcutModifierMask)
     if itemKey != itemKey.lowercased() { itemMask.insert(.shift) }
-    return itemMask == event.modifierFlags.intersection(shortcutMask)
+    return itemMask
   }
 
   /// Recursively walks the main menu for the first app-owned item matching `event`, returning
@@ -1623,8 +1659,42 @@ final class GhosttySurfaceView: NSView, Identifiable {
   /// a fall-through to Ghostty would skip and so reattach a zmx surface instead of closing it).
   /// Otherwise uses the native key-equivalent path, which drives SwiftUI command items like `⌘W`.
   static func dispatchForwardableChord(_ item: NSMenuItem, for event: NSEvent, in menu: NSMenu) -> Bool {
-    guard menuHasSystemManagedConflict(for: event, in: menu) else { return menu.performKeyEquivalent(with: event) }
+    // AppKit matches key equivalents by produced character. A Cyrillic event never
+    // selects a Latin item, so a physical-only match has to fire the item directly.
+    // The same direct path is required when a system item shares the chord.
+    let needsDirectFire =
+      menuHasSystemManagedConflict(for: event, in: menu)
+      || !menuItemMatchesProducedCharacter(item, event: event)
+    guard needsDirectFire else { return menu.performKeyEquivalent(with: event) }
     return performMenuItem(item)
+  }
+
+  /// Local-monitor decision for chords typed outside the terminal.
+  /// Returns nil when this call already fired the menu item.
+  /// Returns the event when AppKit, the terminal, or the shortcut recorder should see it.
+  static func eventAfterPhysicalShortcutDispatch(
+    _ event: NSEvent,
+    firstResponder: NSResponder?,
+    menu: NSMenu?
+  ) -> NSEvent? {
+    if let firstResponder {
+      if firstResponder is GhosttySurfaceView { return event }
+      if isShortcutRecordingResponder(firstResponder) { return event }
+    }
+    guard let menu,
+      let item = forwardableMenuItem(for: event, in: menu),
+      !menuItemMatchesProducedCharacter(item, event: event)
+    else { return event }
+    return dispatchForwardableChord(item, for: event, in: menu) ? nil : event
+  }
+
+  private static func isShortcutRecordingResponder(_ responder: NSResponder) -> Bool {
+    var current: NSResponder? = responder
+    while let candidate = current {
+      if String(describing: type(of: candidate)) == "HotkeyRecorderNSView" { return true }
+      current = candidate.nextResponder
+    }
+    return false
   }
 
   /// Fires `item`'s action through the responder chain so only that item runs, never a built-in

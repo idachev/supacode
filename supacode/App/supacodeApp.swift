@@ -46,8 +46,13 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
   var terminalManager: WorktreeTerminalManager?
   var globalHotkeyMonitor: GlobalHotkeyMonitor?
   private var bufferedDeeplinkURLs: [URL] = []
+  private var physicalShortcutMonitor: Any?
 
   func applicationWillTerminate(_ notification: Notification) {
+    if let physicalShortcutMonitor {
+      NSEvent.removeMonitor(physicalShortcutMonitor)
+      self.physicalShortcutMonitor = nil
+    }
     // Release the global Carbon registration explicitly rather than leaning on
     // deinit timing.
     globalHotkeyMonitor?.tearDown()
@@ -74,6 +79,7 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
     // the main window. Opt the singleton out per-process so a panel
     // left open from a previous session can't survive the relaunch.
     NSColorPanel.shared.isRestorable = false
+    installPhysicalShortcutMonitor()
     guard let appStore else {
       SupaLogger("App").error("applicationDidFinishLaunching with no store; launch setup skipped.")
       return
@@ -81,6 +87,21 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
     // Apply the saved Dock/menu-bar visibility before the first window shows.
     NSApplication.shared.applyActivationPolicy(for: appStore.state.settings.appVisibility)
     appStore.send(.appLaunched)
+  }
+
+  // Menu key equivalents are characters. Outside the terminal, a Cyrillic event
+  // never selects a Latin item, so fire the physical key here. The terminal view
+  // and the shortcut recorder keep the event.
+  private func installPhysicalShortcutMonitor() {
+    guard physicalShortcutMonitor == nil else { return }
+    physicalShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+      let app = NSApplication.shared
+      return GhosttySurfaceView.eventAfterPhysicalShortcutDispatch(
+        event,
+        firstResponder: app.keyWindow?.firstResponder,
+        menu: app.mainMenu
+      )
+    }
   }
 
   func applicationDidBecomeActive(_ notification: Notification) {

@@ -394,9 +394,35 @@ extension AppShortcutOverride {
     case kVK_Delete: "backspace"
     case kVK_Tab: "tab"
     case kVK_Space: "space"
-    default: layoutCharacter(for: code)?.lowercased() ?? String(format: "0x%02x", code)
+    default:
+      // US glyph, not the live layout. A Cyrillic cap would unbind the wrong trigger
+      // and leave Ghostty's unicode `super+t` bound.
+      usQwertyFallback[code] ?? layoutCharacter(for: code)?.lowercased() ?? String(format: "0x%02x", code)
     }
   }
+
+  /// Physical Ghostty trigger for a printable US key (`key_t`, `digit_1`, `bracket_left`).
+  /// Nil for special keys, whose unicode name is already the physical one.
+  public static func physicalGhosttyKeyName(for code: UInt16) -> String? {
+    guard let glyph = usQwertyFallback[code] else { return nil }
+    if let character = glyph.first, character.isLetter { return "key_\(glyph)" }
+    if let character = glyph.first, character.isNumber { return "digit_\(glyph)" }
+    return physicalGhosttyPunctuation[glyph]
+  }
+
+  private static let physicalGhosttyPunctuation: [String: String] = [
+    ";": "semicolon",
+    "'": "quote",
+    ",": "comma",
+    "`": "backquote",
+    ".": "period",
+    "/": "slash",
+    "-": "minus",
+    "=": "equal",
+    "[": "bracket_left",
+    "]": "bracket_right",
+    "\\": "backslash",
+  ]
 
   public static func displayCharacter(for code: UInt16) -> String {
     switch Int(code) {
@@ -428,6 +454,11 @@ extension AppShortcutOverride {
     case kVK_Tab: return .tab
     case kVK_Space: return .space
     default:
+      // Menu matching is character-based. Keep the US letter so the item stays `t`
+      // on a Cyrillic layout; the settings row still shows the layout cap.
+      if let us = usQwertyFallback[code]?.first {
+        return KeyEquivalent(us)
+      }
       guard let char = layoutCharacter(for: code)?.first else {
         shortcutLogger.warning("Cannot resolve KeyEquivalent for key code \(code), using fallback '?'.")
         return KeyEquivalent("?")
