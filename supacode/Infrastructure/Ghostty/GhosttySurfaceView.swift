@@ -1599,6 +1599,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
   /// encodes shift implicitly (AppKit convention), so that folds into the item's mask.
   static func menuItem(_ item: NSMenuItem, matches event: NSEvent) -> Bool {
     guard !item.keyEquivalent.isEmpty else { return false }
+    // `shortcutModifierMask` drops `.function`, so a built-in like Window > Center (`⌃Fn C`)
+    // would match a plain `⌃C`. Arrow events carry `.function` themselves, so only an item that
+    // asks for it needs the event to have it.
+    if item.keyEquivalentModifierMask.contains(.function), !event.modifierFlags.contains(.function) {
+      return false
+    }
     guard modifierMask(of: item) == event.modifierFlags.intersection(shortcutModifierMask) else { return false }
     if menuItemMatchesProducedCharacter(item, event: event) { return true }
     return menuItemMatchesPhysicalKey(item, event: event)

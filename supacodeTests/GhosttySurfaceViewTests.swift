@@ -434,6 +434,22 @@ struct GhosttySurfaceViewTests {
     #expect(!GhosttySurfaceView.menuItem(item, matches: plainEvent))
   }
 
+  @Test func menuItemRejectsFunctionKeyItemForPlainControlChord() {
+    // Window > Center is `⌃Fn C`. It must not swallow `⌃C` or its Cyrillic `⌃Ц` twin,
+    // which the terminal needs as Ctrl+C.
+    // `NSMenuItem` drops `.function` from a mask set in code; AppKit's own item keeps it.
+    let item = FunctionMaskMenuItem(
+      title: "Center", action: Selector(("appOwnedAction:")), keyEquivalent: "c")
+    let latin = Self.keyEvent(chars: "\u{03}", ignoringModifiers: "c", modifiers: [.control], keyCode: UInt16(kVK_ANSI_C))
+    let cyrillic = Self.keyEvent(chars: "\u{03}", ignoringModifiers: "ц", modifiers: [.control], keyCode: UInt16(kVK_ANSI_C))
+    let withFunction = Self.keyEvent(
+      chars: "c", ignoringModifiers: "c", modifiers: [.control, .function], keyCode: UInt16(kVK_ANSI_C))
+
+    #expect(!GhosttySurfaceView.menuItem(item, matches: latin))
+    #expect(!GhosttySurfaceView.menuItem(item, matches: cyrillic))
+    #expect(GhosttySurfaceView.menuItem(item, matches: withFunction))
+  }
+
   @Test func menuItemMatchesPhysicalKeyWhenCharactersAreNotTheEquivalent() {
     let event = Self.keyEvent(
       chars: "т",
@@ -670,5 +686,12 @@ struct GhosttySurfaceViewTests {
     // Idempotent: the surface is already gone, so this must not double-free.
     surfaceView.closeSurface()
     #expect(surfaceView.surface == nil)
+  }
+}
+
+private nonisolated final class FunctionMaskMenuItem: NSMenuItem {
+  override var keyEquivalentModifierMask: NSEvent.ModifierFlags {
+    get { [.control, .function] }
+    set {}
   }
 }
