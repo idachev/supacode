@@ -307,6 +307,9 @@ let project = Project(
         .post(
           script: shellScript(stampBuildInfoScriptPath),
           name: "Stamp build info",
+          // The processed plist is an input so Xcode runs this after ProcessInfoPlistFile;
+          // otherwise an incremental build rewrites the plist and drops the stamp.
+          inputPaths: ["$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"],
           basedOnDependencyAnalysis: false
         ),
       ],
