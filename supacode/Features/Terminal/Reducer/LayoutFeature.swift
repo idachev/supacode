@@ -1100,8 +1100,8 @@ extension LayoutFeature {
   }
 
   /// Creates and provisions content; false when the runtime refuses
-  /// (tombstoned or already registered), dropping the freshly made content
-  /// unprovisioned.
+  /// (tombstoned or already registered) or the session failed to start,
+  /// dropping the freshly made content unprovisioned.
   private func provisionContent(
     _ request: ContentRequest,
     at geometry: ContentGeometry,

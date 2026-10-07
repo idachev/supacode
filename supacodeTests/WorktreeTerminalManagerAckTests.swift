@@ -37,6 +37,9 @@ struct WorktreeTerminalManagerAckTests {
   private func makeHarness(
     storage: SettingsFileStorage = .inMemory(),
     defaults: UserDefaults = .inMemory,
+    factory: LayoutContentFactory = LayoutContentFactory { request in
+      InertTabContent(id: request.contentID, state: request.content)
+    },
     killRemoteSession: @escaping @Sendable (RemoteHost, String) -> Void = { _, _ in }
   ) -> Harness {
     let worktree = makeWorktree()
@@ -65,9 +68,7 @@ struct WorktreeTerminalManagerAckTests {
       // One shared registry: the per-access `testValue` would otherwise hand
       // provision and lookup different runtimes.
       $0.contentRuntime = ContentRuntime()
-      $0[LayoutContentFactory.self] = LayoutContentFactory { request in
-        InertTabContent(id: request.contentID, state: request.content)
-      }
+      $0[LayoutContentFactory.self] = factory
       $0[ContentSessionKiller.self] = ContentSessionKiller(kill: { _, _ in })
     }
     manager.appStore = store
@@ -172,6 +173,33 @@ struct WorktreeTerminalManagerAckTests {
       Issue.record("Expected surfaceCreationFailed, got \(events)")
       return
     }
+  }
+
+  @Test(.dependencies) func createWhoseSurfaceFailsDrainsTheAckAsFailureAndAddsNoTab() async {
+    // Ghostty returning no surface (e.g. no active display) must fail the
+    // create, not list and ack an empty tab.
+    let harness = makeHarness(
+      factory: LayoutContentFactory { request in
+        TerminalContent(
+          id: request.contentID,
+          makeSurface: { _, _, _ in nil },
+          initialState: TerminalContentState(workingDirectory: nil)
+        )
+      })
+    let pump = CreationEvents(harness.manager)
+    let id = UUID()
+    harness.manager.handleCommand(
+      .createTab(harness.worktree, runSetupScriptIfNew: false, id: id, focusing: false))
+
+    let events = await pump.next(1)
+    guard case .surfaceCreationFailed(let worktreeID, let attemptedID, _) = events.first else {
+      Issue.record("Expected surfaceCreationFailed, got \(events)")
+      return
+    }
+    #expect(worktreeID == harness.worktree.id)
+    #expect(attemptedID == id)
+    let layout = harness.store.withState { $0.terminals.layouts[id: harness.worktree.id]?.layout }
+    #expect(layout?.pane(containingTab: TabID(rawValue: id)) == nil)
   }
 
   @Test(.dependencies) func ensureInitialTabOnAPopulatedLayoutStillAcks() async {

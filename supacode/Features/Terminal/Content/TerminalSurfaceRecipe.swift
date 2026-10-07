@@ -369,6 +369,12 @@ struct TerminalContentBuilder {
           initialGeometry: geometry,
           context: plan.context
         )
+        // Without a Ghostty surface the view is dead; free it before any
+        // wiring registers it anywhere.
+        guard view.surface != nil else {
+          view.closeSurface()
+          return nil
+        }
         wireSurface(view, effective)
         return TerminalContent.SpawnedSurface(view: view, usesZmx: plan.usesZmx)
       },
