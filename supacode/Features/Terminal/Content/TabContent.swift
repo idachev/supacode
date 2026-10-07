@@ -17,6 +17,9 @@ protocol TabContent: AnyObject {
   /// Spawns the session eagerly at an explicit geometry; a second call while
   /// the renderer is alive is a no-op.
   func startSession(at geometry: ContentGeometry)
+  /// Whether the last `startSession` could not bring a session up, so the
+  /// content must not be listed as a live tab.
+  var sessionFailedToStart: Bool { get }
   /// Tears down the renderer while the underlying session lives on, recording
   /// whatever the content needs to restore.
   func hibernate()
@@ -38,6 +41,8 @@ extension TabContent {
   // Hibernation is opt-in: only content whose session outlives the renderer
   // may claim it.
   var isHibernatable: Bool { false }
+  // Only content that spawns something can fail to spawn it.
+  var sessionFailedToStart: Bool { false }
   // Renderless content has nothing to release.
   func tearDown() {}
   // Chrome is opt-in per content kind.
@@ -142,16 +147,18 @@ final class TerminalContent: TabContent {
   // Surface construction needs heavy config owned elsewhere, so it is
   // injected; it receives the current recorded state so a wake replans from
   // the hibernation-recorded grid and cwd, not the creation-time seed.
-  private let makeSurface: (ContentGeometry, TerminalContentState, SpawnPhase) -> SpawnedSurface
+  // Nil means Ghostty could not create a surface.
+  private let makeSurface: (ContentGeometry, TerminalContentState, SpawnPhase) -> SpawnedSurface?
   // Latest recorded terminal state, so hibernated snapshots stay truthful.
   private var state: TerminalContentState
   private var surfaceView: GhosttySurfaceView?
   private var usesZmx = false
   private var hasSpawned = false
+  private(set) var sessionFailedToStart = false
 
   init(
     id: ContentID,
-    makeSurface: @escaping (ContentGeometry, TerminalContentState, SpawnPhase) -> SpawnedSurface,
+    makeSurface: @escaping (ContentGeometry, TerminalContentState, SpawnPhase) -> SpawnedSurface?,
     initialState: TerminalContentState
   ) {
     self.id = id
@@ -177,7 +184,11 @@ final class TerminalContent: TabContent {
 
   func startSession(at geometry: ContentGeometry) {
     guard surfaceView == nil else { return }
-    let spawned = makeSurface(geometry, state, hasSpawned ? .rewake : .first)
+    guard let spawned = makeSurface(geometry, state, hasSpawned ? .rewake : .first) else {
+      sessionFailedToStart = true
+      return
+    }
+    sessionFailedToStart = false
     surfaceView = spawned.view
     searchToolbar.surfaceView = spawned.view
     usesZmx = spawned.usesZmx

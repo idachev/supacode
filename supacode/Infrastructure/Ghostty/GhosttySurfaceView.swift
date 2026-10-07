@@ -119,6 +119,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var lastSurfaceFocus: Bool?
   private var eventMonitor: Any?
   private var notificationObservers: [NSObjectProtocol] = []
+  private var workspaceNotificationObservers: [NSObjectProtocol] = []
   private var prevPressureStage: Int = 0
   private lazy var cachedScreenContents = CachedValue<String>(duration: .milliseconds(500)) {
     [weak self] in
@@ -377,6 +378,29 @@ final class GhosttySurfaceView: NSView, Identifiable {
           self?.windowDidChangeScreen()
         }
       })
+    // Ghostty retries a failed display link only when handed a display id;
+    // a display returning (wake, reconnect) keeps the same window screen, so
+    // the window's own screen notification may never fire.
+    notificationObservers.append(
+      center.addObserver(
+        forName: NSApplication.didChangeScreenParametersNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.windowDidChangeScreen()
+        }
+      })
+    workspaceNotificationObservers.append(
+      NSWorkspace.shared.notificationCenter.addObserver(
+        forName: NSWorkspace.screensDidWakeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.windowDidChangeScreen()
+        }
+      })
     notificationObservers.append(
       center.addObserver(
         forName: NSWindow.didEnterFullScreenNotification,
@@ -449,6 +473,11 @@ final class GhosttySurfaceView: NSView, Identifiable {
       center.removeObserver(observer)
     }
     notificationObservers.removeAll()
+    let workspaceCenter = NSWorkspace.shared.notificationCenter
+    for observer in workspaceNotificationObservers {
+      workspaceCenter.removeObserver(observer)
+    }
+    workspaceNotificationObservers.removeAll()
   }
 
   override func viewDidMoveToWindow() {
@@ -1112,7 +1141,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
   }
 
   private func createSurface() {
-    guard let app = runtime.app else { return }
+    guard let app = runtime.app else {
+      surfaceLogger.error("Surface \(self.id) not created: Ghostty app is unavailable.")
+      return
+    }
     var config = ghostty_surface_config_new()
     config.userdata = Unmanaged.passUnretained(bridge).toOpaque()
     config.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -1162,6 +1194,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
         }
         surface = ghostty_surface_new(app, &config)
       }
+    }
+    if surface == nil {
+      let directory = workingDirectoryCString.map { String(cString: $0) } ?? "<none>"
+      surfaceLogger.error("Surface \(self.id) not created: ghostty_surface_new returned nil (cwd \(directory)).")
     }
     bridge.surface = surface
     lastOcclusion = nil

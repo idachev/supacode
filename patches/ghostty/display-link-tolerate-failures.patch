@@ -1,0 +1,238 @@
+From a177ba90af18d5df91b2b5cb8dddc0a55905c37f Mon Sep 17 00:00:00 2001
+From: Mitchell Hashimoto <m@mitchellh.com>
+Date: Wed, 5 Aug 2026 11:31:16 -0700
+Subject: [PATCH] macos: tolerate display link creation failures
+
+Fixes #13293
+
+Treat Core Video display link creation as optional when macOS has no
+active displays. The previous error path reported every creation
+failure as out of memory and aborted renderer initialization.
+
+This also resyncs the display link on any display change so when
+a display becomes available it re-adds itself.
+
+Tabs created while the session is locked now initialize normally and
+fall back to event-driven rendering without vsync.
+
+Backport of upstream ghostty commit a177ba90af18d5df91b2b5cb8dddc0a55905c37f
+onto the pinned submodule 6057f8d2b. The two generic.zig import hunks
+(xev via global.zig) are dropped; they do not apply to 6057f8d2b and the
+fix does not need them.
+---
+ pkg/macos/video/display_link.zig |  10 ++-
+ src/renderer/Thread.zig          |   2 +-
+ src/renderer/generic.zig         | 109 ++++++++++++++++++-------------
+ 3 files changed, 68 insertions(+), 53 deletions(-)
+
+diff --git a/pkg/macos/video/display_link.zig b/pkg/macos/video/display_link.zig
+index 7d6b437f9cb..dc984422d01 100644
+--- a/pkg/macos/video/display_link.zig
++++ b/pkg/macos/video/display_link.zig
+@@ -1,21 +1,19 @@
+-const std = @import("std");
+-const assert = std.debug.assert;
+-const Allocator = std.mem.Allocator;
+ const c = @import("c.zig").c;
+ 
+ pub const DisplayLink = opaque {
+     pub const Error = error{
++        CreationFailed,
+         InvalidOperation,
+     };
+ 
+-    pub fn createWithActiveCGDisplays() Allocator.Error!*DisplayLink {
++    pub fn createWithActiveCGDisplays() Error!*DisplayLink {
+         var result: ?*DisplayLink = null;
+         if (c.CVDisplayLinkCreateWithActiveCGDisplays(
+             @ptrCast(&result),
+         ) != c.kCVReturnSuccess)
+-            return error.OutOfMemory;
++            return error.CreationFailed;
+ 
+-        return result orelse error.OutOfMemory;
++        return result orelse error.CreationFailed;
+     }
+ 
+     pub fn release(self: *DisplayLink) void {
+diff --git a/src/renderer/Thread.zig b/src/renderer/Thread.zig
+index 4b2b741d88f..e3e2ceccf09 100644
+--- a/src/renderer/Thread.zig
++++ b/src/renderer/Thread.zig
+@@ -501,7 +501,7 @@ fn drainMailbox(self: *Thread) !void {
+ 
+             .macos_display_id => |v| {
+                 if (@hasDecl(rendererpkg.Renderer, "setMacOSDisplayID")) {
+-                    try self.renderer.setMacOSDisplayID(v);
++                    try self.renderer.setMacOSDisplayID(v, &self.draw_now);
+                 }
+             },
+         }
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index 88f73f46e07..2882c9c8ed2 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -117,6 +117,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         /// True if the window is focused
+         focused: bool,
+ 
++        /// True if the window is visible.
++        visible: bool,
++
+         /// Flag to indicate that our focus state changed for custom
+         /// shaders to update their state.
+         custom_shader_focused_changed: bool = false,
+@@ -693,15 +696,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 };
+             };
+ 
+-            const display_link: ?DisplayLink = switch (builtin.os.tag) {
+-                .macos => if (options.config.vsync)
+-                    try macos.video.DisplayLink.createWithActiveCGDisplays()
+-                else
+-                    null,
+-                else => null,
+-            };
+-            errdefer if (display_link) |v| v.release();
+-
+             var result: Self = .{
+                 .alloc = alloc,
+                 .config = options.config,
+@@ -709,6 +703,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 .grid_metrics = font_critical.metrics,
+                 .size = options.size,
+                 .focused = true,
++                .visible = true,
+                 .scrollbar = .zero,
+                 .scrollbar_dirty = false,
+                 .last_bottom_node = null,
+@@ -787,7 +782,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                 // Graphics API stuff
+                 .api = api,
+                 .swap_chain = swap_chain,
+-                .display_link = display_link,
+             };
+ 
+             try result.initShaders();
+@@ -907,16 +901,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             // If we don't support a display link we have no work to do.
+             if (comptime DisplayLink == void) return;
+ 
+-            // This is when we know our "self" pointer is stable so we can
+-            // setup the display link. To setup the display link we set our
+-            // callback and we can start it immediately.
+-            const display_link = self.display_link orelse return;
+-            try display_link.setOutputCallback(
+-                xev.Async,
+-                &displayLinkCallback,
+-                &thr.draw_now,
+-            );
+-            display_link.start() catch {};
++            self.syncDisplayLink(null, &thr.draw_now);
+         }
+ 
+         /// Called by renderer.Thread when it exits the main loop.
+@@ -1003,13 +988,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+         }
+ 
+         /// Called when we get an updated display ID for our display link.
+-        pub fn setMacOSDisplayID(self: *Self, id: u32) !void {
++        pub fn setMacOSDisplayID(
++            self: *Self,
++            id: u32,
++            draw_now: *xev.Async,
++        ) !void {
+             if (comptime DisplayLink == void) return;
+-            const display_link = self.display_link orelse return;
+-            log.info("updating display link display id={}", .{id});
+-            display_link.setCurrentCGDisplay(id) catch |err| {
+-                log.warn("error setting display link display id err={}", .{err});
+-            };
++            self.syncDisplayLink(id, draw_now);
+         }
+ 
+         /// True if our renderer has animations so that a higher frequency
+@@ -1038,33 +1023,65 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+             // Flag that we need to update our custom shaders
+             self.custom_shader_focused_changed = true;
+ 
+-            // If we're not focused, then we want to stop the display link
+-            // because it is a waste of resources and we can move to pure
+-            // change-driven updates.
+-            if (comptime DisplayLink != void) link: {
+-                const display_link = self.display_link orelse break :link;
+-                if (focus) {
+-                    display_link.start() catch {};
+-                } else {
+-                    display_link.stop() catch {};
+-                }
+-            }
++            self.syncDisplayLink(null, null);
+         }
+ 
+         /// Callback when the window is visible or occluded.
+         ///
+         /// Must be called on the render thread.
+         pub fn setVisible(self: *Self, visible: bool) void {
++            self.visible = visible;
++            self.syncDisplayLink(null, null);
++        }
++
++        /// Create or update the display link and match it to the current
++        /// surface state.
++        fn syncDisplayLink(
++            self: *Self,
++            display_id: ?u32,
++            draw_now: ?*xev.Async,
++        ) void {
++            if (comptime DisplayLink == void) return;
++
++            const display_link = self.display_link orelse display_link: {
++                if (!self.config.vsync) return;
++                const callback = draw_now orelse return;
++                const result = macos.video.DisplayLink.createWithActiveCGDisplays() catch |err| {
++                    // A locked macOS session can temporarily have no active
++                    // displays. Rendering can continue without vsync and a
++                    // later display update will retry this method.
++                    log.warn("error creating display link; using fallback rendering err={}", .{err});
++                    return;
++                };
++                result.setOutputCallback(
++                    xev.Async,
++                    &displayLinkCallback,
++                    callback,
++                ) catch |err| {
++                    log.warn("error configuring display link err={}", .{err});
++                    result.release();
++                    return;
++                };
++
++                self.display_link = result;
++                log.info("created display link", .{});
++                break :display_link result;
++            };
++
++            if (display_id) |id| {
++                log.info("updating display link display id={}", .{id});
++                display_link.setCurrentCGDisplay(id) catch |err| {
++                    log.warn("error setting display link display id err={}", .{err});
++                };
++            }
++
+             // If we're not visible, then we want to stop the display link
+             // because it is a waste of resources and we can move to pure
+             // change-driven updates.
+-            if (comptime DisplayLink != void) link: {
+-                const display_link = self.display_link orelse break :link;
+-                if (visible and self.focused) {
+-                    display_link.start() catch {};
+-                } else {
+-                    display_link.stop() catch {};
+-                }
++            if (self.visible and self.focused) {
++                display_link.start() catch {};
++            } else {
++                display_link.stop() catch {};
+             }
+         }
+ 
