@@ -11,16 +11,21 @@ struct ContentRuntimeTests {
     let kind: ContentKind = .terminal
     private(set) var startSessionCalls = 0
     private(set) var hibernateCalls = 0
+    private(set) var sessionFailedToStart = false
+    private let failsToStart: Bool
     private var view: NSView?
 
-    init(id: ContentID = ContentID()) {
+    init(id: ContentID = ContentID(), failsToStart: Bool = false) {
       self.id = id
+      self.failsToStart = failsToStart
     }
 
     var renderer: NSView? { view }
 
     func startSession(at geometry: ContentGeometry) {
       startSessionCalls += 1
+      sessionFailedToStart = failsToStart
+      guard !failsToStart else { return }
       view = NSView()
     }
 
@@ -95,5 +100,32 @@ struct ContentRuntimeTests {
     let replacement = MockContent(id: content.id)
     #expect(runtime.provision(replacement, at: .fallback))
     #expect(replacement.startSessionCalls == 1)
+  }
+
+  @Test func provisionRefusesAndUnregistersContentWhoseSessionFailsToStart() {
+    let runtime = ContentRuntime()
+    let content = MockContent(failsToStart: true)
+    #expect(runtime.provision(content, at: .fallback) == false)
+    #expect(content.startSessionCalls == 1)
+    #expect(runtime.content(for: content.id) == nil)
+    #expect(runtime.renderer(for: content.id) == nil)
+    // A failed start must not tombstone the ID.
+    let replacement = MockContent(id: content.id)
+    #expect(runtime.provision(replacement, at: .fallback))
+    #expect(runtime.content(for: content.id) === replacement)
+  }
+
+  @Test func terminalContentWithoutASurfaceReportsTheFailedStart() {
+    let runtime = ContentRuntime()
+    let content = TerminalContent(
+      id: ContentID(),
+      makeSurface: { _, _, _ in nil },
+      initialState: TerminalContentState(workingDirectory: nil)
+    )
+    #expect(runtime.provision(content, at: .fallback) == false)
+    #expect(content.sessionFailedToStart)
+    #expect(content.renderer == nil)
+    #expect(content.isHibernatable == false)
+    #expect(runtime.content(for: content.id) == nil)
   }
 }

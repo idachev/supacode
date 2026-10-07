@@ -22,7 +22,8 @@ final class ContentRuntime {
   nonisolated init() {}
 
   /// Registers `content` and starts its session synchronously, exactly once.
-  /// Refuses IDs that are tombstoned or already registered.
+  /// Refuses IDs that are tombstoned or already registered, and unregisters
+  /// content whose session failed to start so no dead tab is listed.
   func provision(_ content: any TabContent, at geometry: ContentGeometry) -> Bool {
     guard !pendingKill.contains(content.id) else {
       Self.logger.warning("Refused provisioning tombstoned content \(content.id.rawValue)")
@@ -34,6 +35,11 @@ final class ContentRuntime {
     }
     contents[content.id] = content
     content.startSession(at: geometry)
+    guard !content.sessionFailedToStart else {
+      Self.logger.warning("Session failed to start for content \(content.id.rawValue); unregistering")
+      contents[content.id] = nil
+      return false
+    }
     return true
   }
 
