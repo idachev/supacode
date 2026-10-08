@@ -893,7 +893,7 @@ private func commandPaletteRecencyScore(
 private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPaletteFeature.Delegate {
   switch kind {
   case .worktreeSelect, .terminalTab:
-    return navigationDelegateAction(for: kind)!
+    return CommandPaletteFeature.navigationDelegateAction(for: kind)!
   case .checkForUpdates:
     return .checkForUpdates
   case .openSettings:
@@ -935,18 +935,20 @@ private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPalette
   }
 }
 
-/// Delegates for the navigation surfaces (worktree switcher, recent terminals),
-/// grouped so the main dispatch stays under the cyclomatic-complexity limit.
-private func navigationDelegateAction(
-  for kind: CommandPaletteItem.Kind
-) -> CommandPaletteFeature.Delegate? {
-  switch kind {
-  case .worktreeSelect(let id):
-    return .selectWorktree(id)
-  case .terminalTab(let worktreeID, let tabID):
-    return .selectTerminalTab(worktreeID, tabID)
-  default:
-    return nil
+extension CommandPaletteFeature {
+  /// Delegates for the navigation surfaces (worktree switcher, recent terminals),
+  /// grouped so the main dispatch stays under the cyclomatic-complexity limit.
+  fileprivate static func navigationDelegateAction(
+    for kind: CommandPaletteItem.Kind
+  ) -> Delegate? {
+    switch kind {
+    case .worktreeSelect(let id):
+      return .selectWorktree(id)
+    case .terminalTab(let worktreeID, let tabID):
+      return .selectTerminalTab(worktreeID, tabID)
+    default:
+      return nil
+    }
   }
 }
 

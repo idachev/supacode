@@ -3,6 +3,7 @@ import DependenciesTestSupport
 import Foundation
 import IdentifiedCollections
 import Sharing
+import SupacodeSettingsShared
 import Testing
 
 @testable import SupacodeSettingsFeature
@@ -146,6 +147,68 @@ struct AppFeatureRecentTerminalsTests {
 
     @Shared(.recentTerminalTabAccess) var access
     #expect(access == [newTabID.rawValue.uuidString: Self.now.timeIntervalSince1970])
+  }
+
+  @Test(.dependency(\.defaultAppStorage, .inMemory)) func confirmedCloseRecordsTheSelectedNeighbour() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global.confirmCloseTab = .always }
+    let fixture = Fixture(worktreeNames: ["a"], tabsPerWorktree: [2])
+    let worktreeID = fixture.worktrees[0].id
+    let closed = fixture.tabs[0][0].id
+    let neighbour = fixture.tabs[0][1].id
+    @Shared(.recentTerminalTabAccess) var access
+    $access.withLock { $0 = [neighbour.rawValue.uuidString: 1] }
+    let store = makeStore(fixture: fixture, selected: worktreeID)
+
+    let closedContentID = fixture.tabs[0][0].content.id
+    await store.send(
+      .terminals(
+        .layouts(.element(id: worktreeID, action: .contentRequestedClose(content: closedContentID, scope: .tab)))
+      )
+    )
+    #expect(store.state.terminals.layouts[id: worktreeID]?.alert != nil)
+    await store.send(
+      .terminals(.layouts(.element(id: worktreeID, action: .alert(.presented(.confirmClose(tabs: [closed]))))))
+    )
+    await store.finish()
+
+    #expect(store.state.terminals.layouts[id: worktreeID]?.layout.panes[0].selectedTabID == neighbour)
+    #expect(access == [neighbour.rawValue.uuidString: Self.now.timeIntervalSince1970])
+  }
+
+  @Test(.dependency(\.defaultAppStorage, .inMemory)) func zoomingAnUnfocusedPaneRecordsItsTab() async {
+    let fixture = Fixture(worktreeNames: ["a"], tabsPerWorktree: [1])
+    let worktreeID = fixture.worktrees[0].id
+    let originalPaneID = fixture.layouts[0].layout.panes[0].id
+    let store = makeStore(fixture: fixture, selected: worktreeID)
+    await store.send(
+      .terminals(
+        .layouts(
+          .element(
+            id: worktreeID,
+            action: .splitPane(
+              id: originalPaneID,
+              direction: .right,
+              spec: NewTabSpec(
+                tabID: TabID(),
+                title: "split",
+                content: .terminal(TerminalContentState(workingDirectory: nil)),
+                geometry: .fallback
+              )
+            )
+          )
+        )
+      )
+    )
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .focusPane(.pane(originalPaneID))))))
+    let splitPane = store.state.terminals.layouts[id: worktreeID]!.layout.panes.first { $0.id != originalPaneID }!
+    @Shared(.recentTerminalTabAccess) var access
+    $access.withLock { $0 = [:] }
+
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .toggleZoom(paneID: splitPane.id)))))
+    await store.finish()
+
+    #expect(access == [splitPane.selectedTabID!.rawValue.uuidString: Self.now.timeIntervalSince1970])
   }
 
   // MARK: - Pruning.

@@ -32,11 +32,11 @@ enum RecentTerminals {
     case .newTab, .splitPane, .closeTab, .closePane, .selectTab, .focusPane, .moveTab,
       .moveTabToSplit, .moveTabToSpanningSplit, .contentRequestedClose, .contentRequestedNewTab,
       .contentRequestedSplit, .contentRequestedFocus, .contentRequestedFocusSplit,
-      .contentRequestedGotoTab:
+      .contentRequestedGotoTab, .toggleZoom, .contentRequestedToggleZoom, .alert:
+      // Zoom focuses the zoomed pane; a confirmed close selects a neighbour.
       return true
     case .renameTab, .beginTabRename, .endTabRename, .enterWindowMode, .exitWindowMode, .resizePane,
-      .equalizePanes, .toggleZoom, .hibernateTab, .wakeTab, .runtime, .contentRequestedToggleZoom,
-      .contentRequestedResize, .contentRequestedMoveTab, .alert:
+      .equalizePanes, .hibernateTab, .wakeTab, .runtime, .contentRequestedResize, .contentRequestedMoveTab:
       return false
     }
   }
