@@ -70,6 +70,15 @@ public struct TerminalSettingsView: View {
           Text("When off, honors your Ghostty config theme.")
         }
       }
+      Section {
+        Toggle(isOn: $store.openTerminalOnWorktreeSelect) {
+          Text("Open a terminal when selecting a worktree")
+          Text(
+            "When off, a worktree without a terminal stays empty until you open a tab with "
+              + "\u{2318}T. New worktrees still get their first terminal."
+          )
+        }
+      }
       Section("Persistence") {
         Toggle(isOn: $store.terminateSessionsOnQuit) {
           Text("Terminate sessions on quit")

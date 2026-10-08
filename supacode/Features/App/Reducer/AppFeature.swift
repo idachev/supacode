@@ -574,6 +574,10 @@ struct AppFeature {
         // auto-focus races host creation and loses. The flag itself is consumed
         // by the detail view on appear.
         let wantsFocus = state.repositories.sidebarItems[id: worktree.id]?.shouldFocusTerminal == true
+        // A pending worktree is still being created and always needs its first tab
+        // (setup script, CLI ack). Otherwise the user's setting decides.
+        @Shared(.settingsFile) var settingsFile: SettingsFile
+        let opensTerminal = runSetupScriptIfNew || settingsFile.global.openTerminalOnWorktreeSelect
         return .merge(
           .run { _ in
             await terminalClient.send(.setSelectedWorktreeID(worktree.id))
@@ -581,6 +585,7 @@ struct AppFeature {
           .run { _ in
             // A worktree selected for the first time (fresh install, empty
             // migration) still needs its bootstrap tab; no-op when populated.
+            guard opensTerminal else { return }
             await terminalClient.send(
               .ensureInitialTab(worktree, runSetupScriptIfNew: runSetupScriptIfNew, focusing: wantsFocus))
           },

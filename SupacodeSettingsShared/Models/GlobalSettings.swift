@@ -174,6 +174,9 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   /// Beta: hidden terminal tabs release their renderer after a few minutes of
   /// inactivity and reconnect when viewed. On by default.
   public var terminalHibernationEnabled: Bool
+  /// Whether selecting a worktree that has no terminal opens one. When off, an
+  /// empty worktree stays empty until the user asks for a tab (Cmd+T).
+  public var openTerminalOnWorktreeSelect: Bool
   /// Accessibility size for the app chrome's text. Drives the scale published at
   /// each window root. Defaults to the unmodified system size.
   public var chromeTextSize: ChromeTextSize
@@ -275,6 +278,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     remoteSessionPersistenceEnabled: Bool = true,
     appVisibility: AppVisibility = .dockAndMenuBar,
     terminalHibernationEnabled: Bool = true,
+    openTerminalOnWorktreeSelect: Bool = true,
     chromeTextSize: ChromeTextSize = .default,
     automaticRepositoryRefreshEnabled: Bool = true,
     hoverFocusMode: HoverFocusMode = .never,
@@ -323,6 +327,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.remoteSessionPersistenceEnabled = remoteSessionPersistenceEnabled
     self.appVisibility = appVisibility
     self.terminalHibernationEnabled = terminalHibernationEnabled
+    self.openTerminalOnWorktreeSelect = openTerminalOnWorktreeSelect
     self.chromeTextSize = chromeTextSize
     self.automaticRepositoryRefreshEnabled = automaticRepositoryRefreshEnabled
     self.hoverFocusMode = hoverFocusMode
@@ -540,6 +545,10 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     terminalHibernationEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .terminalHibernationEnabled)
       ?? Self.default.terminalHibernationEnabled
+    // Pre-feature files omit this key; they keep the old auto-open behavior.
+    openTerminalOnWorktreeSelect =
+      try container.decodeIfPresent(Bool.self, forKey: .openTerminalOnWorktreeSelect)
+      ?? Self.default.openTerminalOnWorktreeSelect
     // Old settings files predate this key; they migrate to the system size. An
     // unrecognized value falls back the same way rather than throwing, which
     // would reset the whole file to defaults.

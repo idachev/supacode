@@ -490,6 +490,50 @@ struct AppFeatureTerminalSetupScriptTests {
     #expect(sent.value.contains(.ensureInitialTab(worktree, runSetupScriptIfNew: false, focusing: true)))
   }
 
+  @Test(.dependencies) func selectedWorktreeChangedSkipsInitialTabWhenOptionIsOff() async {
+    let sent = await selectWorktree(pendingSetupScript: false, opensTerminalOnSelect: false)
+    #expect(!sent.contains { if case .ensureInitialTab = $0 { true } else { false } })
+  }
+
+  @Test(.dependencies) func selectedPendingWorktreeStillGetsInitialTabWhenOptionIsOff() async {
+    let sent = await selectWorktree(pendingSetupScript: true, opensTerminalOnSelect: false)
+    #expect(sent.contains { if case .ensureInitialTab = $0 { true } else { false } })
+  }
+
+  /// Selects a worktree with `openTerminalOnWorktreeSelect` set, returning the terminal commands sent.
+  private func selectWorktree(
+    pendingSetupScript: Bool,
+    opensTerminalOnSelect: Bool
+  ) async -> [TerminalClient.Command] {
+    let worktree = makeWorktree()
+    let repositoriesState = makeRepositoriesState(
+      worktree: worktree,
+      pendingSetupScript: pendingSetupScript,
+      selected: true
+    )
+    let sent = LockIsolated<[TerminalClient.Command]>([])
+    let storage = SettingsTestStorage()
+    let settingsFileURL = URL(fileURLWithPath: "/tmp/supacode-settings-\(UUID().uuidString).json")
+    await withDependencies {
+      $0.terminalClient.send = { command in sent.withValue { $0.append(command) } }
+      $0.worktreeInfoWatcher.send = { _ in }
+      $0.settingsFileStorage = storage.storage
+      $0.settingsFileURL = settingsFileURL
+    } operation: {
+      @Shared(.settingsFile) var settingsFile: SettingsFile
+      $settingsFile.withLock { $0.global.openTerminalOnWorktreeSelect = opensTerminalOnSelect }
+      let store = TestStore(
+        initialState: AppFeature.State(repositories: repositoriesState, settings: SettingsFeature.State())
+      ) {
+        AppFeature()
+      }
+      store.exhaustivity = .off
+      await store.send(.repositories(.delegate(.selectedWorktreeChanged(worktree))))
+      await store.finish()
+    }
+    return sent.value
+  }
+
   private func makeRepositoriesState(
     worktree: Worktree,
     pendingSetupScript: Bool,

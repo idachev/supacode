@@ -823,6 +823,8 @@ struct SettingsFilePersistenceTests {
 
     // The Beta feature defaults on, so a pre-feature file decodes to on.
     #expect(settings.global.terminalHibernationEnabled == true)
+    // A pre-feature file keeps the old behavior of opening a terminal on select.
+    #expect(settings.global.openTerminalOnWorktreeSelect == true)
   }
 
   @Test(.dependencies) func decodesMissingAutomaticRepositoryRefreshEnabledAsTrue() throws {

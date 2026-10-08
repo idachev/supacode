@@ -87,6 +87,7 @@ public struct SettingsFeature {
     public var remoteSessionPersistenceEnabled: Bool
     public var appVisibility: AppVisibility
     public var terminalHibernationEnabled: Bool
+    public var openTerminalOnWorktreeSelect: Bool
     public var chromeTextSize: ChromeTextSize
     public var automaticRepositoryRefreshEnabled: Bool
     public var hoverFocusMode: HoverFocusMode
@@ -225,6 +226,7 @@ public struct SettingsFeature {
       remoteSessionPersistenceEnabled = settings.remoteSessionPersistenceEnabled
       appVisibility = settings.appVisibility
       terminalHibernationEnabled = settings.terminalHibernationEnabled
+      openTerminalOnWorktreeSelect = settings.openTerminalOnWorktreeSelect
       chromeTextSize = settings.chromeTextSize
       automaticRepositoryRefreshEnabled = settings.automaticRepositoryRefreshEnabled
       hoverFocusMode = settings.hoverFocusMode
@@ -418,6 +420,7 @@ public struct SettingsFeature {
         state.remoteSessionPersistenceEnabled = normalizedSettings.remoteSessionPersistenceEnabled
         state.appVisibility = normalizedSettings.appVisibility
         state.terminalHibernationEnabled = normalizedSettings.terminalHibernationEnabled
+        state.openTerminalOnWorktreeSelect = normalizedSettings.openTerminalOnWorktreeSelect
         state.chromeTextSize = normalizedSettings.chromeTextSize
         state.automaticRepositoryRefreshEnabled = normalizedSettings.automaticRepositoryRefreshEnabled
         state.hoverFocusMode = normalizedSettings.hoverFocusMode
@@ -1226,6 +1229,7 @@ extension SettingsFeature.State {
     settings.remoteSessionPersistenceEnabled = remoteSessionPersistenceEnabled
     settings.appVisibility = appVisibility
     settings.terminalHibernationEnabled = terminalHibernationEnabled
+    settings.openTerminalOnWorktreeSelect = openTerminalOnWorktreeSelect
     settings.chromeTextSize = chromeTextSize
     settings.automaticRepositoryRefreshEnabled = automaticRepositoryRefreshEnabled
     settings.hoverFocusMode = hoverFocusMode
