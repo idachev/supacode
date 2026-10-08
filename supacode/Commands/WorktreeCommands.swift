@@ -53,6 +53,7 @@ private struct WorktreeMainMenu: Commands {
     let openPR = AppShortcuts.openPullRequest.effective(from: overrides)
     let newWt = AppShortcuts.newWorktree.effective(from: overrides)
     let archived = AppShortcuts.archivedWorktrees.effective(from: overrides)
+    let recentTerminals = AppShortcuts.recentTerminals.effective(from: overrides)
     let refresh = AppShortcuts.refreshWorktrees.effective(from: overrides)
     let run = AppShortcuts.runScript.effective(from: overrides)
     let stop = AppShortcuts.stopRunScript.effective(from: overrides)
@@ -101,6 +102,12 @@ private struct WorktreeMainMenu: Commands {
       .appKeyboardShortcut(archived)
       .help("Archived Worktrees (\(archived?.display ?? "none"))")
       .disabled(!snapshot.isInitialLoadComplete)
+      Button("Recent Terminals…", systemImage: "terminal") {
+        guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
+        store.send(.commandPalette(.togglePresentInMode(.recentTerminals)))
+      }
+      .appKeyboardShortcut(recentTerminals)
+      .help("Recent Terminals (\(recentTerminals?.display ?? "none"))")
       Divider()
       Button("Archive Worktree…", systemImage: "archivebox") {
         archiveWorktreeAction?()

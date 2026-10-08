@@ -6,6 +6,7 @@
 //
 
 import ComposableArchitecture
+import Sharing
 import SupacodeSettingsShared
 import SwiftUI
 import UniformTypeIdentifiers
@@ -175,6 +176,7 @@ private struct CommandPaletteOverlayHost: View {
   let store: StoreOf<AppFeature>
   let repositoriesStore: StoreOf<RepositoriesFeature>
   let ghosttyShortcuts: GhosttyShortcutManager
+  @Shared(.recentTerminalTabAccess) private var recentTerminalTabAccess
 
   var body: some View {
     #if DEBUG
@@ -183,14 +185,31 @@ private struct CommandPaletteOverlayHost: View {
     let paletteStore = store.scope(state: \.commandPalette, action: \.commandPalette)
     return CommandPalettePanelHost(
       store: paletteStore,
-      items: CommandPaletteFeature.items(
-        in: paletteStore.mode,
+      items: paletteItems(mode: paletteStore.mode),
+      isPresented: paletteStore.isPresented
+    )
+  }
+
+  /// Terminal layouts and live tab titles are read only while the Recent
+  /// Terminals surface is up, so layout churn never invalidates this host
+  /// in the other modes.
+  private func paletteItems(mode: CommandPaletteFeature.PaletteMode) -> [CommandPaletteItem] {
+    guard mode == .recentTerminals else {
+      return CommandPaletteFeature.items(
+        in: mode,
         from: repositoriesStore.state,
         ghosttyCommands: ghosttyShortcuts.commandPaletteEntries,
         scripts: store.allScripts,
         runningScriptIDs: store.runningScriptIDs
-      ),
-      isPresented: paletteStore.isPresented
+      )
+    }
+    let runtime = ContentRuntime.liveValue
+    return RecentTerminals.items(
+      from: repositoriesStore.state,
+      layouts: store.terminals.layouts,
+      access: recentTerminalTabAccess,
+      resolveTitle: { TabTitle.resolved(for: $0, runtime: runtime) },
+      isDormant: { runtime.content(for: $0.content.id)?.renderer == nil }
     )
   }
 }

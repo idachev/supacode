@@ -11,12 +11,15 @@ struct CommandPaletteFeature {
   /// Two narrow surfaces sharing one palette UI. `.commands` is the full
   /// command palette (scripts, ghostty actions, PR actions, settings);
   /// `.worktreeSwitcher` shows only worktrees, sorted by
-  /// `RepositoriesFeature.State.worktreeMRU`. Mode lives in State so the
+  /// `RepositoriesFeature.State.worktreeMRU`; `.recentTerminals` shows every
+  /// live terminal tab across worktrees, most recently accessed first.
+  /// Mode lives in State so the
   /// items builder, the view, and the dismiss handler all read the same
   /// source of truth.
   enum PaletteMode: Equatable, Sendable {
     case commands
     case worktreeSwitcher
+    case recentTerminals
   }
 
   @ObservableState
@@ -52,6 +55,8 @@ struct CommandPaletteFeature {
   @CasePathable
   enum Delegate: Equatable {
     case selectWorktree(Worktree.ID)
+    /// Select the worktree, then the exact tab, and focus it.
+    case selectTerminalTab(Worktree.ID, TabID)
     case checkForUpdates
     case openSettings
     case newWorktree
@@ -128,8 +133,13 @@ struct CommandPaletteFeature {
       case .activateItem(let item):
         state.isPresented = false
         state.resetForDismiss()
-        state.recencyByItemID[item.id] = now.timeIntervalSince1970
-        saveRecency(state.recencyByItemID)
+        // Terminal tabs keep their own access log (`RecentTerminals`), fed by
+        // tab selection, so the palette's item recency stays command-only.
+        if case .terminalTab = item.kind {
+        } else {
+          state.recencyByItemID[item.id] = now.timeIntervalSince1970
+          saveRecency(state.recencyByItemID)
+        }
         // No `.dismissedWithoutSelection` here: every activation delegate
         // resolves to a destination that owns its own focus transition.
         return .send(.delegate(delegateAction(for: item.kind)))
@@ -213,9 +223,9 @@ struct CommandPaletteFeature {
         // actions; scripts and PR actions surface once you type.
         let visibleItems = items.filter { $0.isGlobal && !$0.isRootAction }
         return prioritizeItems(items: visibleItems, recencyByID: recencyByID, now: now)
-      case .worktreeSwitcher:
-        // The switcher is a navigation surface: every worktree row is visible
-        // with no query, already ordered MRU-first via `priorityTier`.
+      case .worktreeSwitcher, .recentTerminals:
+        // Navigation surfaces: every row is visible with no query, already
+        // ordered most-recent-first via `priorityTier`.
         return prioritizeItems(items: items, recencyByID: recencyByID, now: now)
       }
     }
@@ -465,6 +475,9 @@ struct CommandPaletteFeature {
       )
     case .worktreeSwitcher:
       return worktreeSwitcherItems(from: repositories)
+    case .recentTerminals:
+      // Built by `RecentTerminals.items`, which needs the terminal layouts.
+      return []
     }
   }
 
@@ -879,8 +892,8 @@ private func commandPaletteRecencyScore(
 
 private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPaletteFeature.Delegate {
   switch kind {
-  case .worktreeSelect(let id):
-    return .selectWorktree(id)
+  case .worktreeSelect, .terminalTab:
+    return CommandPaletteFeature.navigationDelegateAction(for: kind)!
   case .checkForUpdates:
     return .checkForUpdates
   case .openSettings:
@@ -922,6 +935,23 @@ private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPalette
   }
 }
 
+extension CommandPaletteFeature {
+  /// Delegates for the navigation surfaces (worktree switcher, recent terminals),
+  /// grouped so the main dispatch stays under the cyclomatic-complexity limit.
+  fileprivate static func navigationDelegateAction(
+    for kind: CommandPaletteItem.Kind
+  ) -> Delegate? {
+    switch kind {
+    case .worktreeSelect(let id):
+      return .selectWorktree(id)
+    case .terminalTab(let worktreeID, let tabID):
+      return .selectTerminalTab(worktreeID, tabID)
+    default:
+      return nil
+    }
+  }
+}
+
 /// Delegates for actions that mutate the selected sidebar entry (rename or
 /// customize its appearance), grouped so the main dispatch stays under the
 /// cyclomatic-complexity limit.
@@ -939,7 +969,7 @@ private func selectedEntryDelegateAction(
     return .toggleWindowMode
   case .layoutCommand(let command):
     return .layoutCommand(command)
-  case .checkForUpdates, .openRepository, .addRemoteRepository, .worktreeSelect, .openSettings,
+  case .checkForUpdates, .openRepository, .addRemoteRepository, .worktreeSelect, .terminalTab, .openSettings,
     .newWorktree, .removeWorktree, .archiveWorktree, .viewArchivedWorktrees, .refreshWorktrees,
     .ghosttyCommand, .openPullRequest, .markPullRequestReady, .mergePullRequest,
     .closePullRequest, .copyFailingJobURL, .copyCiFailureLogs, .rerunFailedJobs,
@@ -987,6 +1017,7 @@ private func pullRequestDelegateAction(
     return .openFailingCheckDetails(worktreeID)
   case .layoutCommand,
     .worktreeSelect,
+    .terminalTab,
     .checkForUpdates,
     .openSettings,
     .newWorktree,

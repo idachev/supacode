@@ -14,7 +14,8 @@ struct CommandPaletteItem: Identifiable, Equatable {
   /// user is already in. The switcher still renders it (so you can see
   /// where you are), but the overlay skips it for the default selection so
   /// ⌘P then Enter lands on the previous worktree instead of being a
-  /// no-op. Always `false` outside the worktree switcher.
+  /// no-op. The recent-terminals list sets it on the tab the user is already
+  /// in, for the same reason. Always `false` in the commands palette.
   let isCurrentWorktree: Bool
   /// Presentation for a worktree-switcher row: text tints, leading icon, and
   /// the remote host, mirroring the sidebar. `nil` for every non-switcher item.
@@ -75,6 +76,8 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case openRepository
     case addRemoteRepository
     case worktreeSelect(Worktree.ID)
+    /// A terminal tab in the recent-terminals list.
+    case terminalTab(Worktree.ID, TabID)
     case openSettings
     case newWorktree
     case removeWorktree(Worktree.ID, Repository.ID)
@@ -118,7 +121,7 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .rerunFailedJobs,
       .openFailingCheckDetails:
       true
-    case .worktreeSelect, .removeWorktree, .archiveWorktree:
+    case .worktreeSelect, .terminalTab, .removeWorktree, .archiveWorktree:
       false
     case .renameBranch, .customizeRepositoryAppearance, .customizeWorktreeAppearance:
       true
@@ -147,6 +150,7 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .rerunFailedJobs,
       .openFailingCheckDetails,
       .worktreeSelect,
+      .terminalTab,
       .removeWorktree,
       .archiveWorktree,
       .renameBranch,
@@ -183,6 +187,7 @@ struct CommandPaletteItem: Identifiable, Equatable {
       .rerunFailedJobs,
       .openFailingCheckDetails,
       .worktreeSelect,
+      .terminalTab,
       .removeWorktree,
       .archiveWorktree,
       .renameBranch,

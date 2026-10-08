@@ -84,6 +84,8 @@ struct CommandPaletteOverlayView: View {
     switch store.mode {
     case .worktreeSwitcher:
       return "Go to worktree…"
+    case .recentTerminals:
+      return "Recent Terminals…"
     case .commands:
       return "Search for actions…"
     }
@@ -276,7 +278,7 @@ private struct CommandPaletteRowView: View {
       .layoutCommand,
       .openPullRequest, .markPullRequestReady, .mergePullRequest, .closePullRequest, .copyFailingJobURL,
       .copyCiFailureLogs,
-      .rerunFailedJobs, .openFailingCheckDetails, .worktreeSelect,
+      .rerunFailedJobs, .openFailingCheckDetails, .worktreeSelect, .terminalTab,
       .customizeRepositoryAppearance, .customizeWorktreeAppearance:
       return nil
     case .removeWorktree:
@@ -336,6 +338,8 @@ private struct CommandPaletteRowView: View {
       return "exclamationmark.triangle"
     case .worktreeSelect:
       return nil
+    case .terminalTab:
+      return "terminal"
     case .removeWorktree:
       return "trash"
     case .archiveWorktree:
@@ -367,7 +371,7 @@ private struct CommandPaletteRowView: View {
       .copyCiFailureLogs,
       .rerunFailedJobs, .openFailingCheckDetails:
       return true
-    case .worktreeSelect, .removeWorktree, .archiveWorktree:
+    case .worktreeSelect, .terminalTab, .removeWorktree, .archiveWorktree:
       return false
     case .renameBranch, .customizeRepositoryAppearance, .customizeWorktreeAppearance:
       return true
@@ -485,6 +489,8 @@ private struct CommandPaletteRowView: View {
     switch row.kind {
     case .worktreeSelect:
       base = "Switch to \(row.title)"
+    case .terminalTab:
+      base = "Go to terminal \(row.title)"
     case .checkForUpdates:
       base = "Check for Updates"
     case .openRepository:

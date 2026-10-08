@@ -1700,6 +1700,25 @@ struct AppFeature {
         // that already passed focusTerminal: true.
         return .send(.repositories(.selectWorktree(worktreeID, focusTerminal: true)))
 
+      case .commandPalette(.delegate(.selectTerminalTab(let worktreeID, let tabID))):
+        guard let worktree = state.repositories.worktree(for: worktreeID) else {
+          appLogger.warning("Recent terminal row targets worktree \(worktreeID), which no longer exists.")
+          return .none
+        }
+        // Select the tab in its layout first, so the worktree switch stamps the
+        // target tab as accessed rather than the worktree's previous tab. Then,
+        // like `jumpToLatestUnread`, the client `.selectTab` wakes a dormant tab
+        // and focuses it.
+        return .concatenate(
+          .send(.terminals(.layouts(.element(id: worktreeID, action: .selectTab(id: tabID))))),
+          .merge(
+            .send(.repositories(.selectWorktree(worktreeID, focusTerminal: true))),
+            .run { _ in
+              await terminalClient.send(.selectTab(worktree, tabID: tabID))
+            }
+          )
+        )
+
       case .commandPalette(.delegate(.dismissedWithoutSelection)):
         // Always-focused-terminal invariant. Cancellation paths (Esc, outside
         // tap, programmatic close) don't carry a destination; refocus the
@@ -2120,6 +2139,11 @@ struct AppFeature {
     .ifLet(\.$deeplinkInputConfirmation, action: \.deeplinkInputConfirmation) {
       DeeplinkInputConfirmationFeature()
     }
+    // After the scopes, so the layouts already reflect the action.
+    Reduce { state, action in
+      trackRecentTerminalAccess(state: state, action: action)
+      return .none
+    }
     Reduce { state, action in
       // Cold-path gate. Without this, an agent storm fires
       // `recomputeWorktreeMenuSnapshotIfChanged` hundreds of times per second
@@ -2130,6 +2154,46 @@ struct AppFeature {
       state.recomputeWorktreeMenuSnapshotIfChanged()
       return .none
     }
+  }
+
+  // MARK: - Recent terminals.
+
+  /// Feeds the Recent Terminals access log: stamps the selected worktree's
+  /// current tab when the tab or worktree selection may have moved, and prunes
+  /// entries once tabs can have gone. Never per keystroke or output: title
+  /// commits and other non-selection layout actions are ignored.
+  private func trackRecentTerminalAccess(state: State, action: Action) {
+    switch action {
+    case .terminals(.layouts(.element(let worktreeID, let layoutAction))):
+      if worktreeID == state.repositories.selectedWorktreeID, RecentTerminals.canChangeCurrentTab(layoutAction) {
+        recordCurrentTerminalAccess(state: state)
+      }
+      if RecentTerminals.canRemoveTabs(layoutAction) {
+        pruneRecentTerminalAccess(state: state)
+      }
+    case .terminals(.layoutsHydrated):
+      // Prune only once every layout is in: a detach or repositories change can
+      // run before hydration, when the empty layouts would wipe the whole log.
+      // A launch-restored selection can land before hydration; stamp it now.
+      pruneRecentTerminalAccess(state: state)
+      recordCurrentTerminalAccess(state: state)
+    case .repositories(.delegate(.selectedWorktreeChanged(.some))):
+      recordCurrentTerminalAccess(state: state)
+    default:
+      break
+    }
+  }
+
+  private func recordCurrentTerminalAccess(state: State) {
+    guard let worktreeID = state.repositories.selectedWorktreeID,
+      let tabID = RecentTerminals.currentTabID(in: state.terminals.layouts[id: worktreeID])
+    else { return }
+    RecentTerminals.recordAccess(tabID, at: now)
+  }
+
+  private func pruneRecentTerminalAccess(state: State) {
+    let liveTabIDs = state.terminals.layouts.flatMap { $0.layout.panes.flatMap(\.tabs.ids) }
+    RecentTerminals.prune(keeping: Set(liveTabIDs))
   }
 
   // MARK: - Agent presence fan-out.
