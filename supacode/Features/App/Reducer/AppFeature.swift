@@ -1705,14 +1705,18 @@ struct AppFeature {
           appLogger.warning("Recent terminal row targets worktree \(worktreeID), which no longer exists.")
           return .none
         }
-        // Like `jumpToLatestUnread`: `.selectTab` carries the worktree, wakes a
-        // dormant tab, selects it, and focuses it, independent of the worktree
-        // selection landing first.
-        return .merge(
-          .send(.repositories(.selectWorktree(worktreeID, focusTerminal: true))),
-          .run { _ in
-            await terminalClient.send(.selectTab(worktree, tabID: tabID))
-          }
+        // Select the tab in its layout first, so the worktree switch stamps the
+        // target tab as accessed rather than the worktree's previous tab. Then,
+        // like `jumpToLatestUnread`, the client `.selectTab` wakes a dormant tab
+        // and focuses it.
+        return .concatenate(
+          .send(.terminals(.layouts(.element(id: worktreeID, action: .selectTab(id: tabID))))),
+          .merge(
+            .send(.repositories(.selectWorktree(worktreeID, focusTerminal: true))),
+            .run { _ in
+              await terminalClient.send(.selectTab(worktree, tabID: tabID))
+            }
+          )
         )
 
       case .commandPalette(.delegate(.dismissedWithoutSelection)):

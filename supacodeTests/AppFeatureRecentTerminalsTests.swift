@@ -180,7 +180,11 @@ struct AppFeatureRecentTerminalsTests {
     await store.finish()
 
     #expect(store.state.repositories.selectedWorktreeID == worktree.id)
+    #expect(store.state.terminals.layouts[id: worktree.id]?.layout.panes[0].selectedTabID == tabID)
     #expect(sent.value.contains(.selectTab(worktree, tabID: tabID)))
+    // The jump stamps the target tab, never the worktree's previously selected one.
+    @Shared(.recentTerminalTabAccess) var access
+    #expect(Set(access.keys) == [tabID.rawValue.uuidString])
   }
 
   @Test(.dependency(\.defaultAppStorage, .inMemory))
