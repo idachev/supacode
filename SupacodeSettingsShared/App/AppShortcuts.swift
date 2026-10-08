@@ -9,7 +9,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
   case commandPalette, worktreeSwitcher, openSettings, checkForUpdates, showMainWindow
   case toggleLeftSidebar, revealInSidebar
   case expandAllSidebarGroups, collapseAllSidebarGroups
-  case newWorktree, refreshWorktrees, archivedWorktrees, archiveWorktree
+  case newWorktree, refreshWorktrees, archivedWorktrees, recentTerminals, archiveWorktree
   case deleteWorktree, confirmWorktreeAction
   case selectNextWorktree, selectPreviousWorktree
   case worktreeHistoryBack, worktreeHistoryForward
@@ -57,6 +57,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     case .newWorktree: "newWorktree"
     case .refreshWorktrees: "refreshWorktrees"
     case .archivedWorktrees: "archivedWorktrees"
+    case .recentTerminals: "recentTerminals"
     case .archiveWorktree: "archiveWorktree"
     case .deleteWorktree: "deleteWorktree"
     case .confirmWorktreeAction: "confirmWorktreeAction"
@@ -115,6 +116,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     "newWorktree": .newWorktree,
     "refreshWorktrees": .refreshWorktrees,
     "archivedWorktrees": .archivedWorktrees,
+    "recentTerminals": .recentTerminals,
     "archiveWorktree": .archiveWorktree,
     "deleteWorktree": .deleteWorktree,
     "confirmWorktreeAction": .confirmWorktreeAction,
@@ -190,6 +192,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     case .newWorktree: "New Worktree"
     case .refreshWorktrees: "Refresh Worktrees"
     case .archivedWorktrees: "Archived Worktrees"
+    case .recentTerminals: "Recent Terminals"
     case .archiveWorktree: "Archive Worktree"
     case .deleteWorktree: "Delete Worktree"
     case .confirmWorktreeAction: "Confirm Worktree Action"
@@ -484,6 +487,8 @@ public enum AppShortcuts {
   public static let newWorktree = AppShortcut(id: .newWorktree, key: "n", modifiers: .command)
   public static let refreshWorktrees = AppShortcut(id: .refreshWorktrees, key: "r", modifiers: [.command, .shift])
   public static let archivedWorktrees = AppShortcut(id: .archivedWorktrees, key: "a", modifiers: [.command, .control])
+  // Sits next to ⌘P (worktrees) and ⌘⇧P (commands): the third palette surface.
+  public static let recentTerminals = AppShortcut(id: .recentTerminals, key: "p", modifiers: [.command, .option])
   public static let archiveWorktree = AppShortcut(
     id: .archiveWorktree,
     keyEquivalent: .delete, ghosttyKeyName: "backspace", modifiers: .command
@@ -661,7 +666,7 @@ public enum AppShortcuts {
     AppShortcutGroup(
       category: .worktrees,
       shortcuts: [
-        newWorktree, refreshWorktrees, archivedWorktrees, archiveWorktree,
+        newWorktree, refreshWorktrees, archivedWorktrees, recentTerminals, archiveWorktree,
         deleteWorktree, confirmWorktreeAction, selectNextWorktree, selectPreviousWorktree,
         worktreeHistoryBack, worktreeHistoryForward,
       ]
