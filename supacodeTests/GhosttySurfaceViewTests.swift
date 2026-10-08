@@ -440,8 +440,10 @@ struct GhosttySurfaceViewTests {
     // `NSMenuItem` drops `.function` from a mask set in code; AppKit's own item keeps it.
     let item = FunctionMaskMenuItem(
       title: "Center", action: Selector(("appOwnedAction:")), keyEquivalent: "c")
-    let latin = Self.keyEvent(chars: "\u{03}", ignoringModifiers: "c", modifiers: [.control], keyCode: UInt16(kVK_ANSI_C))
-    let cyrillic = Self.keyEvent(chars: "\u{03}", ignoringModifiers: "ц", modifiers: [.control], keyCode: UInt16(kVK_ANSI_C))
+    let latin = Self.keyEvent(
+      chars: "\u{03}", ignoringModifiers: "c", modifiers: [.control], keyCode: UInt16(kVK_ANSI_C))
+    let cyrillic = Self.keyEvent(
+      chars: "\u{03}", ignoringModifiers: "ц", modifiers: [.control], keyCode: UInt16(kVK_ANSI_C))
     let withFunction = Self.keyEvent(
       chars: "c", ignoringModifiers: "c", modifiers: [.control, .function], keyCode: UInt16(kVK_ANSI_C))
 

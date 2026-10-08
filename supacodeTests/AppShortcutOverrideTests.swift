@@ -54,14 +54,13 @@ struct AppShortcutOverrideTests {
   @Test func ghosttyKeybindUsesLayoutCharacter() {
     let code = UInt16(kVK_ANSI_LeftBracket)
     let override = AppShortcutOverride(keyCode: code, modifiers: [.command])
-    let char = AppShortcutOverride.layoutCharacter(for: code)!.lowercased()
-    #expect(override.ghosttyKeybind == "super+\(char)")
+    // The trigger is the US glyph, whatever the live layout is.
+    #expect(override.ghosttyKeybind == "super+[")
   }
 
   @Test func ghosttyKeybindLetterWithMultipleModifiers() {
     let override = AppShortcutOverride(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .shift])
-    let char = AppShortcutOverride.layoutCharacter(for: UInt16(kVK_ANSI_A))!.lowercased()
-    #expect(override.ghosttyKeybind == "shift+super+\(char)")
+    #expect(override.ghosttyKeybind == "shift+super+a")
   }
 
   @Test func ghosttyKeybindArrowKey() {
@@ -92,8 +91,8 @@ struct AppShortcutOverrideTests {
     let code = UInt16(kVK_ANSI_LeftBracket)
     let override = AppShortcutOverride(keyCode: code, modifiers: [.command])
     let shortcut = override.keyboardShortcut
-    let char = AppShortcutOverride.layoutCharacter(for: code)!
-    #expect(shortcut.key == KeyEquivalent(Character(char)))
+    // Menu matching keeps the US glyph so the item stays the same on a Cyrillic layout.
+    #expect(shortcut.key == KeyEquivalent("["))
     #expect(shortcut.modifiers == .command)
   }
 
@@ -316,8 +315,7 @@ struct AppShortcutOverrideTests {
   @Test func ghosttyKeybindAllModifiers() {
     let code = UInt16(kVK_ANSI_A)
     let override = AppShortcutOverride(keyCode: code, modifiers: [.command, .shift, .option, .control])
-    let char = AppShortcutOverride.layoutCharacter(for: code)!.lowercased()
-    #expect(override.ghosttyKeybind == "ctrl+alt+shift+super+\(char)")
+    #expect(override.ghosttyKeybind == "ctrl+alt+shift+super+a")
   }
 
   // MARK: - Reverse key code lookup.
@@ -328,8 +326,9 @@ struct AppShortcutOverrideTests {
       let code = AppShortcutOverride.keyCode(for: letter)
       #expect(code != nil, "Expected key code for '\(letter)'")
       if let code {
-        let resolved = AppShortcutOverride.layoutCharacter(for: code)
-        #expect(resolved?.lowercased() == String(letter))
+        // The reverse lookup is US QWERTY, so compare with the US trigger, not the live layout.
+        let keybind = AppShortcutOverride(keyCode: code, modifiers: []).ghosttyKeybind
+        #expect(keybind == String(letter))
       }
     }
   }

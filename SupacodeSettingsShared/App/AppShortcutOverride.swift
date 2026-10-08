@@ -456,8 +456,8 @@ extension AppShortcutOverride {
     default:
       // Menu matching is character-based. Keep the US letter so the item stays `t`
       // on a Cyrillic layout; the settings row still shows the layout cap.
-      if let us = usQwertyFallback[code]?.first {
-        return KeyEquivalent(us)
+      if let usLetter = usQwertyFallback[code]?.first {
+        return KeyEquivalent(usLetter)
       }
       guard let char = layoutCharacter(for: code)?.first else {
         shortcutLogger.warning("Cannot resolve KeyEquivalent for key code \(code), using fallback '?'.")

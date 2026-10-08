@@ -759,6 +759,10 @@ final class GhosttyRuntime {
     }
   }
 
+  /// Where the bundled theme overlay file is written. Tests point it at a private
+  /// directory so a shared or locked copy in the real temp directory cannot interfere.
+  static var themeOverlayDirectory = FileManager.default.temporaryDirectory
+
   /// Loads the bundled Supacode light/dark theme plus its opacity and blur. No-op when sync is disabled.
   private static func loadBundledTheme(into config: ghostty_config_t, enabled: Bool) {
     guard enabled else { return }
@@ -775,7 +779,7 @@ final class GhosttyRuntime {
       background-opacity = 0.9
       background-blur = true
       """
-    let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("supacode-theme.conf")
+    let tempURL = themeOverlayDirectory.appendingPathComponent("supacode-theme.conf")
     do {
       try contents.write(to: tempURL, atomically: true, encoding: .utf8)
     } catch {

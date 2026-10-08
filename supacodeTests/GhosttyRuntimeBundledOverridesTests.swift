@@ -7,21 +7,40 @@ import Testing
 
 @MainActor
 struct GhosttyRuntimeBundledOverridesTests {
+  /// Runs `body` with the theme overlay written to a private directory. The runtime
+  /// normally writes it to a fixed file in the temp directory; a stale or locked copy
+  /// there (another Supacode instance, a `chflags uchg` guard) would make the write
+  /// fail, leave the bundled theme unloaded, and turn the scheme tests into noise.
+  private static func withPrivateThemeOverlay<T>(_ body: () throws -> T) rethrows -> T {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("supacode-ghostty-tests-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let previous = GhosttyRuntime.themeOverlayDirectory
+    GhosttyRuntime.themeOverlayDirectory = directory
+    defer {
+      GhosttyRuntime.themeOverlayDirectory = previous
+      try? FileManager.default.removeItem(at: directory)
+    }
+    return try body()
+  }
+
   // The window tint + appearance source must track the resolved color scheme:
   // a dark scheme yields a dark background, a light scheme a light one. Guards
   // that the bundled themes actually differ so a missing embed hard-fails
   // instead of passing vacuously (both sides would be `windowBackgroundColor`).
   @Test func backgroundColorTracksColorScheme() throws {
-    let runtime = GhosttyRuntime(initialColorScheme: .light)
-    let light = runtime.backgroundColor()
-    runtime.setColorScheme(.dark)
-    let dark = runtime.backgroundColor()
-    try #require(!light.matchesTint(dark))
-    #expect(light.isLightColor)
-    #expect(!dark.isLightColor)
-    // Re-resolution works in both directions, not just the first transition.
-    runtime.setColorScheme(.light)
-    #expect(runtime.backgroundColor().isLightColor)
+    try Self.withPrivateThemeOverlay {
+      let runtime = GhosttyRuntime(initialColorScheme: .light)
+      let light = runtime.backgroundColor()
+      runtime.setColorScheme(.dark)
+      let dark = runtime.backgroundColor()
+      try #require(!light.matchesTint(dark))
+      #expect(light.isLightColor)
+      #expect(!dark.isLightColor)
+      // Re-resolution works in both directions, not just the first transition.
+      runtime.setColorScheme(.light)
+      #expect(runtime.backgroundColor().isLightColor)
+    }
   }
 
   // The launch-flash fix: `init` seeds the resolved scheme so the FIRST
@@ -30,15 +49,17 @@ struct GhosttyRuntimeBundledOverridesTests {
   // resolution. Asserting with no interim `setColorScheme` also documents that
   // the seed's config swap lands synchronously within `init`.
   @Test func initSeedsResolvedColorSchemeBeforeFirstRead() {
-    let dark = GhosttyRuntime(initialColorScheme: .dark)
-    #expect(!dark.backgroundColor().isLightColor)
-    #expect(!dark.windowTintColor().isLightColor)
-    // With no focused-surface provider installed (the launch state),
-    // `windowTintColor()` falls through to exactly `backgroundColor()`.
-    #expect(dark.windowTintColor().matchesTint(dark.backgroundColor()))
-    let light = GhosttyRuntime(initialColorScheme: .light)
-    #expect(light.backgroundColor().isLightColor)
-    #expect(light.windowTintColor().isLightColor)
+    Self.withPrivateThemeOverlay {
+      let dark = GhosttyRuntime(initialColorScheme: .dark)
+      #expect(!dark.backgroundColor().isLightColor)
+      #expect(!dark.windowTintColor().isLightColor)
+      // With no focused-surface provider installed (the launch state),
+      // `windowTintColor()` falls through to exactly `backgroundColor()`.
+      #expect(dark.windowTintColor().matchesTint(dark.backgroundColor()))
+      let light = GhosttyRuntime(initialColorScheme: .light)
+      #expect(light.backgroundColor().isLightColor)
+      #expect(light.windowTintColor().isLightColor)
+    }
   }
 
   // Surface liveness is tracked by Set membership alone now that `isValid` is

@@ -1121,6 +1121,12 @@ struct AppFeatureCommandAckTests {
 
   @Test(.dependencies) func deleteSocketDeeplinkFailsOnScriptCancellation() async {
     let worktree = makeWorktree()
+    // `@Shared(.repositorySettings)` is process-global. Pin a delete script so the
+    // flow waits on the script tab instead of racing straight to `.worktreeDeleted`,
+    // and restore it so no other test inherits it.
+    @Shared(.repositorySettings(worktree.repositoryRootURL, host: worktree.host)) var settings
+    $settings.withLock { $0.deleteScript = "echo cleaning" }
+    defer { $settings.withLock { $0.deleteScript = "" } }
     let store = makeStore(worktree: worktree, tabExists: true)
     let (readFD, writeFD) = makePipe()
     defer { close(readFD) }

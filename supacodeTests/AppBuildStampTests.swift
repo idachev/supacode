@@ -9,6 +9,7 @@ struct AppBuildStampTests {
 
   @Test func lineKeepsADirtyCommitMarker() {
     #expect(
-      AppBuildStamp.line(date: "2026-10-02 14:25:09", commit: "0be38e07-dirty") == "2026-10-02 14:25:09 · 0be38e07-dirty")
+      AppBuildStamp.line(date: "2026-10-02 14:25:09", commit: "0be38e07-dirty")
+        == "2026-10-02 14:25:09 · 0be38e07-dirty")
   }
 }
