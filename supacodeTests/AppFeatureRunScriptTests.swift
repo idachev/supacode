@@ -104,7 +104,6 @@ struct AppFeatureRunScriptTests {
       $0.repositories.sidebarItems[id: worktree.id]?.hasTerminalProjection = true
       $0.repositories.sidebarItems[id: worktree.id]?.runningScripts[id: definition.id] =
         .init(id: definition.id, tint: definition.resolvedTintColor)
-      $0.repositories.sidebarItems[id: worktree.id]?.activityRank = 1
       $0.repositories.applyPostReduceCacheRecomputes()
     }
   }
@@ -257,7 +256,6 @@ struct AppFeatureRunScriptTests {
       $0.repositories.sidebarItems[id: worktree.id]?.hasTerminalProjection = true
       $0.repositories.sidebarItems[id: worktree.id]?.runningScripts[id: definition.id] =
         .init(id: definition.id, tint: definition.resolvedTintColor)
-      $0.repositories.sidebarItems[id: worktree.id]?.activityRank = 1
       $0.repositories.applyPostReduceCacheRecomputes()
     }
   }

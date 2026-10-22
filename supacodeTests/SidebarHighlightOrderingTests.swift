@@ -8,41 +8,9 @@ struct SidebarHighlightOrderingTests {
     _ id: String,
     branch: String,
     isNotified: Bool = false,
-    classification: SidebarActiveClassification? = nil,
-    rank: Int? = nil
+    classification: SidebarActiveClassification? = nil
   ) -> SidebarHighlightOrdering.Candidate {
-    .init(
-      id: WorktreeID(id), branchName: branch, isNotified: isNotified, classification: classification,
-      activityRank: rank)
-  }
-
-  @Test func activeOrdersByActivityRankNewestFirstThenUnrankedAlphabetically() {
-    let candidates = [
-      candidate("a", branch: "alpha", classification: .running),
-      candidate("old", branch: "old", classification: .agent, rank: 1),
-      candidate("z", branch: "zulu", classification: .agent),
-      candidate("new", branch: "new", classification: .agent, rank: 5),
-    ]
-    #expect(
-      SidebarHighlightOrdering.orderedRowIDs(forPinned: false, prioritizeNotified: false, candidates: candidates)
-        == ["new", "old", "a", "z"])
-    // Pinned ignores the rank and stays alphabetical.
-    #expect(
-      SidebarHighlightOrdering.orderedRowIDs(forPinned: true, prioritizeNotified: false, candidates: candidates)
-        == ["a", "new", "old", "z"])
-  }
-
-  @Test func unreadStillFloatsAboveNewerActivityWhenPrioritized() {
-    let candidates = [
-      candidate("new", branch: "new", classification: .agent, rank: 9),
-      candidate("unread", branch: "unread", isNotified: true, classification: .unreadAgent, rank: 2),
-    ]
-    #expect(
-      SidebarHighlightOrdering.orderedRowIDs(forPinned: false, prioritizeNotified: true, candidates: candidates)
-        == ["unread", "new"])
-    #expect(
-      SidebarHighlightOrdering.orderedRowIDs(forPinned: false, prioritizeNotified: false, candidates: candidates)
-        == ["new", "unread"])
+    .init(id: WorktreeID(id), branchName: branch, isNotified: isNotified, classification: classification)
   }
 
   @Test func activeDropsUnclassifiedRows() {

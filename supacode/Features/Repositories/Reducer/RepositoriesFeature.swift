@@ -3700,17 +3700,6 @@ struct RepositoriesFeature {
       else { return .none }
       return .send(.pinWorktree(id))
     }
-    // Stamp the Active-ordering rank on a row's activity event. Ahead of
-    // `.forEach` for the same reason as the auto-pin above: it diffs the
-    // incoming row action against the row's previous state.
-    Reduce { state, action in
-      guard case .sidebarItems(.element(let id, let rowAction)) = action,
-        state.sidebarItems[id: id]?.startsActivity(on: rowAction) == true
-      else { return .none }
-      let nextRank = (state.sidebarItems.compactMap(\.activityRank).max() ?? 0) + 1
-      state.sidebarItems[id: id]?.activityRank = nextRank
-      return .none
-    }
     Reduce { state, action in
       switch action {
       case .task:

@@ -79,21 +79,18 @@ enum SidebarActiveClassification: Int, CaseIterable, Comparable, Sendable {
   }
 }
 
-/// Pure ordering layer behind the highlight aggregator. Unread rows float to
-/// the top when `prioritizeNotified` is set. Active then orders by
-/// `activityRank`, newest first, with unranked rows after the ranked ones;
-/// Pinned ignores the rank. The rest sorts alphabetically (case-insensitive)
-/// by branch name. Classification only gates membership: Active drops
-/// unclassified rows, Pinned keeps them. `id` is the final tie-break so rows
-/// sharing a branch name across repos keep a deterministic order (the sort is
-/// otherwise unstable).
+/// Pure ordering layer behind the highlight aggregator. Alphabetical
+/// (case-insensitive) by branch name, with unread rows floated to the top
+/// when `prioritizeNotified` is set. Classification only gates membership:
+/// Active drops unclassified rows, Pinned keeps them. `id` is the final
+/// tie-break so rows sharing a branch name across repos keep a deterministic
+/// order (the sort is otherwise unstable).
 enum SidebarHighlightOrdering {
   struct Candidate: Equatable, Sendable {
     let id: SidebarItemID
     let branchName: String
     let isNotified: Bool
     let classification: SidebarActiveClassification?
-    var activityRank: Int?
   }
 
   static func orderedRowIDs(
@@ -107,9 +104,6 @@ enum SidebarHighlightOrdering {
       .sorted { lhs, rhs in
         if prioritizeNotified, lhs.isNotified != rhs.isNotified {
           return lhs.isNotified
-        }
-        if !forPinned, lhs.activityRank != rhs.activityRank {
-          return (lhs.activityRank ?? .min) > (rhs.activityRank ?? .min)
         }
         return branchNameOrdersBefore(lhs.branchName, id: lhs.id, rhs.branchName, id: rhs.id)
       }
@@ -1182,8 +1176,7 @@ extension RepositoriesFeature.State {
           id: id,
           branchName: state.branchName,
           isNotified: state.hasUnseenNotifications,
-          classification: SidebarActiveClassification.classify(state),
-          activityRank: state.activityRank
+          classification: SidebarActiveClassification.classify(state)
         )
       )
     }
