@@ -1120,14 +1120,35 @@ struct AppFeatureCommandAckTests {
   }
 
   @Test(.dependencies) func deleteSocketDeeplinkFailsOnScriptCancellation() async {
-    let worktree = makeWorktree()
-    // `@Shared(.repositorySettings)` is process-global. Pin a delete script so the
-    // flow waits on the script tab instead of racing straight to `.worktreeDeleted`,
-    // and restore it so no other test inherits it.
-    @Shared(.repositorySettings(worktree.repositoryRootURL, host: worktree.host)) var settings
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    let worktree = Worktree(
+      location: .local(workingDirectory: root.appending(path: "feature"), repositoryRoot: root),
+      kind: .git, name: "feature", detail: "", isAttached: false)
+    let repository = Repository(location: .local(root), kind: .git, name: "repo", worktrees: [worktree])
+    @Shared(.repositorySettings(root)) var settings
+    // `@Shared(.repositorySettings)` is process-global: restore it so no other test inherits it.
     $settings.withLock { $0.deleteScript = "echo cleaning" }
     defer { $settings.withLock { $0.deleteScript = "" } }
-    let store = makeStore(worktree: worktree, tabExists: true)
+    var repositories = RepositoriesFeature.State()
+    repositories.repositories = [repository]
+    repositories.selection = .worktree(worktree.id)
+    repositories.isInitialLoadComplete = true
+    repositories.reconcileSidebarForTesting()
+    let removals = LockIsolated(0)
+    let initialState = AppFeature.State(repositories: repositories, settings: SettingsFeature.State())
+    let store = TestStore(initialState: initialState) {
+      AppFeature()
+    } withDependencies: {
+      $0.terminalClient.tabExists = { _, _ in true }
+      $0.terminalClient.surfaceExists = { _, _, _ in true }
+      $0.terminalClient.surfaceExistsInWorktree = { _, _ in true }
+      $0.terminalClient.send = { _ in }
+      $0.gitClient.removeWorktree = { _, _ in
+        removals.withValue { $0 += 1 }
+        return root
+      }
+    }
+    store.exhaustivity = .off
     let (readFD, writeFD) = makePipe()
     defer { close(readFD) }
 
@@ -1140,6 +1161,8 @@ struct AppFeatureCommandAckTests {
       )
     )
     #expect(store.state.pendingCommandAcks[id: writeFD] != nil)
+    await store.receive(\.repositories.delegate.runBlockingScript)
+    #expect(store.state.repositories.sidebarItems[id: worktree.id]?.lifecycle == .deletingScript)
 
     // Closing the delete-script tab reports a nil exit code (cancellation);
     // no `.worktreeDeleted` follows, so the ack must drain as a failure now.
@@ -1150,6 +1173,7 @@ struct AppFeatureCommandAckTests {
 
     #expect(store.state.pendingCommandAcks.isEmpty)
     #expect(readPipeJSON(readFD)?["ok"] as? Bool == false)
+    #expect(removals.value == 0)
   }
 
   @Test(.dependencies) func deleteSocketDeeplinkRejectsTerminatingWorktree() async {

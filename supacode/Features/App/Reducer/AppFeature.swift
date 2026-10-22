@@ -91,6 +91,7 @@ struct AppFeature {
     var repositories: RepositoriesFeature.State
     var settings: SettingsFeature.State
     var updates = UpdatesFeature.State()
+    var license = LicenseFeature.State()
     var commandPalette = CommandPaletteFeature.State()
     /// Terminal-orchestration state. Owns the per-tab feature collection so
     /// tab-bar views scope through `\.terminals` (narrow) instead of the full
@@ -291,6 +292,7 @@ struct AppFeature {
     case repositories(RepositoriesFeature.Action)
     case refreshWorktreesRequested
     case settings(SettingsFeature.Action)
+    case license(LicenseFeature.Action)
     case updates(UpdatesFeature.Action)
     case commandPalette(CommandPaletteFeature.Action)
     case openActionSelectionChanged(OpenWorktreeAction)
@@ -361,6 +363,7 @@ struct AppFeature {
     case confirmTerminateAllTerminalSessions
   }
 
+  @Dependency(LicenseClient.self) private var licenseClient
   @Dependency(AnalyticsClient.self) private var analyticsClient
   @Dependency(AppLifecycleClient.self) private var appLifecycleClient
   @Dependency(ContentRuntime.self) private var contentRuntime
@@ -398,6 +401,7 @@ struct AppFeature {
           refreshInstalledOpenActionsEffect(current: state.installedOpenActions),
           .send(.repositories(.task)),
           .send(.settings(.task)),
+          licenseClient.isEnforced ? .send(.license(.task)) : .none,
           .send(.terminals(.task)),
           .run { @MainActor send in
             guard startupHotkey != nil else { return }
@@ -1356,11 +1360,13 @@ struct AppFeature {
       case .deeplinkReceived(let url, let source, let responseFD):
         let deeplinkClient = deeplinkClient
         guard let parsed = deeplinkClient.parse(url) else {
-          deeplinkLogger.warning("Failed to parse deeplink URL: \(url)")
+          deeplinkLogger.warning(
+            "Failed to parse deeplink URL: \(DeeplinkClient.loggingDescription(url))")
           // Close the socket FD with an error so the CLI doesn't hang.
           if let responseFD {
             return sendSocketResponse(
-              clientFD: responseFD, ok: false, error: "Invalid deeplink: \(url.absoluteString)")
+              clientFD: responseFD, ok: false,
+              error: "Invalid deeplink: \(DeeplinkClient.loggingDescription(url))")
           }
           if url.scheme == "supacode" {
             state.alert = AlertState {
@@ -1370,7 +1376,9 @@ struct AppFeature {
                 TextState("OK")
               }
             } message: {
-              TextState("The deeplink URL could not be recognized: \(url.absoluteString)")
+              TextState(
+                "The deeplink URL could not be recognized: \(DeeplinkClient.loggingDescription(url))"
+              )
             }
           }
           return .none
@@ -1544,6 +1552,25 @@ struct AppFeature {
       case .deeplinkInputConfirmation:
         return .none
 
+      case .repositories(.delegate(.licenseRequired)):
+        analyticsClient.capture("license_gate_shown", ["trial_creations": state.license.snapshot.trialCreations])
+        return .send(.license(.purchaseRequired))
+      case .repositories(.delegate(.licenseSnapshotUpdated(let snapshot))):
+        return .send(.license(.snapshotUpdated(snapshot)))
+      case .repositories(.worktreeCreationRejected(let pendingID, let message, _)):
+        return resolveCommandAcks(ok: false, error: message, state: &state) { match in
+          if case .worktreeNew(let ackPendingID, _) = match { return ackPendingID == pendingID }
+          return false
+        }
+      case .repositories(.remoteWorktreeCreationCompleted(let pendingID, let worktreeID)):
+        return resolveCommandAcks(
+          ok: true, resourceID: Self.percentEncodedID(worktreeID.rawValue), state: &state
+        ) { match in
+          if case .worktreeNew(let ackPendingID, _) = match { return ackPendingID == pendingID }
+          return false
+        }
+      case .license:
+        return .none
       case .repositories(.createRandomWorktreeSucceeded(let worktree, _, let pendingID)):
         // Bind this creation's ack (matched by its pending id) to the real
         // worktree id so its first tab resolves it.
@@ -2135,6 +2162,9 @@ struct AppFeature {
     Scope(state: \.settings, action: \.settings) {
       SettingsFeature()
     }
+    Scope(state: \.license, action: \.license) {
+      LicenseFeature()
+    }
     Scope(state: \.updates, action: \.updates) {
       UpdatesFeature()
     }
@@ -2440,6 +2470,9 @@ struct AppFeature {
     state: inout State
   ) -> Effect<Action> {
     switch deeplink {
+    case .activateLicense(let key):
+      state.license.keyInput = key
+      return .merge(.send(.license(.show)), .send(.license(.activate)))
     case .open:
       return .run { @MainActor _ in NSApplication.shared.surfaceMainWindow() }
     case .help:
@@ -2538,16 +2571,8 @@ struct AppFeature {
       }
       return .none
     }
-    // Remote creation bypasses the local pending / first-tab flow (git worktree
-    // add over ssh + reload), so it has no completion signal yet and acks
-    // immediately. Follow-up: give the remote create + reload its own signal.
-    let isRemote = repository.host != nil
-    // Correlate the CLI ack through to the new worktree's first tab via a pending
-    // id stamped with the monotonic generation so concurrent creations can't
-    // collide. Every local path (explicit branch, random name, the interactive
-    // prompt) resolves on the first tab and returns the id.
     let pendingID: Worktree.ID?
-    if !isRemote, responseFD != nil {
+    if responseFD != nil {
       state.commandAckGeneration += 1
       pendingID = WorktreeID(Self.cliPendingWorktreePrefix + "\(state.commandAckGeneration)")
     } else {
@@ -3990,6 +4015,7 @@ struct AppFeature {
       case .shortcuts: .shortcuts
       case .scripts: .scripts
       case .updates: .updates
+      case .license: .license
       // `github` stays a permanent parsing alias for the Git Forges pane.
       case .github: .forges
       case .forges: .forges
