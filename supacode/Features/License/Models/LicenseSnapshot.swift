@@ -1,8 +1,9 @@
 import Foundation
 
 nonisolated enum LicenseBuild {
+  /// Fork: Release builds enforce only with `SUPACODE_LICENSE_ENFORCED = YES` in `Project.xcconfig`.
   static var isEnforced: Bool {
-    #if DEBUG
+    #if DEBUG || !SUPACODE_LICENSE_ENFORCED
       false
     #else
       true
