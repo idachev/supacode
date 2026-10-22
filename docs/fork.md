@@ -55,6 +55,33 @@ xcodebuild -workspace supacode.xcworkspace -scheme supacode -configuration Relea
 - If upstream adds a new licensing gate, make sure it reads `LicenseBuild.isEnforced` or
   `LicenseClient.isEnforced`, so the setting still switches it off.
 
+## Sidebar: Active Above Pinned
+
+Upstream shows the global **Pinned** section first and keeps a pinned row in **Pinned** even
+while an agent or script runs in it. The fork shows **Active** first, and **Active** claims its
+rows before **Pinned**:
+
+- A pinned worktree that starts an agent or a script moves into **Active**. It goes back to
+  **Pinned** when it no longer classifies as active (`SidebarActiveClassification`).
+- With **Group Active Rows** off, the row stays in **Pinned**.
+- Hotkey slots and the menu bar list follow the same order: Active, then Pinned.
+- Rows inside **Active** keep upstream's alphabetical order (unread first when "move notified
+  worktree to top" is on). A newest-activity order was tried and reverted (`02e78b0c`):
+  rows jumped on every agent or notification event.
+
+The change lives in `computeHighlightHoists` and `computeSidebarStructure`
+(`supacode/Features/Repositories/BusinessLogic/SidebarStructure.swift`) and in
+`MenuBarSections.entries` (`supacode/Features/App/Models/MenuBarNotificationList.swift`).
+
+### Keeping It On Upstream Merges
+
+- If upstream edits `computeHighlightHoists`, keep Active computed first with no exclusions,
+  and Pinned computed with `excluding:` the Active rows.
+- Keep `.active` before `.pinned` in the sections list, in `computeHotkeyOrdering`, and in
+  `MenuBarSections.entries`.
+- The tests `pinnedActiveRowMovesIntoActiveAboveThePinnedSection` and
+  `entriesRenderInActiveThenPinnedThenUnreadOrder` fail if a merge brings back the upstream order.
+
 ## Machine-Local Makefile Overrides (`Local.mk`)
 
 The `Makefile` includes an optional, gitignored `Local.mk` from the repository root
