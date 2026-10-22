@@ -153,6 +153,7 @@ struct AppFeatureSettingsChangedTests {
         agents: [agent],
         isWorking: true
       )
+      $0.repositories.sidebarItems[id: worktree.id]?.activityRank = 1
     }
     await clock.advance(by: .seconds(1))
     await store.finish()

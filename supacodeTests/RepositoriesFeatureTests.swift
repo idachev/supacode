@@ -12459,6 +12459,72 @@ struct RepositoriesFeatureTests {
 // MARK: - Auto-pin when the last agent leaves.
 
 extension RepositoriesFeatureTests {
+  // MARK: - Active activity rank.
+
+  @Test(.dependencies) func agentStartFloatsPinnedRowToTopOfActive() async {
+    let fixture = makeAutoPinFixture()
+    let main = fixture.repository.worktrees[0]
+    let store = makeAutoPinStore(fixture, initialAgents: []) { state in
+      state.$sidebar.withLock { $0.pin(worktree: main.id, in: fixture.repository.id) }
+      RepositoriesFeature.syncSidebar(&state)
+    }
+    let busy = AgentPresenceFeature.AgentInstance(agent: .claude, activity: .busy)
+
+    let idleSnapshot = AgentPresenceFeature.RowSnapshot(agents: [fixture.agent])
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(idleSnapshot))))
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.activityRank == 1)
+    // A repeated snapshot is not a new event.
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(idleSnapshot))))
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.activityRank == 1)
+
+    // The pinned main checkout starts an agent: it leaves Pinned and lands on top of Active.
+    await store.send(.sidebarItems(.element(id: main.id, action: .agentSnapshotChanged(idleSnapshot))))
+    #expect(store.state.sidebarItems[id: main.id]?.activityRank == 2)
+    var structure = store.state.computeSidebarStructure(groupPinned: true, groupActive: true)
+    #expect(structure.sections.first == .highlight(kind: .active, rowIDs: [main.id, fixture.worktree.id]))
+
+    // The older row's agent starts working: it moves back to the top.
+    let workingSnapshot = AgentPresenceFeature.RowSnapshot(agents: [busy], isWorking: true)
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .agentSnapshotChanged(workingSnapshot))))
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.activityRank == 3)
+    structure = store.state.computeSidebarStructure(groupPinned: true, groupActive: true)
+    #expect(structure.sections.first == .highlight(kind: .active, rowIDs: [fixture.worktree.id, main.id]))
+    await store.finish()
+  }
+
+  @Test(.dependencies) func newUnreadNotificationRanksActiveRowButRepeatedTickDoesNot() async {
+    let fixture = makeAutoPinFixture()
+    let store = makeAutoPinStore(fixture, initialAgents: [fixture.agent]) { state in
+      state.sidebarItems[id: fixture.worktree.id]?.activityRank = 4
+    }
+    let notification = WorktreeTerminalNotification(
+      surfaceID: UUID(), title: "claude", body: "done", createdAt: .distantPast)
+    let projection = WorktreeRowProjection(
+      surfaceIDs: [], isProgressBusy: false, hasUnseenNotifications: true,
+      notifications: [notification])
+
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .terminalProjectionChanged(projection))))
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.activityRank == 5)
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .terminalProjectionChanged(projection))))
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.activityRank == 5)
+    await store.finish()
+  }
+
+  @Test(.dependencies) func rowOutsideActiveIsNeverRanked() async {
+    let fixture = makeAutoPinFixture()
+    let store = makeAutoPinStore(fixture, initialAgents: [])
+    let notification = WorktreeTerminalNotification(
+      surfaceID: UUID(), title: "claude", body: "done", createdAt: .distantPast)
+    let projection = WorktreeRowProjection(
+      surfaceIDs: [], isProgressBusy: false, hasUnseenNotifications: true,
+      notifications: [notification])
+
+    // Unread alone doesn't classify into Active.
+    await store.send(.sidebarItems(.element(id: fixture.worktree.id, action: .terminalProjectionChanged(projection))))
+    #expect(store.state.sidebarItems[id: fixture.worktree.id]?.activityRank == nil)
+    await store.finish()
+  }
+
   private struct AutoPinFixture {
     let repository: Repository
     let worktree: Worktree

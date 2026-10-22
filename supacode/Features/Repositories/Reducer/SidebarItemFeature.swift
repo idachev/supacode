@@ -132,6 +132,10 @@ struct SidebarItemFeature {
     var unseenSurfaces: [WorktreeUnseenSurface] = []
     /// True when either Ghostty progress is busy or an agent is busy on a surface.
     var isTaskRunning: Bool { isProgressBusy || hasAgentActivity }
+    /// Recency rank of the row's last activity event (see `startsActivity(on:)`);
+    /// higher is newer. Orders the Active section newest first. In-memory only,
+    /// so rows start unranked (alphabetical) after a relaunch.
+    var activityRank: Int?
 
     var isDragging: Bool = false
     /// One-shot focus token: set when a selection arrives with `focusTerminal: true`.
@@ -260,6 +264,35 @@ extension SidebarItemFeature.State {
   /// True iff any tracked agent on this row is awaiting user input.
   /// Drives the Active section's classification ("agent awaiting input").
   var hasAgentAwaitingInput: Bool { agents.contains(where: \.awaitingInput) }
+
+  /// True when `action` is an activity event that should float the row to the
+  /// top of the Active section: the row enters Active, gains an agent, an agent
+  /// starts working, starts awaiting input or errors, or a new unread
+  /// notification arrives. Only discrete transitions count, so a repeated
+  /// projection tick never re-ranks the row. Rows that don't end up in Active
+  /// are never ranked.
+  func startsActivity(on action: SidebarItemFeature.Action) -> Bool {
+    var next = self
+    switch action {
+    case .agentSnapshotChanged(let snapshot):
+      next.agentSnapshot = snapshot
+    case .terminalProjectionChanged(let projection):
+      next.hasUnseenNotifications = projection.hasUnseenNotifications
+      next.notifications = projection.notifications
+      next.runningScripts = projection.runningScripts
+    case .lifecycleChanged, .diffStatsChanged, .pullRequestQueryStarted, .pullRequestChanged,
+      .pullRequestDetailApplied, .dragSessionChanged, .focusTerminalRequested, .focusTerminalConsumed:
+      return false
+    }
+    guard SidebarActiveClassification.classify(next) != nil else { return false }
+    if SidebarActiveClassification.classify(self) == nil { return true }
+    if next.agents.count > agents.count { return true }
+    if !hasAgentActivity, next.hasAgentActivity { return true }
+    if !hasAgentAwaitingInput, next.hasAgentAwaitingInput { return true }
+    if !hasAgentError, next.hasAgentError { return true }
+    let knownIDs = Set(notifications.ids)
+    return next.notifications.contains { !$0.isRead && !knownIDs.contains($0.id) }
+  }
 }
 
 /// Shared cascade used by both `SidebarItemFeature.State` (row) and

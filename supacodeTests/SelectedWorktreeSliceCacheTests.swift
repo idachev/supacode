@@ -109,6 +109,7 @@ struct SelectedWorktreeSliceCacheTests {
     ) {
       $0.sidebarItems[id: worktree.id]?.hasTerminalProjection = true
       $0.sidebarItems[id: worktree.id]?.runningScripts = [.init(id: scriptID, tint: .blue)]
+      $0.sidebarItems[id: worktree.id]?.activityRank = 1
       $0.applyPostReduceCacheRecomputes()
     }
 
