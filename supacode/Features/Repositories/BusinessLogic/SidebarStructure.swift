@@ -811,11 +811,11 @@ extension RepositoriesFeature.State {
     let repoSections = buildRepositorySections(hoisted: hoists.hoistedSet, sectionSort: sectionSort)
 
     var sections: [SidebarStructure.Section] = []
-    if !hoists.pinned.isEmpty {
-      sections.append(.highlight(kind: .pinned, rowIDs: hoists.pinned))
-    }
     if !hoists.active.isEmpty {
       sections.append(.highlight(kind: .active, rowIDs: hoists.active))
+    }
+    if !hoists.pinned.isEmpty {
+      sections.append(.highlight(kind: .pinned, rowIDs: hoists.pinned))
     }
     var groupedRepositoryIDs: Set<String> = []
     for group in settingsFile.repositoryGroups {
@@ -874,15 +874,9 @@ extension RepositoriesFeature.State {
 
   private func computeHighlightHoists(groupPinned: Bool, groupActive: Bool) -> HighlightHoists {
     let archived = archivedWorktreeIDSet
-    let pinned: [Worktree.ID]
-    if groupPinned {
-      let pinnedIDs = orderedHighlightPinnedIDs(archived: archived)
-      pinned = orderedHighlightCandidates(forPinned: true, candidateIDs: pinnedIDs, excluding: [])
-    } else {
-      pinned = []
-    }
-    var hoistedSet: Set<Worktree.ID> = Set(pinned)
-
+    // Active claims its rows first, pinned ones included: a pinned row with an
+    // agent or script moves up into Active and drops back into Pinned once it
+    // stops classifying.
     let active: [Worktree.ID]
     if groupActive {
       let candidateIDs = sidebarItems.ids.filter { id in
@@ -896,11 +890,20 @@ extension RepositoriesFeature.State {
       active = orderedHighlightCandidates(
         forPinned: false,
         candidateIDs: Array(candidateIDs),
-        excluding: hoistedSet
+        excluding: []
       )
-      hoistedSet.formUnion(active)
     } else {
       active = []
+    }
+    var hoistedSet: Set<Worktree.ID> = Set(active)
+
+    let pinned: [Worktree.ID]
+    if groupPinned {
+      let pinnedIDs = orderedHighlightPinnedIDs(archived: archived)
+      pinned = orderedHighlightCandidates(forPinned: true, candidateIDs: pinnedIDs, excluding: hoistedSet)
+      hoistedSet.formUnion(pinned)
+    } else {
+      pinned = []
     }
     return HighlightHoists(pinned: pinned, active: active, hoistedSet: hoistedSet)
   }
@@ -1052,8 +1055,8 @@ extension RepositoriesFeature.State {
     let perRepoVisibleIDs = hotkeyEligibleIDs(in: sections)
     var order: [Worktree.ID] = []
     order.reserveCapacity(pinnedHoisted.count + activeHoisted.count + perRepoVisibleIDs.count)
-    order.append(contentsOf: pinnedHoisted)
     order.append(contentsOf: activeHoisted)
+    order.append(contentsOf: pinnedHoisted)
     for id in perRepoVisibleIDs where !hoisted.contains(id) {
       order.append(id)
     }

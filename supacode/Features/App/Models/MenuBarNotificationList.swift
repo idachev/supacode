@@ -25,8 +25,8 @@ struct MenuBarSections: Equatable {
   /// Headers and rows flattened into the order the menu renders them.
   var entries: [MenuBarEntry] {
     var entries: [MenuBarEntry] = []
-    appendSection(&entries, title: "Pinned", rowIDs: pinned, dotColor: .pinned)
     appendSection(&entries, title: "Active", rowIDs: active, dotColor: .active)
+    appendSection(&entries, title: "Pinned", rowIDs: pinned, dotColor: .pinned)
     appendSection(&entries, title: "Unread", rowIDs: unread, dotColor: nil)
     return entries
   }

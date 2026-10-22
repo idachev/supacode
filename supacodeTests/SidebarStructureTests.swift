@@ -122,24 +122,48 @@ struct SidebarStructureTests {
     }
   }
 
-  @Test func pinnedActiveMainWorktreeIsNotDuplicatedInActive() {
+  @Test func pinnedActiveRowMovesIntoActiveAboveThePinnedSection() {
     let repoRoot = URL(fileURLWithPath: "/tmp/main-active-\(UUID().uuidString)")
     let main = makeMainWorktree(repoRoot: repoRoot)
+    let other = makeWorktree(
+      id: repoRoot.appending(path: "other").path(percentEncoded: false), name: "other", repoRoot: repoRoot)
     let repository = Repository(
       id: RepositoryID(repoRoot.path(percentEncoded: false)),
       rootURL: repoRoot, name: "repo",
-      worktrees: IdentifiedArray(uniqueElements: [main]),
+      worktrees: IdentifiedArray(uniqueElements: [main, other]),
     )
     var state = makeState(repositories: [repository])
-    state.$sidebar.withLock { $0.pin(worktree: main.id, in: repository.id) }
+    state.$sidebar.withLock {
+      $0.pin(worktree: main.id, in: repository.id)
+      $0.pin(worktree: other.id, in: repository.id)
+    }
     RepositoriesFeature.syncSidebar(&state)
     state.sidebarItems[id: main.id]?.agentSnapshot.agents = [.init(agent: .claude, activity: .idle)]
+
+    // The active pinned row leaves Pinned, and Active renders first.
     let grouped = state.computeSidebarStructure(groupPinned: true, groupActive: true)
-    #expect(grouped.sections.contains(.highlight(kind: .pinned, rowIDs: [main.id])))
-    #expect(!grouped.sections.contains(.highlight(kind: .active, rowIDs: [main.id])))
+    #expect(Array(grouped.sections.prefix(2)) == [
+      .highlight(kind: .active, rowIDs: [main.id]),
+      .highlight(kind: .pinned, rowIDs: [other.id]),
+    ])
+    #expect(grouped.slotByID[main.id] == 0)
+    #expect(grouped.slotByID[other.id] == 1)
+    #expect(state.menuBarForcedHoists().active == [main.id])
+    #expect(state.menuBarForcedHoists().pinned == [other.id])
+
+    // With Active grouping off the row stays in Pinned.
+    let activeOff = state.computeSidebarStructure(groupPinned: true, groupActive: false)
+    #expect(activeOff.sections.contains(.highlight(kind: .pinned, rowIDs: [main.id, other.id])))
+
     let ungrouped = state.computeSidebarStructure(groupPinned: false, groupActive: true)
     #expect(ungrouped.sections.contains(.highlight(kind: .active, rowIDs: [main.id])))
-    #expect(!ungrouped.sections.contains(.highlight(kind: .pinned, rowIDs: [main.id])))
+    #expect(!ungrouped.sections.contains { if case .highlight(.pinned, _) = $0 { true } else { false } })
+
+    // Once the agent goes away the row drops back into Pinned.
+    state.sidebarItems[id: main.id]?.agentSnapshot.agents = []
+    let settled = state.computeSidebarStructure(groupPinned: true, groupActive: true)
+    #expect(Array(settled.sections.prefix(1)) == [.highlight(kind: .pinned, rowIDs: [main.id, other.id])])
+    #expect(!settled.sections.contains { if case .highlight(.active, _) = $0 { true } else { false } })
   }
 
   @Test func pinnedPendingWorktreeHoistsIntoPinnedHighlight() {

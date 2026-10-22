@@ -209,7 +209,7 @@ struct MenuBarNotificationListTests {
     #expect(sections.repositoryTagByID[RepositoryID("devbox/remote/folder")]?.hostInfo == host.displayAuthority)
   }
 
-  @Test func entriesRenderInPinnedThenActiveThenUnreadOrder() {
+  @Test func entriesRenderInActiveThenPinnedThenUnreadOrder() {
     let pinned = makeWorktree(id: "/tmp/repo/pinned", name: "pinned")
     let working = makeWorktree(id: "/tmp/repo/working", name: "working")
     let noisy = makeWorktree(id: "/tmp/repo/noisy", name: "noisy")
@@ -232,8 +232,8 @@ struct MenuBarNotificationListTests {
     // The user-visible section order is the whole point of the flattening.
     #expect(
       sections.entries.map(\.id) == [
-        .header("Pinned"), .row(pinned.id),
         .header("Active"), .row(working.id),
+        .header("Pinned"), .row(pinned.id),
         .header("Unread"), .row(noisy.id),
       ]
     )
