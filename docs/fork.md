@@ -54,3 +54,52 @@ xcodebuild -workspace supacode.xcworkspace -scheme supacode -configuration Relea
   its condition.
 - If upstream adds a new licensing gate, make sure it reads `LicenseBuild.isEnforced` or
   `LicenseClient.isEnforced`, so the setting still switches it off.
+
+## Machine-Local Makefile Overrides (`Local.mk`)
+
+The `Makefile` includes an optional, gitignored `Local.mk` from the repository root
+(`-include $(CURRENT_MAKEFILE_DIR)/Local.mk`). Put settings there that belong to one machine
+only, such as a signing identity. A missing `Local.mk` changes nothing.
+
+### Stable Code Signing For Dev Builds
+
+By default `make build-app` signs ad-hoc (Tuist sets `CODE_SIGN_IDENTITY = "-"` on the target).
+macOS TCC identifies an ad-hoc app by the hash of each build, so every rebuild and install
+loses the granted permissions (Accessibility, Screen Recording, Microphone and others).
+Signing every build with the same certificate keeps them.
+
+1. Create a self-signed code-signing certificate in the login keychain (Keychain Access →
+   Certificate Assistant → Create a Certificate, type Code Signing), then find its SHA-1:
+
+   ```bash
+   security find-identity -v -p codesigning
+   ```
+
+2. Create `Local.mk` in the repository root:
+
+   ```make
+   build-app: XCODEBUILD_FLAGS += CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=<SHA-1> DEVELOPMENT_TEAM=
+   ```
+
+   The settings go on the `xcodebuild` command line, because a project-level xcconfig cannot
+   override the target-level `CODE_SIGN_IDENTITY`. The target-specific variable reaches
+   `build-app` and the targets that depend on it (`install-dev-build`, `run-app`); `make test`
+   and `make archive` are not affected.
+
+3. Run `make install-dev-build`. On the first signed build macOS asks whether `codesign` may
+   use the key: choose **Always Allow**. Otherwise the build fails with `Error 65`, and
+   xcbeautify hides the reason.
+
+4. Check the installed app:
+
+   ```bash
+   codesign -dr - /Applications/supacode.app
+   ```
+
+   Expect `designated => identifier "app.supabit.supacode" and certificate leaf = H"..."` and
+   no `adhoc` in `codesign -dv --verbose=2 /Applications/supacode.app`. Entitlements and the
+   hardened runtime come from the target, so they stay the same.
+
+macOS may ask for the permissions once more after the first signed install. Later rebuilds
+keep them. A build from the Xcode GUI or a plain `xcodebuild` without these flags is still
+signed ad-hoc.

@@ -45,6 +45,9 @@ TEST_RESULT_BUNDLE := build/supacode-tests.xcresult
 # assignment so a missing Xcode aborts the recipe under -e.
 SELECT_DEVELOPER_DIR = DEVELOPER_DIR="$$(./scripts/select-developer-dir.sh)"; export DEVELOPER_DIR
 
+# Machine-local overrides (gitignored), e.g. a stable code-signing identity for build-app.
+-include $(CURRENT_MAKEFILE_DIR)/Local.mk
+
 .DEFAULT_GOAL := help
 .PHONY: doctor preflight build-ghostty-xcframework build-zmx generate-project generate-project-sources inspect-dependencies warm-cache build-app run-app install-dev-build archive export-archive format lint check test bump-version bump-and-release log-stream
 
