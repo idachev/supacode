@@ -3063,12 +3063,17 @@ struct AppFeature {
       // a phantom success.
       guard terminalClient.canMoveTabToNewSplit(worktreeID, tabID) else {
         deeplinkLogger.warning("Tab \(tabID) cannot move to a new split in worktree \(worktreeID)")
+        // The layout's own mode picks the text: in Splits in Each Tab every tab already is its own split.
+        let isSplitPerTab = state.terminals.layouts[id: worktreeID]?.mode == .splitPerTab
         state.alert = AlertState {
           TextState("Tab cannot be moved")
         } actions: {
           ButtonState(role: .cancel, action: .dismiss) { TextState("OK") }
         } message: {
-          TextState("Its pane has only this tab, or is in window mode, so there is nothing to split off.")
+          TextState(
+            isSplitPerTab
+              ? "In Splits in Each Tab mode every tab is already its own split, so there is nothing to split off."
+              : "Its pane has only this tab, or is in window mode, so there is nothing to split off.")
         }
         return .none
       }
