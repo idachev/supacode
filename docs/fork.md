@@ -194,13 +194,20 @@ be reused from an earlier build in `.build/ghostty` and `.build/zmx`, as long as
 (the submodules, `patches/`, `scripts/build-*.sh`, `scripts/select-zig-sdk.sh`, `mise.toml`)
 have not changed since.
 
-1. Create a stand-in SDK folder named `MacOSX26.3.sdk`: symlinks to every entry of a newer SDK
-   (for example `/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`), plus a copy of its
+1. Create a stand-in SDK folder named `MacOSX26.3.sdk` in a permanent place, for example
+   `~/Library/Developer/SupacodeZigSDK/` (never a temporary folder: the fingerprints below
+   include its path). It holds symlinks to every entry of a newer SDK (for example
+   `/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`), plus a copy of its
    `SDKSettings.plist` with `Version` set to `26.3`. Zig never runs against it; it only makes
-   the fingerprint computable.
-2. In every shell that builds, export `SUPACODE_ZIG_SDKROOT=<that folder>` and
-   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (an Xcode with the Metal
-   toolchain).
+   the SDK checks pass and the fingerprint computable.
+2. Point the build at it in `Local.mk`, so every `make` target sees it:
+
+   ```make
+   export SUPACODE_ZIG_SDKROOT := $(HOME)/Library/Developer/SupacodeZigSDK/MacOSX26.3.sdk
+   ```
+
+   With it, `./scripts/select-developer-dir.sh` picks an Xcode with the Metal toolchain on its
+   own. For commands outside `make` (step 3), export the same variable in the shell.
 3. Back up and rewrite the cache fingerprints:
 
    ```bash
@@ -212,6 +219,7 @@ have not changed since.
 
 4. `make build-ghostty-xcframework build-zmx` must now finish in about a second without
    running Zig. Then `make build-app`, `make test` or `make install-dev-build` work as usual.
+   Moving the stand-in SDK, or changing any of the inputs above, needs step 3 again.
 
 A fresh worktree needs `git submodule update --init --recursive`, a copy of `Local.mk`, and a
 copy of `.build/ghostty` and `.build/zmx` from the main checkout before step 3. The real fix is
