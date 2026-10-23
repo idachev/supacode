@@ -54,8 +54,10 @@ struct WorktreeGroupStripTests {
 
   @Test func groupShowsItsFocusedPanesSelectedTab() throws {
     let fixture = try Self.fixture()
-    #expect(WorktreeGroupStrip.displayedTab(ofGroup: fixture.groups[0], in: fixture.layout)?.id == fixture.tabs[1].id)
-    #expect(WorktreeGroupStrip.displayedTab(ofGroup: fixture.groups[2], in: fixture.layout)?.id == fixture.tabs[3].id)
+    #expect(
+      WorktreeGroupStrip.displayedTab(ofGroup: fixture.groups[0], in: fixture.layout)?.tab.id == fixture.tabs[1].id)
+    #expect(
+      WorktreeGroupStrip.displayedTab(ofGroup: fixture.groups[2], in: fixture.layout)?.tab.id == fixture.tabs[3].id)
     #expect(WorktreeGroupStrip.displayedTab(ofGroup: PaneGroupID(rawValue: UUID()), in: fixture.layout) == nil)
   }
 

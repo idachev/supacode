@@ -41,7 +41,10 @@ struct WorktreeLayoutView: View {
               store: layoutStore,
               runtime: runtime,
               surfaceState: surfaceState,
-              isLifecycleBusy: isLifecycleBusy
+              isLifecycleBusy: isLifecycleBusy,
+              focusSelectedTab: { [weak manager, worktreeID = worktree.id] in
+                manager?.hostIfExists(for: worktreeID)?.focusSelectedTab()
+              }
             )
           }
           LayoutAlertHost(

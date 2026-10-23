@@ -9,11 +9,16 @@ enum WorktreeGroupStrip {
   /// Select Tab N has a chord for the first nine strip positions.
   static let selectableSlotCount = 9
 
-  /// The tab a group shows: its focused pane's selected tab (ОП7). A group has
-  /// no title of its own.
-  static func displayedTab(ofGroup id: PaneGroupID, in layout: PaneLayout) -> TabItem? {
-    guard let paneID = layout.focusedPaneID(ofGroup: id) else { return nil }
-    return layout.panes[id: paneID]?.selectedTab
+  /// The tab a group shows: its focused pane's selected tab (ОП7), with that
+  /// pane. A group has no title of its own.
+  static func displayedTab(
+    ofGroup id: PaneGroupID,
+    in layout: PaneLayout
+  ) -> (paneID: PaneID, tab: TabItem)? {
+    guard let paneID = layout.focusedPaneID(ofGroup: id),
+      let tab = layout.panes[id: paneID]?.selectedTab
+    else { return nil }
+    return (paneID, tab)
   }
 
   /// Resolves a tab dropped on the strip to the `moveGroup` it asks for: the
@@ -69,6 +74,9 @@ struct WorktreeGroupStripView: View {
   var surfaceState: (UUID) -> WorktreeSurfaceState? = { _ in nil }
   /// Workspace lifecycle work, represented on the active group's tab.
   var isLifecycleBusy = false
+  /// Hands the keyboard to the active group's focused terminal after a click,
+  /// also when the clicked group already was active.
+  var focusSelectedTab: () -> Void = {}
 
   @Environment(\.controlActiveState) private var controlActiveState
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -129,7 +137,8 @@ struct WorktreeGroupStripView: View {
           isLifecycleBusy: isLifecycleBusy,
           store: store,
           runtime: runtime,
-          surfaceState: surfaceState
+          surfaceState: surfaceState,
+          focusSelectedTab: focusSelectedTab
         )
         .id(groupID)
         if index < groupOrder.count - 1 {
@@ -197,12 +206,12 @@ private struct WorktreeGroupTabView: View {
   let store: StoreOf<LayoutFeature>
   let runtime: ContentRuntime
   let surfaceState: (UUID) -> WorktreeSurfaceState?
+  let focusSelectedTab: () -> Void
 
   var body: some View {
     let _ = store.renderEpoch
-    if let paneID = store.layout.focusedPaneID(ofGroup: groupID),
-      let tab = store.layout.panes[id: paneID]?.selectedTab
-    {
+    if let shown = WorktreeGroupStrip.displayedTab(ofGroup: groupID, in: store.layout) {
+      let tab = shown.tab
       WorktreeGroupTabContent(
         groupID: groupID,
         tab: tab,
@@ -210,13 +219,18 @@ private struct WorktreeGroupTabView: View {
         isSelected: isSelected,
         // A windowed pane's own strip carries the rename field; a second one
         // here would fight it for focus.
-        hostsRename: !store.windowedPaneIDs.contains(paneID),
+        hostsRename: !store.windowedPaneIDs.contains(shown.paneID),
         fixedWidth: fixedWidth,
         isLifecycleBusy: isLifecycleBusy,
         store: store,
         runtime: runtime,
-        surfaceState: surfaceState
+        surfaceState: surfaceState,
+        focusSelectedTab: focusSelectedTab
       )
+      // One view per displayed tab: when the group's focus moves to another
+      // pane mid-rename, the old tab's view disappears and commits to its own
+      // tab, never to the newly shown one.
+      .id(tab.id)
     }
   }
 }
@@ -232,6 +246,7 @@ private struct WorktreeGroupTabContent: View {
   let store: StoreOf<LayoutFeature>
   let runtime: ContentRuntime
   let surfaceState: (UUID) -> WorktreeSurfaceState?
+  let focusSelectedTab: () -> Void
 
   @State private var isHovering = false
   @State private var isPressing = false
@@ -301,9 +316,8 @@ private struct WorktreeGroupTabContent: View {
     // same layer.
     .background {
       Button {
-        // Selection moves the focused content, so `WorktreeLayoutView`'s
-        // selection observer hands the keyboard to the terminal.
         store.send(.selectGroup(id: groupID))
+        focusSelectedTab()
       } label: {
         Color.clear.contentShape(.rect)
       }
