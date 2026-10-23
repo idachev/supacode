@@ -76,3 +76,8 @@ fastlane/test_output
 
 # Machine-local Makefile overrides
 Local.mk
+
+# graphify (local code knowledge graph; each developer builds it with `graphify update .`)
+graphify-out/
+graphify-out.bak-*/
+.graphify/

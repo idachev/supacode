@@ -1,0 +1,17 @@
+# graphify: index first-party code only
+ThirdParty/
+Resources/git-wt/
+Frameworks/
+Derived/
+build/
+.build/
+.derivedData/
+DerivedData/
+supacode.xcodeproj/
+supacode.xcworkspace/
+tmp/
+bins/
+assets/
+patches/
+supacode/Assets.xcassets/
+supacode/AppIcon.icon/
