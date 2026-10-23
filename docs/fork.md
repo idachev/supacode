@@ -219,7 +219,10 @@ have not changed since.
 
 4. `make build-ghostty-xcframework build-zmx` must now finish in about a second without
    running Zig. Then `make build-app`, `make test` or `make install-dev-build` work as usual.
-   Moving the stand-in SDK, or changing any of the inputs above, needs step 3 again.
+   Moving the stand-in SDK needs step 3 again. A change to any of the inputs above (for example
+   an upstream merge that bumps the ghostty submodule or edits `patches/`) is different: the
+   cached GhosttyKit or zmx is then really stale, and rewriting the fingerprint would ship the
+   old binary with the new sources. That build needs a real macOS SDK of 26.3 or older.
 
 A fresh worktree needs `git submodule update --init --recursive`, a copy of `Local.mk`, and a
 copy of `.build/ghostty` and `.build/zmx` from the main checkout before step 3. The real fix is
