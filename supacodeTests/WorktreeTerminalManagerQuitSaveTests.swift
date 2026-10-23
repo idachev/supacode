@@ -22,7 +22,7 @@ struct WorktreeTerminalManagerQuitSaveTests {
   /// In-memory defaults that can hold the next incremental flush inside its
   /// read of the layouts key and then drop its write, the way a flush that has
   /// not landed when the process exits is lost.
-  private final class HoldingDefaults: UserDefaults, @unchecked Sendable {
+  private nonisolated final class HoldingDefaults: UserDefaults, @unchecked Sendable {
     private let lock = NSLock()
     private var isHolding = false
     private var dropsNextWrite = false
