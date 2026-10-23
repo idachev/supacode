@@ -112,6 +112,37 @@ enum PaneWindowShortcut {
   }
 }
 
+/// Where focus goes when a focused pane window loses key to another of our
+/// windows. Pure so tests can drive it with plain layouts.
+enum PaneWindowFocusReturn {
+  /// The remembered embedded pane, else the first embedded one. The record
+  /// usually names the pane that just got windowed (it held focus when it
+  /// entered window mode), so the fallback is load-bearing, not defensive.
+  /// Split per tab: only the windowed pane's own group is a candidate, since
+  /// focusing a pane of another group would switch the main window's group
+  /// (flat `panes` spans every group). Nil when no embedded candidate exists.
+  static func target(
+    leaving paneID: PaneID,
+    layout: PaneLayout,
+    mode: TerminalLayoutMode,
+    windowedPaneIDs: Set<PaneID>,
+    remembered: PaneID?
+  ) -> PaneID? {
+    let candidates: [PaneID]
+    switch mode {
+    case .tabsPerSplit:
+      candidates = layout.panes.map(\.id).filter { !windowedPaneIDs.contains($0) }
+    case .splitPerTab:
+      guard let groupID = layout.groupID(containingPane: paneID),
+        let tree = layout.tree(ofGroup: groupID)
+      else { return nil }
+      candidates = tree.leaves().filter { !windowedPaneIDs.contains($0) }
+    }
+    if let remembered, candidates.contains(remembered) { return remembered }
+    return candidates.first
+  }
+}
+
 /// Owns the windowed-pane windows: one per pane in window mode, reconciled
 /// from layout state after every layout change. Closing a window exits window
 /// mode; it never closes the pane.
@@ -264,12 +295,15 @@ final class PaneWindowManager {
   private func returnFocus(for key: Key) {
     guard let layout = terminalManager?.layoutState(for: key.worktreeID) else { return }
     guard layout.layout.focusedPaneID == key.paneID else { return }
-    // The record usually names the pane that just got windowed (it held
-    // focus when it entered window mode), so a first-embedded fallback is
-    // load-bearing, not defensive.
-    let embedded = layout.layout.panes.filter { !layout.windowedPaneIDs.contains($0.id) }
-    let remembered = lastEmbeddedFocusPaneIDs[key.worktreeID]
-    guard let target = embedded.first(where: { $0.id == remembered })?.id ?? embedded.first?.id else {
+    guard
+      let target = PaneWindowFocusReturn.target(
+        leaving: key.paneID,
+        layout: layout.layout,
+        mode: layout.mode,
+        windowedPaneIDs: layout.windowedPaneIDs,
+        remembered: lastEmbeddedFocusPaneIDs[key.worktreeID]
+      )
+    else {
       // No embedded pane exists; focus staying on the windowed pane is the
       // only consistent state.
       Self.logger.debug("Focus stays on windowed pane \(key.paneID.rawValue); no embedded pane exists.")
