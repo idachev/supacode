@@ -303,10 +303,6 @@ nonisolated struct Pane: Equatable, Identifiable, Codable, Sendable {
 nonisolated struct PaneGroupID: Hashable, Identifiable, Codable, Sendable {
   let rawValue: UUID
 
-  init() {
-    rawValue = UUID()
-  }
-
   init(rawValue: UUID) {
     self.rawValue = rawValue
   }

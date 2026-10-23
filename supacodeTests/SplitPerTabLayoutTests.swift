@@ -61,9 +61,9 @@ struct SplitPerTabLayoutTests {
     let tabC = SplitPerTabLayoutTests.tab("c")
     let tabD = SplitPerTabLayoutTests.tab("d")
     let tabE = SplitPerTabLayoutTests.tab("e")
-    let group1 = PaneGroupID()
-    let group2 = PaneGroupID()
-    let group3 = PaneGroupID()
+    let group1 = PaneGroupID(rawValue: UUID())
+    let group2 = PaneGroupID(rawValue: UUID())
+    let group3 = PaneGroupID(rawValue: UUID())
 
     func activeTree() throws -> SplitTree<PaneID> {
       let tree = try SplitTree(view: paneA).inserting(view: paneB, at: paneA, direction: .right)
@@ -307,14 +307,14 @@ struct SplitPerTabLayoutTests {
 
     #expect(layout.tree(ofGroup: fixture.group1) == layout.tree)
     #expect(layout.tree(ofGroup: fixture.group2)?.leaves() == [fixture.paneC, fixture.paneD])
-    #expect(layout.tree(ofGroup: PaneGroupID()) == nil)
+    #expect(layout.tree(ofGroup: PaneGroupID(rawValue: UUID())) == nil)
     #expect(layout.focusedPaneID(ofGroup: fixture.group1) == fixture.paneB)
     #expect(layout.focusedPaneID(ofGroup: fixture.group2) == fixture.paneD)
-    #expect(layout.focusedPaneID(ofGroup: PaneGroupID()) == nil)
+    #expect(layout.focusedPaneID(ofGroup: PaneGroupID(rawValue: UUID())) == nil)
 
     #expect(layout.groupIndex(of: fixture.group1) == 1)
     #expect(layout.groupIndex(of: fixture.group3) == 3)
-    #expect(layout.groupIndex(of: PaneGroupID()) == nil)
+    #expect(layout.groupIndex(of: PaneGroupID(rawValue: UUID())) == nil)
     #expect(layout.groupID(atIndex: 0) == fixture.group1)
     #expect(layout.groupID(atIndex: 2) == fixture.group2)
     #expect(layout.groupID(atIndex: 99) == fixture.group3)
@@ -362,7 +362,7 @@ struct SplitPerTabLayoutTests {
 
     // The active group and an unknown id are no-ops.
     layout.activateGroup(fixture.group1)
-    layout.activateGroup(PaneGroupID())
+    layout.activateGroup(PaneGroupID(rawValue: UUID()))
     #expect(layout == original)
   }
 

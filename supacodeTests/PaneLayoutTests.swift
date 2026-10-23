@@ -204,8 +204,8 @@ struct PaneLayoutTests {
     let paneB = PaneID()
     let tabA = Self.terminalTab(id: UUID())
     let tabB = Self.terminalTab(id: UUID())
-    let group1 = PaneGroupID()
-    let group2 = PaneGroupID()
+    let group1 = PaneGroupID(rawValue: UUID())
+    let group2 = PaneGroupID(rawValue: UUID())
     var layout = PaneLayout(
       tree: SplitTree(view: paneA),
       panes: [Pane(id: paneA, tabs: [tabA]), Pane(id: paneB, tabs: [tabB])],
