@@ -1,5 +1,6 @@
 import Foundation
 import IdentifiedCollections
+import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
@@ -175,5 +176,47 @@ struct PaneLayoutTests {
     #expect(layout.pane(forToken: tabA.content.id.rawValue)?.id == paneA)
     // An unknown UUID resolves to nothing.
     #expect(layout.pane(forToken: UUID()) == nil)
+  }
+
+  @Test func decodedAndDefaultLayoutsCarryNoGroups() throws {
+    let paneID = PaneID()
+    let tab = Self.terminalTab(id: UUID())
+    let layout = PaneLayout(
+      tree: SplitTree(view: paneID),
+      panes: [Pane(id: paneID, tabs: [tab], selectedTabID: tab.id)],
+      focusedPaneID: paneID
+    )
+    let decoded = try JSONDecoder().decode(PaneLayout.self, from: JSONEncoder().encode(layout))
+    for value in [layout, decoded] {
+      #expect(value.activeGroupID == nil)
+      #expect(value.parkedGroups.isEmpty)
+      #expect(value.groupOrder.isEmpty)
+      #expect(value.isConsistent(for: .tabsPerSplit))
+      #expect(!value.isConsistent(for: .splitPerTab))
+    }
+    // A tabs-per-split layout folds to itself, with no sidecar.
+    #expect(layout.foldedForPersistence().layout == layout)
+    #expect(layout.foldedForPersistence().sidecar == nil)
+  }
+
+  @Test func focusMustBeALeafOfTheActiveTree() throws {
+    let paneA = PaneID()
+    let paneB = PaneID()
+    let tabA = Self.terminalTab(id: UUID())
+    let tabB = Self.terminalTab(id: UUID())
+    let group1 = PaneGroupID()
+    let group2 = PaneGroupID()
+    var layout = PaneLayout(
+      tree: SplitTree(view: paneA),
+      panes: [Pane(id: paneA, tabs: [tabA]), Pane(id: paneB, tabs: [tabB])],
+      focusedPaneID: paneA,
+      activeGroupID: group1,
+      parkedGroups: [PaneGroup(id: group2, tree: SplitTree(view: paneB), focusedPaneID: paneB)],
+      groupOrder: [group1, group2]
+    )
+    #expect(layout.isConsistent(for: .splitPerTab))
+    // paneB is a known pane, but it sits in a parked group.
+    layout.focusedPaneID = paneB
+    #expect(!layout.isConsistent)
   }
 }

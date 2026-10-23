@@ -693,7 +693,7 @@ nonisolated extension PaneLayout {
     var dissolved = Set<PaneID>()
     // Strip order first; a parked group missing from it still dissolves, so no
     // content is ever left behind.
-    let parkedOrder =
+    let parkedOrder: [PaneGroupID] =
       groupOrder.filter { $0 != activeGroupID }
       + parkedGroups.ids.filter { !groupOrder.contains($0) }
     for groupID in parkedOrder {
@@ -817,10 +817,10 @@ nonisolated extension PaneLayout {
     var result = self
     var movedTabs: [TabID: TabItem] = [:]
     for entry in entries {
-      guard let owner = pane(containingTab: entry.tabID),
-        var base = result.panes[id: owner.id],
-        let tab = base.tabs.remove(id: entry.tabID)
-      else { return nil }
+      guard let owner = pane(containingTab: entry.tabID), var base = result.panes[id: owner.id] else {
+        return nil
+      }
+      guard let tab = base.tabs.remove(id: entry.tabID) else { return nil }
       if base.selectedTabID == tab.id {
         base.selectedTabID = base.tabs.first?.id
       }
