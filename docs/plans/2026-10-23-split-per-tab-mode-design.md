@@ -645,10 +645,15 @@ without switching.
   layout" clear (`LayoutFeature.swift` L842-844) runs on the OWNING tree, so a
   parked group never keeps a zoom on a pane that has become windowed.
 - `toggleZoom(paneID:)` / `contentRequestedToggleZoom`: zooming focuses the
-  pane (L1035 writes `focusedPaneID` directly). For a parked pane, first call
-  `focus(&state, paneID:)`, which activates its group; then run today's
-  `isSplit` guard and zoom toggle on the now-active tree. Never write
-  `focusedPaneID` to a parked pane.
+  pane (L1035 writes `focusedPaneID` directly). For a parked pane, first
+  activate its group directly: cancel a pending alert owned by a pane of the
+  outgoing active group (the same check `focus()` makes), then
+  `state.layout.activateGroup(group)`. Do NOT call `focus()`: it would apply
+  `SplitZoomPolicy` and, with `preservesZoomOnNavigation == true`, move the
+  group's remembered zoom onto the target so the toggle clears it. Then run
+  today's code unchanged on the now-active tree: `isSplit` guard,
+  `focusedPaneID = paneID`, toggle relative to the group's own remembered
+  zoom. Never write `focusedPaneID` to a parked pane.
 - `equalizePanes` has no pane payload and keeps acting on the active tree.
 - `reduceFocusPane(.direction)` keeps walking the active tree (focus is always
   in it).
@@ -1184,7 +1189,9 @@ Every existing suite must pass unchanged with the default mode.
    empties the layout; ⌘W (`contentRequestedClose(.tab)`) on a group's only
    pane with each confirm mode closes that group; `moveGroup` clamps; refused `moveTab*` in SPT; `contentRequestedGotoTab`
    over groups; zoom stays per group across switches; `toggleZoom` on a
-   parked pane activates its group and keeps every layout consistent;
+   parked pane activates its group and keeps every layout consistent, and
+   with `preservesZoomOnNavigation = true` and the group's remembered zoom on
+   P1, `toggleZoom(P2)` zooms P2 while `toggleZoom(P1)` clears the zoom;
    `enterWindowMode` on a zoomed pane of a parked group clears that group's
    zoom.
 5. **TerminalsFeature** (`TerminalsFeatureTests`): two flips whose
