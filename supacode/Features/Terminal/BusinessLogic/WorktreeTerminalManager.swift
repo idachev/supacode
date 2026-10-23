@@ -488,7 +488,7 @@ final class WorktreeTerminalManager {
       .performBindingActionOnSurface, .selectTab, .selectTabAtIndex, .selectRelativeTab, .focusSurface, .splitSurface,
       .destroyTab, .destroySurface, .renameTab, .setImagePasteAgents, .prune, .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
-      .setTerminalHibernationEnabled, .toggleWindowModeForFocusedPane,
+      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane,
       .splitFocusedPane, .focusSplit, .toggleSplitZoom, .equalizeSplits,
       .splitPane, .focusPane, .closePane, .toggleZoomPane, .toggleWindowModeForPane, .moveTabToSplit:
       return false
@@ -533,7 +533,7 @@ final class WorktreeTerminalManager {
       .navigateSearchNext, .navigateSearchPrevious, .selectTab, .selectTabAtIndex, .selectRelativeTab,
       .focusSurface, .splitSurface, .destroyTab, .destroySurface, .renameTab, .prune, .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
-      .setTerminalHibernationEnabled, .toggleWindowModeForFocusedPane:
+      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane:
       return false
     }
     return true
@@ -557,6 +557,8 @@ final class WorktreeTerminalManager {
       enforceNotificationRetentionLimit()
     case .setTerminalHibernationEnabled:
       sendTerminals(.hibernationPolicyChanged)
+    case .setTerminalLayoutMode(let mode):
+      sendTerminals(.layoutModeChanged(mode))
     case .toggleWindowModeForFocusedPane(let worktree):
       toggleWindowModeForFocusedPane(of: worktree)
     case .setSelectedWorktreeID(let id):
@@ -1603,8 +1605,13 @@ final class WorktreeTerminalManager {
   }
 
   /// Cancels every queued incremental save. Called before the on-quit
-  /// synchronous flush becomes the terminal write.
-  func cancelPendingLayoutSaves() {
+  /// synchronous flush becomes the terminal write. Returns the worktrees whose
+  /// debounced save it dropped, so that flush can still write them: a hydrated
+  /// layout with no content host (one a mode switch converted) is not in
+  /// `hosts` and would otherwise lose its pending change.
+  @discardableResult
+  func cancelPendingLayoutSaves() -> Set<Worktree.ID> {
+    let cancelledWorktreeIDs = Set(layoutDirtyTasks.keys)
     for task in layoutDirtyTasks.values { task.cancel() }
     layoutDirtyTasks.removeAll()
     // Cancels debounced saves that have not enqueued yet; a flush already on the
@@ -1613,6 +1620,7 @@ final class WorktreeTerminalManager {
     // and can never be overtaken and regressed by a late flush.
     for entry in layoutFlushTasks.values { entry.task.cancel() }
     layoutFlushTasks.removeAll()
+    return cancelledWorktreeIDs
   }
 
   /// Tears down persistent zmx sessions for worktrees that just left the keep
@@ -2001,12 +2009,17 @@ final class WorktreeTerminalManager {
   }
 
   /// Embed `agentsBySurface` in each record so badges survive relaunch.
+  /// Writes every worktree with a content host plus `extraWorktreeIDs`, which
+  /// the quit path fills with the pending debounced saves it cancelled
+  /// (`hosts.keys ∪ layoutDirtyTasks.keys`), so a hostless layout's change
+  /// still lands.
   func saveAllLayoutSnapshots(
+    extraWorktreeIDs: Set<Worktree.ID> = [],
     agentsBySurface: [UUID: [TerminalLayoutSnapshot.SurfaceAgentRecord]]? = nil
   ) {
     guard appStore?.withState({ $0.terminals.layoutsAreReadOnly }) != true else { return }
     var changes: [String: LayoutsIncrementalWriter.RecordChange] = [:]
-    for (id, _) in hosts {
+    for id in Set(hosts.keys).union(extraWorktreeIDs) {
       guard let layoutState = layoutState(for: id) else { continue }
       let record = LayoutPersistence.record(
         for: layoutState.layout,
