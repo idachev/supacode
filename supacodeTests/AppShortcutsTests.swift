@@ -654,6 +654,34 @@ struct PaneWindowShortcutTests {
     )
   }
 
+  // Splits in Each Tab: a pane window shows one pane holding exactly one tab.
+  // Its chords stay window-local by decision; they never drive the main
+  // window's group strip.
+
+  @Test func splitPerTabTabChordSelectsTheWindowsOnlyTabNotAGroup() {
+    let tab = Self.tab()
+    let pane = Self.pane(tabs: [tab])
+    let event = Self.keyEvent(keyCode: kVK_ANSI_2, modifiers: .command)
+    #expect(
+      PaneWindowShortcut.intent(for: event, pane: pane, overrides: [:], isWorktreeSelected: true)
+        == .selectTab(tab.id)
+    )
+  }
+
+  @Test func splitPerTabRelativeTabCyclingIsConsumedInAPaneWindow() {
+    let pane = Self.pane(tabs: [Self.tab()])
+    let next = Self.keyEvent(keyCode: kVK_Tab, modifiers: .control)
+    let previous = Self.keyEvent(keyCode: kVK_Tab, modifiers: [.control, .shift])
+    #expect(
+      PaneWindowShortcut.intent(for: next, pane: pane, overrides: [:], isWorktreeSelected: true)
+        == .ignore
+    )
+    #expect(
+      PaneWindowShortcut.intent(for: previous, pane: pane, overrides: [:], isWorktreeSelected: true)
+        == .ignore
+    )
+  }
+
   @Test func runScriptIsSwallowedWhenThePanesWorktreeIsNotSelected() {
     let pane = Self.pane(tabs: [Self.tab()])
     let event = Self.keyEvent(keyCode: kVK_ANSI_R, modifiers: .command)

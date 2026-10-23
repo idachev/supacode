@@ -312,7 +312,7 @@ enum PaneTabDrag {
 }
 
 /// Accent capsule marking the insertion point of an in-flight tab drag.
-private struct PaneTabDropIndicator: View {
+struct PaneTabDropIndicator: View {
   var body: some View {
     Capsule()
       .fill(TerminalTabBarColors.dropIndicator)
@@ -325,7 +325,7 @@ private struct PaneTabDropIndicator: View {
 }
 
 /// The floating preview shown under the cursor while a tab is dragged.
-private struct PaneTabDragPreview: View {
+struct PaneTabDragPreview: View {
   let title: String
 
   var body: some View {
@@ -668,7 +668,7 @@ private struct PaneTabView: View {
 
 /// The tab's leading content: dormant marker, content accessory, icon, and
 /// title.
-private struct PaneTabLabelView: View {
+struct PaneTabLabelView: View {
   let tab: TabItem
   let title: String
   let isSelected: Bool
@@ -734,7 +734,7 @@ private struct PaneTabTitleLabel: View, Equatable {
   }
 }
 
-private struct PaneTabShortcutHintText: View {
+struct PaneTabShortcutHintText: View {
   let hint: String
 
   var body: some View {
@@ -752,7 +752,7 @@ private struct PaneTabShortcutHintText: View {
 
 /// `suppress` hides the dot while the trailing slot is held for something
 /// else (hover, shortcut hint).
-private struct PaneTabNotificationIndicator: View {
+struct PaneTabNotificationIndicator: View {
   let hasUnseenNotifications: Bool
   let suppress: Bool
 
@@ -771,7 +771,7 @@ private struct PaneTabNotificationIndicator: View {
 
 /// Idle-slot marker for a completed blocking-script tab; mirrors the dot's
 /// hide-on-hover rules so the close button and ⌘ hint always win.
-private struct PaneTabLockIndicator: View {
+struct PaneTabLockIndicator: View {
   let suppress: Bool
 
   var body: some View {
@@ -789,7 +789,7 @@ private struct PaneTabLockIndicator: View {
 /// Top-of-tab colored stripe carrying both the tint indicator and the OSC-9
 /// progress signal, painted over the adjacent dividers via `-pixelLength`
 /// horizontal padding so the active tab reads continuous across boundaries.
-private struct PaneTabStripe: View {
+struct PaneTabStripe: View {
   let isSelected: Bool
   let isHovering: Bool
   let isPressing: Bool
@@ -850,8 +850,9 @@ private struct PaneTabStripe: View {
 }
 
 /// The strip's trailing accessories: the exit-zoom button (zoomed panes only)
-/// and the new-tab menu carrying the splits and the window-mode toggle.
-private struct PaneTabStripAccessories: View {
+/// and the new-tab menu carrying the splits and the window-mode toggle. Also
+/// trails the split-per-tab group strip, acting on the focused pane.
+struct PaneTabStripAccessories: View {
   let pane: Pane
   let isZoomed: Bool
   let isWindowed: Bool

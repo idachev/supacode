@@ -1,9 +1,12 @@
 import AppKit
 import ComposableArchitecture
+import SupacodeSettingsShared
 import SwiftUI
 
 /// One worktree's terminal area on the layout engine: the pane tree with its
 /// close-confirmation alert, window-activity sync, and terminal auto-focus.
+/// In split per tab the worktree's group strip sits above the active group's
+/// tree.
 struct WorktreeLayoutView: View {
   let worktree: Worktree
   let manager: WorktreeTerminalManager
@@ -28,19 +31,31 @@ struct WorktreeLayoutView: View {
         state: \.layouts[id: worktree.id],
         action: \.layouts[id: worktree.id]
       ), !layoutStore.layout.panes.isEmpty {
-        LayoutAlertHost(
-          store: layoutStore,
-          runtime: runtime,
-          dividerColor: manager.splitDividerColor(),
-          unfocusedOverlay: manager.unfocusedSplitOverlay(),
-          surfaceState: { [weak manager] surfaceID in
-            manager?.hostIfExists(for: worktree.id)?.surfaceStates[surfaceID]
-          },
-          isLifecycleBusy: isLifecycleBusy,
-          showWindowedPane: { [weak manager] paneID in
-            manager?.paneWindows.orderFront(worktreeID: worktree.id, paneID: paneID)
+        VStack(spacing: 0) {
+          // The layout's own mode (ДР2), not the setting: between a settings
+          // change and the conversion the layout still has its old shape. The
+          // pane tree keeps one identity in both modes, so a switch does not
+          // remount it.
+          if layoutStore.mode == .splitPerTab {
+            WorktreeGroupStripView(
+              store: layoutStore,
+              runtime: runtime,
+              surfaceState: surfaceState,
+              isLifecycleBusy: isLifecycleBusy
+            )
           }
-        )
+          LayoutAlertHost(
+            store: layoutStore,
+            runtime: runtime,
+            dividerColor: manager.splitDividerColor(),
+            unfocusedOverlay: manager.unfocusedSplitOverlay(),
+            surfaceState: surfaceState,
+            isLifecycleBusy: isLifecycleBusy,
+            showWindowedPane: { [weak manager] paneID in
+              manager?.paneWindows.orderFront(worktreeID: worktree.id, paneID: paneID)
+            }
+          )
+        }
       } else {
         // No strip is mounted here, so the default "+" hint would point at a
         // control that is not on screen.
@@ -71,6 +86,13 @@ struct WorktreeLayoutView: View {
         host?.focusSelectedTab()
       }
       syncResolvedWindowActivity()
+    }
+  }
+
+  /// Resolves a content id to its observable unseen-notification counter.
+  private var surfaceState: (UUID) -> WorktreeSurfaceState? {
+    { [weak manager, worktreeID = worktree.id] surfaceID in
+      manager?.hostIfExists(for: worktreeID)?.surfaceStates[surfaceID]
     }
   }
 
