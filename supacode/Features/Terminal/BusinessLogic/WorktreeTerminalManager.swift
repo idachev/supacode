@@ -1606,12 +1606,13 @@ final class WorktreeTerminalManager {
 
   /// Cancels every queued incremental save. Called before the on-quit
   /// synchronous flush becomes the terminal write. Returns the worktrees whose
-  /// debounced save it dropped, so that flush can still write them: a hydrated
-  /// layout with no content host (one a mode switch converted) is not in
-  /// `hosts` and would otherwise lose its pending change.
+  /// debounced save or in-flight flush it dropped, so that flush can still write
+  /// them: a hydrated layout with no content host (one a mode switch converted)
+  /// is not in `hosts` and would otherwise lose its pending change. A flush Task
+  /// that has not reached the writer yet never runs once the process exits.
   @discardableResult
   func cancelPendingLayoutSaves() -> Set<Worktree.ID> {
-    let cancelledWorktreeIDs = Set(layoutDirtyTasks.keys)
+    let cancelledWorktreeIDs = Set(layoutDirtyTasks.keys).union(layoutFlushTasks.keys)
     for task in layoutDirtyTasks.values { task.cancel() }
     layoutDirtyTasks.removeAll()
     // Cancels debounced saves that have not enqueued yet; a flush already on the
@@ -2010,9 +2011,9 @@ final class WorktreeTerminalManager {
 
   /// Embed `agentsBySurface` in each record so badges survive relaunch.
   /// Writes every worktree with a content host plus `extraWorktreeIDs`, which
-  /// the quit path fills with the pending debounced saves it cancelled
-  /// (`hosts.keys ∪ layoutDirtyTasks.keys`), so a hostless layout's change
-  /// still lands.
+  /// the quit path fills with the pending debounced saves and in-flight flushes
+  /// it cancelled (`hosts.keys ∪ layoutDirtyTasks.keys ∪ layoutFlushTasks.keys`),
+  /// so a hostless layout's change still lands.
   func saveAllLayoutSnapshots(
     extraWorktreeIDs: Set<Worktree.ID> = [],
     agentsBySurface: [UUID: [TerminalLayoutSnapshot.SurfaceAgentRecord]]? = nil
