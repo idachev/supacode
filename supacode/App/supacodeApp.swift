@@ -62,9 +62,15 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
     // The on-quit save embeds agent records so badges survive relaunch (agents
     // only emit session_start once per process lifetime), and a second concurrent
     // instance overwriting the file is an accepted dev-only last-writer-wins window.
-    terminalManager?.cancelPendingLayoutSaves()
+    // The cancelled worktree ids are captured before the cancel clears them and
+    // written too, so a layout with no content host (a hydrated one a mode switch
+    // converted) keeps its pending change.
+    let cancelledWorktreeIDs = terminalManager?.cancelPendingLayoutSaves() ?? []
     let agentsBySurface = appStore?.state.agentPresence.agentsBySurface() ?? [:]
-    terminalManager?.saveAllLayoutSnapshots(agentsBySurface: agentsBySurface)
+    terminalManager?.saveAllLayoutSnapshots(
+      extraWorktreeIDs: cancelledWorktreeIDs,
+      agentsBySurface: agentsBySurface
+    )
     terminalManager?.rememberSelectedWorktreeZoomOnQuit()
   }
 
