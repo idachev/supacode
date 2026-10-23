@@ -11,8 +11,11 @@ struct WindowCommands: Commands {
     // Close Tab is non-customizable, so it always resolves and always owns ⌘W.
     let closeTab = AppShortcuts.closeTab.effective(from: settingsFile.global.shortcutOverrides)
     let closeTabEnabled = closeTabAction?.isEnabled == true
+    // In Splits in Each Tab ⌘W closes the focused split, not the whole tab.
+    // The menu bar has no layout scope, so it reads the setting (ДР9).
+    let closeTabTitle = settingsFile.global.terminalLayoutMode == .splitPerTab ? "Close Terminal" : "Close Tab"
     CommandGroup(replacing: .saveItem) {
-      Button("Close Tab", systemImage: "xmark") {
+      Button(closeTabTitle, systemImage: "xmark") {
         closeTabAction?()
       }
       // Suppressed while unavailable so Close Window can claim ⌘W.

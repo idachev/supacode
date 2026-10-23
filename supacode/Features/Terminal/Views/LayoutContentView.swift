@@ -360,19 +360,30 @@ struct PaneStripView: View {
     return Set(store.layout.tree.visibleLeaves()).subtracting(windowedPaneIDs).count > 1
   }
 
+  /// Split per tab: an embedded pane holds one tab and the worktree's group
+  /// strip carries its title, so it has no strip and no tab-drop zones. A
+  /// windowed pane keeps its one-tab strip (title, rename, accessories). Read
+  /// at this leaf, never threaded through the tree.
+  private var showsTabStrip: Bool {
+    context == .windowed || store.mode != .splitPerTab
+  }
+
   var body: some View {
+    let showsTabStrip = showsTabStrip
     VStack(spacing: 0) {
-      PaneTabStrip(
-        pane: pane,
-        isFocusedPane: isFocused,
-        isZoomed: isZoomed,
-        isWindowed: context == .windowed,
-        isLifecycleBusy: isLifecycleBusy,
-        store: store,
-        runtime: runtime,
-        surfaceState: surfaceState,
-        dragModel: dragModel
-      )
+      if showsTabStrip {
+        PaneTabStrip(
+          pane: pane,
+          isFocusedPane: isFocused,
+          isZoomed: isZoomed,
+          isWindowed: context == .windowed,
+          isLifecycleBusy: isLifecycleBusy,
+          store: store,
+          runtime: runtime,
+          surfaceState: surfaceState,
+          dragModel: dragModel
+        )
+      }
       if let contentID = pane.selectedTab?.content.id {
         PaneContentToolbarView(contentID: contentID, runtime: runtime, epoch: store.renderEpoch)
       }
@@ -401,7 +412,7 @@ struct PaneStripView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       // On the whole content region, so a dormant pane still takes drops.
       .overlay {
-        if context == .embedded, let dragModel {
+        if context == .embedded, showsTabStrip, let dragModel {
           PaneSplitDropZones(pane: pane, store: store, dragModel: dragModel)
         }
       }
