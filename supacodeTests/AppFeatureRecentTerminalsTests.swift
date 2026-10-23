@@ -211,6 +211,49 @@ struct AppFeatureRecentTerminalsTests {
     #expect(access == [splitPane.selectedTabID!.rawValue.uuidString: Self.now.timeIntervalSince1970])
   }
 
+  // MARK: - Split per tab.
+
+  @Test func splitPerTabActionsRowsOfTheSwitchTable() {
+    let groupID = PaneGroupID(rawValue: UUID())
+    let spec = NewTabSpec(
+      title: "group",
+      content: .terminal(TerminalContentState(workingDirectory: nil)),
+      geometry: .fallback
+    )
+    // A group switch or a selected new group moves the current tab.
+    #expect(RecentTerminals.canChangeCurrentTab(.selectGroup(id: groupID)))
+    #expect(RecentTerminals.canChangeCurrentTab(.newGroup(spec: spec)))
+    // Both conversions keep the focused pane's selected tab; order is not focus.
+    #expect(!RecentTerminals.canChangeCurrentTab(.convertMode(to: .splitPerTab)))
+    #expect(!RecentTerminals.canChangeCurrentTab(.convertMode(to: .tabsPerSplit)))
+    #expect(!RecentTerminals.canChangeCurrentTab(.moveGroup(id: groupID, toIndex: 0)))
+    // None of them removes a tab.
+    #expect(!RecentTerminals.canRemoveTabs(.convertMode(to: .splitPerTab)))
+    #expect(!RecentTerminals.canRemoveTabs(.convertMode(to: .tabsPerSplit)))
+    #expect(!RecentTerminals.canRemoveTabs(.selectGroup(id: groupID)))
+    #expect(!RecentTerminals.canRemoveTabs(.newGroup(spec: spec)))
+    #expect(!RecentTerminals.canRemoveTabs(.moveGroup(id: groupID, toIndex: 0)))
+  }
+
+  @Test(.dependency(\.defaultAppStorage, .inMemory)) func groupSwitchRecordsAccessButConversionDoesNot() async {
+    let fixture = Fixture(worktreeNames: ["a"], tabsPerWorktree: [2])
+    let worktreeID = fixture.worktrees[0].id
+    let store = makeStore(fixture: fixture, selected: worktreeID)
+    @Shared(.recentTerminalTabAccess) var access
+
+    // The background tab becomes its own parked group; the current tab stays.
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .convertMode(to: .splitPerTab)))))
+    await store.finish()
+    #expect(access.isEmpty)
+    let layout = store.state.terminals.layouts[id: worktreeID]!.layout
+    #expect(layout.groupOrder.count == 2)
+
+    let parked = layout.groupOrder[1]
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .selectGroup(id: parked)))))
+    await store.finish()
+    #expect(access == [fixture.tabs[0][1].id.rawValue.uuidString: Self.now.timeIntervalSince1970])
+  }
+
   // MARK: - Pruning.
 
   @Test(.dependency(\.defaultAppStorage, .inMemory)) func closingTabPrunesItsEntry() async {

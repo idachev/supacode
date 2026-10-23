@@ -32,9 +32,14 @@ enum RecentTerminals {
     case .newTab, .splitPane, .closeTab, .closePane, .selectTab, .focusPane, .moveTab,
       .moveTabToSplit, .moveTabToSpanningSplit, .contentRequestedClose, .contentRequestedNewTab,
       .contentRequestedSplit, .contentRequestedFocus, .contentRequestedFocusSplit,
-      .contentRequestedGotoTab, .toggleZoom, .contentRequestedToggleZoom, .alert:
-      // Zoom focuses the zoomed pane; a confirmed close selects a neighbour.
+      .contentRequestedGotoTab, .toggleZoom, .contentRequestedToggleZoom, .selectGroup, .newGroup, .alert:
+      // Zoom focuses the zoomed pane; a confirmed close selects a neighbour; a
+      // group switch or a selected new group moves focus to another group.
       return true
+    case .convertMode, .moveGroup:
+      // Both conversions keep the focused pane and its selected tab; reordering
+      // groups moves no focus.
+      return false
     case .renameTab, .beginTabRename, .endTabRename, .enterWindowMode, .exitWindowMode, .resizePane,
       .equalizePanes, .hibernateTab, .wakeTab, .runtime, .contentRequestedResize, .contentRequestedMoveTab:
       return false
@@ -46,6 +51,9 @@ enum RecentTerminals {
     switch action {
     case .closeTab, .closePane, .contentRequestedClose, .runtime(.killConfirmed), .alert:
       return true
+    case .convertMode, .selectGroup, .newGroup, .moveGroup:
+      // Conversions and group actions never drop a tab.
+      return false
     default:
       return false
     }

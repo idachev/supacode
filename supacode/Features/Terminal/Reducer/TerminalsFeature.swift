@@ -93,8 +93,12 @@ struct TerminalsFeature {
   // commit never flip tab visibility, so skip the layout-wide re-diff for them.
   private static func canAffectVisibility(_ action: LayoutFeature.Action) -> Bool {
     switch action {
-    case .resizePane, .beginTabRename, .endTabRename, .runtime(.titleCommitted):
+    // Reordering groups changes no group's visibility.
+    case .resizePane, .beginTabRename, .endTabRename, .runtime(.titleCommitted), .moveGroup:
       return false
+    case .convertMode, .selectGroup, .newGroup:
+      // A conversion or group switch swaps the visible tree.
+      return true
     case .newTab, .splitPane, .closeTab, .closePane, .selectTab, .renameTab, .focusPane,
       .moveTab, .moveTabToSplit, .moveTabToSpanningSplit, .enterWindowMode, .exitWindowMode,
       .equalizePanes, .toggleZoom, .hibernateTab, .wakeTab, .runtime(.killConfirmed),
