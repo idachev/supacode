@@ -107,6 +107,22 @@ public nonisolated enum HoverFocusMode: String, Codable, CaseIterable, Sendable 
   }
 }
 
+/// How a worktree arranges terminals: a tab strip in every split, or one tab
+/// strip whose tabs each hold a split tree (the pre-#786 layout).
+public nonisolated enum TerminalLayoutMode: String, Codable, CaseIterable, Sendable {
+  /// One split tree per worktree; every split has its own tab strip. The default.
+  case tabsPerSplit
+  /// One tab strip per worktree; every tab has its own split tree.
+  case splitPerTab
+
+  public var label: String {
+    switch self {
+    case .tabsPerSplit: "Tabs in Each Split"
+    case .splitPerTab: "Splits in Each Tab"
+    }
+  }
+}
+
 public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   public var appearanceMode: AppearanceMode
   public var defaultEditorID: String
@@ -185,6 +201,8 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   public var automaticRepositoryRefreshEnabled: Bool
   /// Whether hovering a split pane focuses it (focus follows mouse). Off by default.
   public var hoverFocusMode: HoverFocusMode
+  /// How terminals are arranged per worktree. Tabs in each split by default.
+  public var terminalLayoutMode: TerminalLayoutMode
   /// System-wide chord that toggles the app; nil (the default) leaves it unbound.
   public var globalToggleVisibilityHotkey: AppShortcutOverride?
 
@@ -282,6 +300,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     chromeTextSize: ChromeTextSize = .default,
     automaticRepositoryRefreshEnabled: Bool = true,
     hoverFocusMode: HoverFocusMode = .never,
+    terminalLayoutMode: TerminalLayoutMode = .tabsPerSplit,
     globalToggleVisibilityHotkey: AppShortcutOverride? = nil
   ) {
     self.appearanceMode = appearanceMode
@@ -331,6 +350,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.chromeTextSize = chromeTextSize
     self.automaticRepositoryRefreshEnabled = automaticRepositoryRefreshEnabled
     self.hoverFocusMode = hoverFocusMode
+    self.terminalLayoutMode = terminalLayoutMode
     self.globalToggleVisibilityHotkey = globalToggleVisibilityHotkey
   }
 
@@ -566,6 +586,11 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
       ((try? container.decodeIfPresent(String.self, forKey: .hoverFocusMode)) ?? nil)
       .flatMap(HoverFocusMode.init(rawValue:))
       ?? Self.default.hoverFocusMode
+    // Same tolerance: a missing, mistyped or unknown mode reads as the default.
+    terminalLayoutMode =
+      ((try? container.decodeIfPresent(String.self, forKey: .terminalLayoutMode)) ?? nil)
+      .flatMap(TerminalLayoutMode.init(rawValue:))
+      ?? Self.default.terminalLayoutMode
     // A malformed value falls back to unbound instead of throwing, which would
     // reset the whole file to defaults.
     globalToggleVisibilityHotkey =
