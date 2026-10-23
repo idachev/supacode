@@ -227,6 +227,7 @@ struct AppFeatureDeeplinkTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000_000))
       $0.terminalClient.send = { command in sent.withValue { $0.append(command) } }
       $0.terminalClient.tabExists = { _, _ in true }
       $0.terminalClient.canMoveTabToNewSplit = { _, _ in false }
@@ -258,6 +259,7 @@ struct AppFeatureDeeplinkTests {
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000_000))
       $0.terminalClient.send = { _ in }
       $0.terminalClient.tabExists = { _, _ in true }
       $0.terminalClient.canMoveTabToNewSplit = { _, _ in false }
