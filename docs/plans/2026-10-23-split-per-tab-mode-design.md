@@ -432,9 +432,13 @@ flattens every non-active group into one-pane groups (ОП9).
 
 `strippingEphemeralContent()` becomes group-aware. For a pane it empties it
 calls `removeLeaf(paneID)` (not `tree.removing` on the active tree), then
-removes the pane. A focused pane that disappears retargets to the active
-tree's first leaf, never `panes.first` (which can be a parked pane).
-In v2 the result is identical to today's.
+removes the pane. A focused pane that disappears retargets by mode:
+
+- v2 (`activeGroupID == nil`): `panes.first?.id`, exactly as today
+  (`PaneLayout.swift` L439-441), so the default mode's persisted focus is
+  unchanged even when pane order and tree-leaf order differ.
+- SPT (`activeGroupID != nil`): the active tree's first leaf, never
+  `panes.first` (which can be a parked pane).
 
 ## Setting
 
@@ -508,8 +512,9 @@ case setTerminalLayoutMode(TerminalLayoutMode)
 ```
 
 `WorktreeTerminalManager`: add `.setTerminalLayoutMode` to BOTH exhaustive
-"not mine" lists (`handleTabCommand`'s `return false` list near L491 and
-`handleBindingActionCommand`'s near L536), and handle it in
+"not mine" lists (`handleSearchCommand`'s `return false` list, L476-497, and
+`handleBindingActionCommand`'s, L499-546; `handleTabCommand` ends in
+`default:` at L438 and needs no case), and handle it in
 `handleManagementCommand` next to L558:
 `case .setTerminalLayoutMode(let mode): sendTerminals(.layoutModeChanged(mode))`.
 
@@ -520,7 +525,11 @@ case setTerminalLayoutMode(TerminalLayoutMode)
 case layoutModeChanged(TerminalLayoutMode)
 ```
 
-Handler: for every layout with `mode != newMode`, in `layouts` order, return
+Handler: the payload is only a trigger. The handler reads the CURRENT
+setting, `let newMode = settingsFile.global.terminalLayoutMode`
+(`@Shared(.settingsFile)`), so two quick flips whose `.run` effects arrive out
+of order still end in the last setting. For every layout with
+`mode != newMode`, in `layouts` order, return
 `.send(.layouts(.element(id: layout.id, action: .convertMode(to: newMode))))`,
 merged (ДР14). The element handler then re-diffs hibernation and fires
 `layoutChanged`, which drives persistence, `paneWindows.reconcile`, surface
@@ -626,13 +635,23 @@ Each group keeps its own zoom; `SplitZoomPolicy` applies inside a group only.
 
 ### Tree-mutating actions on parked panes
 
-`splitPane`, `toggleZoom`, `resizePane`, `equalizePanes` and the
-`contentRequested*` variants resolve the tree through `modifyTree(containing:)`
-instead of `state.layout.tree`, so a background split (CLI `pane split
---background`) on a parked pane grows that parked group without switching.
-`equalizePanes` keeps acting on the active tree. `reduceToggleZoom`'s
-`isSplit` guard reads the owning tree. `reduceFocusPane(.direction)` keeps
-walking the active tree (focus is always in it).
+`splitPane`, `resizePane`, `enterWindowMode` and the matching
+`contentRequested*` variants resolve the tree through
+`modifyTree(containing:)` instead of `state.layout.tree`, so a background
+split (CLI `pane split --background`) on a parked pane grows that parked group
+without switching.
+
+- `enterWindowMode(paneID:)`: the "a zoomed placeholder would fill the
+  layout" clear (`LayoutFeature.swift` L842-844) runs on the OWNING tree, so a
+  parked group never keeps a zoom on a pane that has become windowed.
+- `toggleZoom(paneID:)` / `contentRequestedToggleZoom`: zooming focuses the
+  pane (L1035 writes `focusedPaneID` directly). For a parked pane, first call
+  `focus(&state, paneID:)`, which activates its group; then run today's
+  `isSplit` guard and zoom toggle on the now-active tree. Never write
+  `focusedPaneID` to a parked pane.
+- `equalizePanes` has no pane payload and keeps acting on the active tree.
+- `reduceFocusPane(.direction)` keeps walking the active tree (focus is always
+  in it).
 
 ### SPT branches of existing actions
 
@@ -647,7 +666,8 @@ walking the active tree (focus is always in it).
 | `closePane` | Unchanged, with the group rules below. |
 | `moveTab`, `moveTabToSplit`, `moveTabToSpanningSplit`, `contentRequestedMoveTab` | Refused: info log, `.none` (ДР4, АР5). |
 | `contentRequestedGotoTab` | Targets groups by strip position (ДР13). |
-| `selectTab`, `renameTab`, `beginTabRename`, `hibernateTab`, `wakeTab`, `runtime`, window mode | Unchanged (they address tabs/panes, which are flat). |
+| `selectTab`, `renameTab`, `beginTabRename`, `hibernateTab`, `wakeTab`, `runtime`, `exitWindowMode` | Unchanged (they address tabs/panes, which are flat). |
+| `enterWindowMode`, `toggleZoom`, `contentRequestedToggleZoom` | Owning-tree rules above. |
 
 `newGroup(spec:)`:
 
@@ -664,9 +684,11 @@ walking the active tree (focus is always in it).
    active group when `spec.select`, else at the end (ДР6); when
    `spec.select`, `focus(&state, paneID: paneID)` (switches to it).
 
-The `TabID == ContentID == mintedID` creation invariant and the WTM ack
-(`createTabAsync`: tab count grows by one, the new tab's content id is the
-minted id) hold unchanged.
+The CLI / deeplink creation ack (`createTabAsync`: it passes
+`TabID == ContentID == mintedID`, then checks that the tab count grew by one
+and the new tab's content id is the minted id) holds unchanged. Other
+producers (strip "+", blocking scripts) keep passing implicit or distinct ids;
+`mintedIdentity` mints them separately (`LayoutFeature.swift` L1072-1077).
 
 ### Close and collapse semantics per mode
 
@@ -784,6 +806,22 @@ The sidecar is always replaced, never inherited from the stored record, so a
 v2-mode write removes it. The no-op gate (`file != original`) still holds,
 because a decoded sidecar equals the one that was encoded.
 
+### Quit save covers hostless layouts
+
+A mode switch converts hydrated layouts that have no host, and their 1 s
+debounced save (`markLayoutDirty`, `WorktreeTerminalManager.swift`
+L1546-1553) is cancelled at quit (`supacodeApp.swift` L65), while
+`saveAllLayoutSnapshots` (L2004-2019) iterates `hosts` only. Fix:
+`saveAllLayoutSnapshots` writes `hosts.keys ∪ layoutDirtyTasks.keys`
+(every worktree with a pending debounced save, host or not). In
+`applicationWillTerminate` the dirty ids are captured before
+`cancelPendingLayoutSaves()` clears them: either call order is swapped
+(save, then cancel; the save runs synchronously on the writer queue) or
+`cancelPendingLayoutSaves` returns the ids it cancelled and
+`saveAllLayoutSnapshots(extraWorktreeIDs:agentsBySurface:)` takes them. T6
+picks one; the test drives it with the injected `layoutDebounceSleep`, no
+clock advance, and asserts the hostless record holds the converted shape.
+
 ### Read: unfold
 
 ```swift
@@ -795,9 +833,10 @@ func unfolding(_ sidecar: SplitPerTabSidecar) -> PaneLayout?
 Checks, all required:
 
 1. `self.activeGroupID == nil` and `self.isConsistent`.
-2. `sidecar.groupOrder` has no duplicates, contains `activeGroupID`, and
-   equals `{activeGroupID} ∪ parkedGroups.ids` as a set; no parked id equals
-   `activeGroupID`.
+2. `sidecar.parkedGroups` ids are unique (checked on the array, before any
+   `IdentifiedArray` is built); `sidecar.groupOrder` has no duplicates,
+   contains `activeGroupID`, and equals `{activeGroupID} ∪ parkedGroups.ids`
+   as a set; no parked id equals `activeGroupID`.
 3. Every `PaneTab.tabID` exists in the base exactly once across the sidecar
    and is never the selected tab of the base's focused pane.
 4. Every `PaneTab.paneID` is unique across the sidecar and absent from the
@@ -808,6 +847,15 @@ Checks, all required:
    `Pane(id: paneID, tabs: [tab], selectedTabID: tab.id)`, no base pane is
    empty and the result `isSplitPerTabShape` (so an old build that added a
    tab to an active pane fails here and falls back).
+
+The unfolded value must also pass `isConsistent(for: .splitPerTab)`; if it
+does not, `unfolding` returns nil (fallback, ДР12).
+
+Pane order is canonical, not the live order (the sidecar does not store the
+flat `panes` order, and `activateGroup` never reorders `panes`): the base
+panes in their stored order, then the parked panes in `groupOrder`, then
+tree-leaf order. Nothing renders `panes` order, and the fold of an unfolded
+layout is the same record, so the writer's no-op gate holds.
 
 Unfolded: base panes keep their selection (repaired to the first remaining
 tab only if the selected tab moved out, which check 3 excludes for the
@@ -887,7 +935,9 @@ Mode is read from `LayoutFeature.State.mode` through the scoped layout store
      its last pane. Tooltip on each group tab: its title and, for the first
      nine, "Select Tab N" with its `AppShortcuts.tabSelection` hotkey.
    - Drag to reorder → `.moveGroup(id:toIndex:)`.
-   - Trailing accessories reuse the existing strip accessory buttons for the
+   - Trailing accessories reuse `PaneTabStripAccessories`
+     (`PaneTabStripView.swift` L854), changed from `private` to internal with
+     its signature unchanged; they act on the
      focused pane: "+" sends `.newGroup` through `contentRequestedNewTab`
      (tooltip with `AppShortcuts.newTerminalTab`), split right / down, zoom,
      window mode. Every button has a tooltip with its hotkey.
@@ -896,12 +946,15 @@ Mode is read from `LayoutFeature.State.mode` through the scoped layout store
    - System colours only, Dynamic Type, `.monospaced()` where the v2 strip
      uses it.
 3. `Views/LayoutContentView.swift` `PaneStripView` (L319): when
-   `store.mode == .splitPerTab`, omit `PaneTabStrip` (the pane has one tab)
+   `store.mode == .splitPerTab` and `context == .embedded`, omit
+   `PaneTabStrip` (the pane has one tab)
    and the tab-drag drop zones; keep the content toolbar, `ContentHostView`,
    dim overlay and hover-focus sensor. Read `store.mode` at this leaf.
-4. `Views/PaneWindowManager.swift`: a windowed SPT pane renders without the
-   strip; its window title already follows the content. Window mode works
-   per pane as in v2 (ОП11).
+4. `Views/PaneWindowManager.swift`: a windowed SPT pane (`context == .windowed`)
+   KEEPS its one-tab `PaneTabStrip`. It carries the title, the inline rename
+   editor (so Rename Tab from a pane window shows a field even when the main
+   window shows another worktree) and the accessories. Window mode works per
+   pane as in v2 (ОП11).
 5. Rendering of parked groups: none. `LayoutPaneTreeView` renders
    `tree.visibleNode`, i.e. the active group only; parked panes are not in
    the view tree (v1's `TerminalTabContentStack` rendered only the selected
@@ -929,8 +982,13 @@ Menu closures capture only the store, so no `FocusedAction` token changes
 same two sends. v2 branches are today's code.
 
 `WindowCommands.swift`: title `settingsFile.global.terminalLayoutMode == .splitPerTab ? "Close Terminal" : "Close Tab"`.
-Shortcut handling unchanged. `PaneWindowManager`'s own ⌘T / ⌘W key handling
-(L63-67) follows the same reducer semantics.
+Shortcut handling unchanged. In a pane window `PaneWindowShortcut.intent`
+(`PaneWindowManager.swift` L49-110) stays window-local in SPT, by decision:
+the window shows one pane, so ⌘1..9 select that pane's only tab and next /
+previous are consumed no-ops (`pane.tabs.count > 1` fails); they never drive
+the main window's group strip. ⌘T sends `newTab(contentID)` →
+`contentRequestedNewTab` → a new group; ⌘W closes the pane; Rename Tab opens
+the window's own strip editor. No code change in `intent`.
 
 `AppFeature.selectTerminalTabAtIndex` (L1078) and the next / previous actions
 are unchanged; they already route to these WTM handlers.
@@ -949,7 +1007,8 @@ SPT), `surface` = content id, `pane` = pane. Group ids are never public (ДР3).
 | `tab new` (with or without `--pane`) | new group (АР4); the ack and `TabID == ContentID` invariant unchanged | reducer `newTab` branch; `createTabAsync` unchanged |
 | `pane split` | split inside the token's group; a background split of a parked pane does not switch | reducer `modifyTree` |
 | `tab close`, `surface close`, `pane close` | closes that pane / tab; the last pane closes the group; never closes other panes of the group | unchanged WTM code |
-| `pane zoom`, `pane window`, `pane equalize` | scoped to the token's group | reducer |
+| `pane zoom`, `pane window` | the token's pane, in its own group; zooming a parked pane activates its group first | reducer (owning-tree rules) |
+| `pane equalize` | the active group (the command takes no pane token) | `.equalizePanes`, unchanged |
 | `tab move` | refused with an alert (АР5) | `canMoveTabToNewSplit` + AppFeature `.tabMove` |
 | `tab rename` | renames the content tab (in SPT the group shows it when it is the group's focused tab, ОП7) | unchanged |
 
@@ -1069,7 +1128,13 @@ group-closing code; it never reaps anything beyond the pane being closed.
 9. **Writer round-trip.** If the fold is not deterministic (for example, it
    iterates a `Set`), every flush rewrites the record. The fold iterates
    `groupOrder` and `tree.leaves()` only.
-10. **Config hand-edit race.** `attachLayout` may read the new mode before
+10. **Config hand-edits are not live.** `SettingsFilePersistence.subscribe`
+    returns an empty `SharedSubscription` (L347-352), so editing
+    `terminalLayoutMode` in `config.json` while the app runs triggers no
+    `settingsChanged` and no conversion. The edit takes effect at the next
+    launch, where hydration converts every stored layout to the mode it
+    reads. No live reload path is added. Separately, `attachLayout` may read
+    a new mode before
     `layoutModeChanged` arrives; `convertMode` is idempotent per layout, so
     the late conversion skips it.
 
@@ -1084,7 +1149,8 @@ Every existing suite must pass unchanged with the default mode.
    values decode to the default; round-trip of both values; `SettingsFeature`
    load / apply / write-back.
 2. **Model** (`PaneLayoutTests` + new `SplitPerTabLayoutTests`):
-   v2 → SPT on a 2-pane layout with 3 + 2 tabs gives 4 parked groups in АР3
+   v2 → SPT on a 2-pane layout with 3 + 2 tabs gives 3 parked groups (4
+   groups in all) in АР3
    order with ids from the incrementing sequence; ids, titles, `customTitle`
    and zoom preserved; SPT → v2 appends in group then leaf order and keeps the
    home selection; both conversions keep `allContentIDs` and the tab id set
@@ -1094,7 +1160,10 @@ Every existing suite must pass unchanged with the default mode.
    group and never focuses a parked pane; `wireFormatIsPinned` unchanged.
 3. **Persistence** (`LayoutPersistenceTests`, `LayoutsIncrementalWriterTests`,
    `LayoutsMigratorTests`): fold of an SPT layout is `isConsistent` v2 and
-   holds every content id; fold → unfold round-trips to an equal layout;
+   holds every content id; `fold(unfold(fold(x))) == fold(x)`, and unfold of
+   a fold equals the live layout after canonical pane ordering (same trees,
+   focus, zoom, group order, tab sets per pane); a duplicated parked group id
+   and an unfold that fails `isConsistent(for: .splitPerTab)` both fall back;
    each unfold check (1-6) failing falls back to the v2 → SPT rule; a v2
    record encodes byte-identical to today (no `splitPerTab` key); a record
    with a sidecar decoded by `LayoutRecord` keeps it; an unreadable sidecar
@@ -1114,8 +1183,13 @@ Every existing suite must pass unchanged with the default mode.
    pane activates the previous, else the next group; closing the last group
    empties the layout; ⌘W (`contentRequestedClose(.tab)`) on a group's only
    pane with each confirm mode closes that group; `moveGroup` clamps; refused `moveTab*` in SPT; `contentRequestedGotoTab`
-   over groups; zoom stays per group across switches.
-5. **TerminalsFeature** (`TerminalsFeatureTests`): `layoutModeChanged` sends
+   over groups; zoom stays per group across switches; `toggleZoom` on a
+   parked pane activates its group and keeps every layout consistent;
+   `enterWindowMode` on a zoomed pane of a parked group clears that group's
+   zoom.
+5. **TerminalsFeature** (`TerminalsFeatureTests`): two flips whose
+   `layoutModeChanged` arrive out of order end in the current setting;
+   `layoutModeChanged` sends
    one `convertMode` per layout including a hostless hydrated one (receive
    each) and fires `layoutChanged` per worktree; hydration in SPT with a valid
    sidecar, an invalid one, and none; hydration in v2 ignores a sidecar;
@@ -1130,7 +1204,10 @@ Every existing suite must pass unchanged with the default mode.
    creates a group and acks with `TabID == ContentID`; `listTabs` /
    `listPanes` carry `group` / `activeGroup` in SPT only; ⌘1..9 and next /
    previous select groups in SPT; `canMoveTabToNewSplit` false in SPT and the
-   SPT alert text; `openFilePlacement` `.tab` lands as a new group in SPT.
+   SPT alert text; `openFilePlacement` `.tab` lands as a new group in SPT;
+   quit save writes a converted hostless layout with no debounce elapsed;
+   `PaneWindowShortcutTests`: in SPT ⌘2 and next / previous in a pane window
+   are window-local (no group switch).
 8. **Recent Terminals** (`AppFeatureRecentTerminalsTests`): parked tabs are
    listed and not pruned; a pick of a parked tab switches group; the new
    actions' rows of the switch table.
@@ -1155,11 +1232,11 @@ parallel. Test group numbers refer to **Tests**.
 | **T1 Setting** | `SupacodeSettingsShared/Models/GlobalSettings.swift` (`TerminalLayoutMode`, `terminalLayoutMode` field, init, `CodingKeys`, decode); `SupacodeSettingsFeature/Reducer/SettingsFeature.swift` (state, load, apply, write-back); `SupacodeSettingsFeature/Views/TerminalSettingsView.swift` (picker) | none | 1 |
 | **T2 Model** | `supacode/Features/Terminal/Models/PaneLayout.swift`: `PaneGroupID`, `PaneGroup`, the three fields, new init, `encode` assert, `isConsistent`, `isSplitPerTabShape`, `isConsistent(for:)`, lookups, `activateGroup`, `modifyTree`, `removeLeaf`, both conversions, group-aware `strippingEphemeralContent`, `SplitPerTabSidecar`, `foldedForPersistence`, `unfolding` | T1 (`TerminalLayoutMode` for `isConsistent(for:)`; T1 is small, land it first) | 2, model part of 3 |
 | **T3 Persistence** | `LayoutsMigrator.swift` (`LayoutRecord.splitPerTab`, `CodingKeys`, decode, init); `LayoutsIncrementalWriter.swift` (merge line); `LayoutPersistence.swift` (strip then fold) | T2 | 3 |
-| **T4 Reducer** | `LayoutFeature.swift` (`State.mode`, gate predicate, four actions, `convertMode`, `focus`, `collapse`, `newGroup`, `moveGroup`, `modifyTree` call sites, SPT branches); the switch rows in `TerminalsFeature.canAffectVisibility` and `RecentTerminals.canChangeCurrentTab` / `canRemoveTabs` (same commit, or the build breaks) | T2 | 4, switch rows of 8 |
-| **T5 TerminalsFeature** | `TerminalsFeature.swift` (`layoutModeChanged`, `attachLayout` mode, `layoutsHydrated` unfold / convert, `uuid` dependency) | T3, T4 | 5 |
-| **T6 Plumbing** | `TerminalClient.swift` (`setTerminalLayoutMode`); `WorktreeTerminalManager.swift` (two `return false` lists, `handleManagementCommand`); `AppFeature.swift` (`lastKnownTerminalLayoutMode` at L167 / L208 / L772 / L905) | T1, T5 | 6 |
+| **T4 Reducer** | `LayoutFeature.swift` (`State.mode`, gate predicate, four actions, `convertMode`, `focus`, `collapse`, `newGroup`, `moveGroup`, `modifyTree` call sites incl. `reduceEnterWindowMode` and `reduceToggleZoom`, SPT branches); the switch rows in `TerminalsFeature.canAffectVisibility` and `RecentTerminals.canChangeCurrentTab` / `canRemoveTabs` (same commit, or the build breaks) | T2 | 4, switch rows of 8 |
+| **T5 TerminalsFeature** | `TerminalsFeature.swift` (`layoutModeChanged` reading the current setting, `attachLayout` mode, `layoutsHydrated` unfold / convert, `uuid` dependency) | T3, T4 | 5 |
+| **T6 Plumbing** | `TerminalClient.swift` (`setTerminalLayoutMode`); `WorktreeTerminalManager.swift` (`handleSearchCommand` and `handleBindingActionCommand` `return false` lists, `handleManagementCommand`, `saveAllLayoutSnapshots` + `cancelPendingLayoutSaves` quit coverage); `AppFeature.swift` (`lastKnownTerminalLayoutMode` at L167 / L208 / L772 / L905); `supacodeApp.swift` `applicationWillTerminate` (capture order) | T1, T5 | 6, quit-save row of 7 |
 | **T7 Manager semantics** | `WorktreeTerminalManager.swift` (`selectTab(atIndex:in:)`, `selectRelativeTab`, `listTabs`, `listPanes`, `canMoveTabToNewSplit`); `AppFeature.swift` `.tabMove` message | T4 (reads `LayoutFeature.State.mode`) | 7, 8 |
-| **T8 Views** | new `WorktreeGroupStripView.swift`; `WorktreeLayoutView.swift`; `LayoutContentView.swift` `PaneStripView`; `PaneWindowManager.swift` (strip-less windowed pane); `WindowCommands.swift` (⌘W title) | T4 | 9 (reducer-backed) |
+| **T8 Views** | new `WorktreeGroupStripView.swift`; `WorktreeLayoutView.swift`; `LayoutContentView.swift` `PaneStripView` (strip omitted only for `.embedded`); `PaneTabStripView.swift` (`PaneTabStripAccessories` `private` → internal); `PaneWindowManager.swift` (no code change expected; add the SPT rows to `PaneWindowShortcutTests`); `WindowCommands.swift` (⌘W title) | T4 | 9 (reducer-backed), pane-window shortcut rows |
 
 T6 and T7 both edit `WorktreeTerminalManager.swift` and `AppFeature.swift`
 in different functions; run them in sequence or rebase the second.
@@ -1182,7 +1259,7 @@ in different functions; run them in sequence or rebase the second.
 ## Done when
 
 - The setting exists, defaults to Tabs in Each Split, and survives a
-  hand-edited `config.json` with any value.
+  hand-edited `config.json` with any value (applied at the next launch).
 - Switching modes converts every worktree (hosted or not) in place; no zmx
   session is killed; tab and content ids, scripts, Recent Terminals entries
   and sidebar badges survive.
