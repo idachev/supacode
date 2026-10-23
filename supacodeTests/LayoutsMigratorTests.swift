@@ -610,4 +610,143 @@ struct LayoutsMigratorTests {
       return
     }
   }
+
+  // MARK: - Split per tab sidecar on the v2 record.
+
+  nonisolated private static func pinnedUUID(_ prefix: String) -> UUID {
+    UUID(uuidString: "\(prefix)-0000-0000-0000-000000000001")!
+  }
+
+  /// The one-pane layout of `PaneLayoutTests.wireFormatIsPinned`, with its JSON.
+  nonisolated private static func pinnedV2Layout() -> (layout: PaneLayout, json: String) {
+    let paneID = PaneID(rawValue: pinnedUUID("AAAAAAAA"))
+    let tabID = TabID(rawValue: pinnedUUID("BBBBBBBB"))
+    let layout = PaneLayout(
+      tree: SplitTree(view: paneID),
+      panes: [
+        Pane(
+          id: paneID,
+          tabs: [
+            TabItem(
+              id: tabID,
+              title: "agent",
+              content: ContentSnapshot(
+                id: ContentID(rawValue: tabID.rawValue),
+                state: .terminal(TerminalContentState(workingDirectory: "/repo"))
+              )
+            )
+          ],
+          selectedTabID: tabID
+        )
+      ],
+      focusedPaneID: paneID
+    )
+    let json = """
+      {"focusedPaneID":"AAAAAAAA-0000-0000-0000-000000000001",\
+      "panes":[{"id":"AAAAAAAA-0000-0000-0000-000000000001",\
+      "selectedTabID":"BBBBBBBB-0000-0000-0000-000000000001",\
+      "tabs":[{"content":{"id":"BBBBBBBB-0000-0000-0000-000000000001",\
+      "state":{"kind":"terminal","terminal":{"workingDirectory":"\\/repo"}}},\
+      "id":"BBBBBBBB-0000-0000-0000-000000000001","title":"agent"}]}],\
+      "tree":{"root":{"kind":"leaf","leaf":"AAAAAAAA-0000-0000-0000-000000000001"}}}
+      """
+    return (layout, json)
+  }
+
+  nonisolated private static func sortedJSON(_ value: some Encodable) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try #require(String(bytes: encoder.encode(value), encoding: .utf8))
+  }
+
+  @Test func v2RecordEncodesByteIdenticalWithNoSidecarKey() throws {
+    let pinned = Self.pinnedV2Layout()
+    let json = try Self.sortedJSON(LayoutRecord(layout: pinned.layout))
+    #expect(json == "{\"layout\":\(pinned.json)}")
+    #expect(!json.contains("splitPerTab"))
+
+    let withOrigin = try Self.sortedJSON(
+      LayoutRecord(layout: pinned.layout, origin: TerminalLayoutSnapshot(tabs: [], selectedTabIndex: 0))
+    )
+    #expect(!withOrigin.contains("splitPerTab"))
+  }
+
+  @Test func sidecarWireFormatIsPinned() throws {
+    let activeGroupID = PaneGroupID(rawValue: Self.pinnedUUID("CCCCCCCC"))
+    let parkedGroupID = PaneGroupID(rawValue: Self.pinnedUUID("DDDDDDDD"))
+    let parkedPaneID = PaneID(rawValue: Self.pinnedUUID("EEEEEEEE"))
+    let parkedTabID = TabID(rawValue: Self.pinnedUUID("FFFFFFFF"))
+    let sidecar = SplitPerTabSidecar(
+      activeGroupID: activeGroupID,
+      groupOrder: [activeGroupID, parkedGroupID],
+      parkedGroups: [
+        SplitPerTabSidecar.ParkedGroup(
+          id: parkedGroupID,
+          tree: SplitTree(view: parkedPaneID),
+          focusedPaneID: parkedPaneID,
+          panes: [SplitPerTabSidecar.PaneTab(paneID: parkedPaneID, tabID: parkedTabID)]
+        )
+      ]
+    )
+    let sidecarJSON = """
+      {"activeGroupID":"CCCCCCCC-0000-0000-0000-000000000001",\
+      "groupOrder":["CCCCCCCC-0000-0000-0000-000000000001","DDDDDDDD-0000-0000-0000-000000000001"],\
+      "parkedGroups":[{"focusedPaneID":"EEEEEEEE-0000-0000-0000-000000000001",\
+      "id":"DDDDDDDD-0000-0000-0000-000000000001",\
+      "panes":[{"paneID":"EEEEEEEE-0000-0000-0000-000000000001","tabID":"FFFFFFFF-0000-0000-0000-000000000001"}],\
+      "tree":{"root":{"kind":"leaf","leaf":"EEEEEEEE-0000-0000-0000-000000000001"}}}]}
+      """
+    #expect(try Self.sortedJSON(sidecar) == sidecarJSON)
+
+    // The record key is part of the contract too.
+    let pinned = Self.pinnedV2Layout()
+    let recordJSON = try Self.sortedJSON(LayoutRecord(layout: pinned.layout, splitPerTab: sidecar))
+    #expect(recordJSON == "{\"layout\":\(pinned.json),\"splitPerTab\":\(sidecarJSON)}")
+  }
+
+  @Test func recordWithASidecarRoundTripsKeepingIt() throws {
+    let folded = SplitPerTabPersistenceFixture().layout().foldedForPersistence()
+    let record = LayoutRecord(layout: folded.layout, splitPerTab: folded.sidecar)
+    #expect(record.splitPerTab != nil)
+
+    let decoded = try JSONDecoder().decode(LayoutRecord.self, from: JSONEncoder().encode(record))
+    #expect(decoded == record)
+
+    let file = LayoutsFile(worktrees: ["w1": record])
+    let decodedFile = try JSONDecoder().decode(LayoutsFile.self, from: JSONEncoder().encode(file))
+    #expect(decodedFile == file)
+    #expect(decodedFile.worktrees["w1"]?.splitPerTab == folded.sidecar)
+  }
+
+  @Test func unreadableSidecarDecodesTheRecordAndIsNotADecodeLoss() throws {
+    let pinned = Self.pinnedV2Layout()
+    for sidecar in [#""nope""#, #"{"activeGroupID":12}"#, "null"] {
+      let json = """
+        {"schemaVersion":2,"worktrees":{"w1":{"layout":\(pinned.json),"splitPerTab":\(sidecar)}}}
+        """
+      // The base layout still holds every content, so the read stays `.file`
+      // and the orphan reaper keeps every session; only the grouping is lost.
+      guard case .file(let file) = Self.readState(seededWith: json) else {
+        Issue.record("Expected .file for an unreadable sidecar \(sidecar).")
+        continue
+      }
+      #expect(file.undecodedEntryCount == 0)
+      let record = try #require(file.worktrees["w1"])
+      #expect(record.splitPerTab == nil)
+      #expect(record.layout == pinned.layout)
+      #expect(file.allKnownSurfaceIDs == [Self.pinnedUUID("BBBBBBBB")])
+    }
+  }
+
+  @Test func allKnownSurfaceIDsOfAFoldedRecordIncludeParkedContents() throws {
+    let fixture = SplitPerTabPersistenceFixture()
+    let folded = fixture.layout().foldedForPersistence()
+    let file = LayoutsFile(worktrees: ["w1": LayoutRecord(layout: folded.layout, splitPerTab: folded.sidecar)])
+    let expected = Set(fixture.contentIDs.map(\.rawValue))
+    #expect(file.allKnownSurfaceIDs == expected)
+
+    // And after the wire round-trip the launch reaper actually reads.
+    let decoded = try JSONDecoder().decode(LayoutsFile.self, from: JSONEncoder().encode(file))
+    #expect(decoded.allKnownSurfaceIDs == expected)
+  }
 }

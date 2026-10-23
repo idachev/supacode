@@ -252,6 +252,71 @@ struct AppFeatureSettingsChangedTests {
     #expect(store.state.lastKnownTerminalHibernationEnabled == false)
   }
 
+  @Test(.dependencies) func switchingTerminalLayoutModeFansOutToTerminalClient() async {
+    let sentModes = LockIsolated<[TerminalLayoutMode]>([])
+    let appState = AppFeature.State(
+      repositories: RepositoriesFeature.State(),
+      settings: SettingsFeature.State()
+    )
+    #expect(appState.lastKnownTerminalLayoutMode == .tabsPerSplit)
+
+    let store = TestStore(initialState: appState) {
+      AppFeature()
+    } withDependencies: {
+      $0.terminalClient.send = { command in
+        guard case .setTerminalLayoutMode(let mode) = command else { return }
+        sentModes.withValue { $0.append(mode) }
+      }
+    }
+    store.exhaustivity = .off
+
+    var settings = GlobalSettings.default
+    settings.terminalLayoutMode = .splitPerTab
+
+    // The switch fires the command once with the new mode and tracks it.
+    await store.send(.settings(.delegate(.settingsChanged(settings))))
+    await store.finish()
+    #expect(sentModes.value == [.splitPerTab])
+    #expect(store.state.lastKnownTerminalLayoutMode == .splitPerTab)
+
+    // A settingsChanged that keeps the mode emits no further command.
+    await store.send(.settings(.delegate(.settingsChanged(settings))))
+    await store.finish()
+    #expect(sentModes.value == [.splitPerTab])
+    #expect(store.state.lastKnownTerminalLayoutMode == .splitPerTab)
+
+    // Switching back fires once more with the default mode.
+    settings.terminalLayoutMode = .tabsPerSplit
+    await store.send(.settings(.delegate(.settingsChanged(settings))))
+    await store.finish()
+    #expect(sentModes.value == [.splitPerTab, .tabsPerSplit])
+    #expect(store.state.lastKnownTerminalLayoutMode == .tabsPerSplit)
+  }
+
+  @Test(.dependencies) func unchangedTerminalLayoutModeSendsNothing() async {
+    let sentModes = LockIsolated<[TerminalLayoutMode]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(
+        repositories: RepositoriesFeature.State(),
+        settings: SettingsFeature.State()
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.terminalClient.send = { command in
+        guard case .setTerminalLayoutMode(let mode) = command else { return }
+        sentModes.withValue { $0.append(mode) }
+      }
+    }
+    store.exhaustivity = .off
+
+    // Default settings carry the default mode the state was seeded with.
+    await store.send(.settings(.delegate(.settingsChanged(GlobalSettings.default))))
+    await store.finish()
+    #expect(sentModes.value.isEmpty)
+    #expect(store.state.lastKnownTerminalLayoutMode == .tabsPerSplit)
+  }
+
   @Test(.dependencies) func settingsChangedFansOutAutomaticRefreshToWatcher() async {
     let commands = LockIsolated<[WorktreeInfoWatcherClient.Command]>([])
     let store = TestStore(

@@ -135,4 +135,57 @@ struct LayoutsIncrementalWriterTests {
 
     #expect(readFile(defaults)?.worktrees.isEmpty == true)
   }
+
+  // MARK: - Split per tab sidecar.
+
+  private func splitPerTabRecord(
+    _ fixture: SplitPerTabPersistenceFixture,
+    origin: TerminalLayoutSnapshot? = nil
+  ) -> LayoutRecord {
+    let folded = fixture.layout().foldedForPersistence()
+    return LayoutRecord(layout: folded.layout, origin: origin, splitPerTab: folded.sidecar)
+  }
+
+  @Test func recordFlushStoresTheSidecarAndReflushIsANoOp() async throws {
+    let defaults = makeDefaults()
+    let writer = makeWriter(defaults)
+    let entry = splitPerTabRecord(SplitPerTabPersistenceFixture())
+    #expect(entry.splitPerTab != nil)
+
+    await writer.flush(records: ["w1": .record(entry)])
+    let firstBytes = try #require(defaults.data(forKey: LayoutsFile.userDefaultsKey))
+    // The decoded record equals the encoded one, so the writer's no-op gate
+    // holds and a re-flush leaves the stored bytes alone.
+    #expect(readFile(defaults)?.worktrees["w1"] == entry)
+    await writer.flush(records: ["w1": .record(entry)])
+    #expect(defaults.data(forKey: LayoutsFile.userDefaultsKey) == firstBytes)
+  }
+
+  @Test func recordFlushReplacesTheSidecar() async {
+    let defaults = makeDefaults()
+    let writer = makeWriter(defaults)
+    let first = splitPerTabRecord(SplitPerTabPersistenceFixture())
+    let second = splitPerTabRecord(SplitPerTabPersistenceFixture())
+
+    await writer.flush(records: ["w1": .record(first)])
+    await writer.flush(records: ["w1": .record(second)])
+
+    #expect(readFile(defaults)?.worktrees["w1"]?.splitPerTab == second.splitPerTab)
+  }
+
+  @Test func v2RecordFlushRemovesTheSidecarAndKeepsTheOrigin() async {
+    let defaults = makeDefaults()
+    let writer = makeWriter(defaults)
+    let origin = TerminalLayoutSnapshot(tabs: [], selectedTabIndex: 0)
+
+    await writer.flush(records: ["w1": .record(splitPerTabRecord(SplitPerTabPersistenceFixture(), origin: origin))])
+    #expect(readFile(defaults)?.worktrees["w1"]?.splitPerTab != nil)
+    // A v2-mode write carries no sidecar: it is never inherited from the store,
+    // unlike the write-once origin.
+    await writer.flush(records: ["w1": .record(record("/w1"))])
+
+    let stored = readFile(defaults)?.worktrees["w1"]
+    #expect(stored?.splitPerTab == nil)
+    #expect(stored?.origin == origin)
+  }
 }

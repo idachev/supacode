@@ -117,6 +117,8 @@ struct TerminalClient {
     /// Fans a hibernation Beta-flag flip into every worktree state: enabling
     /// re-arms grace timers for hidden tabs, disabling cancels pending ones.
     case setTerminalHibernationEnabled(Bool)
+    /// Converts every worktree layout to the new global layout mode, live.
+    case setTerminalLayoutMode(TerminalLayoutMode)
   }
 
   enum Event: Equatable {

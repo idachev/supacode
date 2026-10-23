@@ -165,6 +165,7 @@ struct AppFeature {
     /// can tear down its rows. Nil until the first settings change lands.
     var lastKnownEnabledForgeIDs: Set<ForgeID>?
     var lastKnownTerminalHibernationEnabled: Bool
+    var lastKnownTerminalLayoutMode: TerminalLayoutMode
     var lastKnownGlobalHotkey: AppShortcutOverride?
     var pendingDeeplinks: [Deeplink] = []
     var isDeeplinkReferenceRequested = false
@@ -206,6 +207,7 @@ struct AppFeature {
       lastKnownAgentPresenceBadgesEnabled = settings.agentPresenceBadgesEnabled
       lastKnownAppVisibility = settings.appVisibility
       lastKnownTerminalHibernationEnabled = settings.terminalHibernationEnabled
+      lastKnownTerminalLayoutMode = settings.terminalLayoutMode
       lastKnownGlobalHotkey = settings.globalToggleVisibilityHotkey
       // Seed from settings so `state.allScripts` doesn't start empty before the
       // first `settingsChanged` delegate fires. Globals aren't worktree-scoped,
@@ -771,6 +773,8 @@ struct AppFeature {
         let hibernationFlipped =
           settings.terminalHibernationEnabled != state.lastKnownTerminalHibernationEnabled
         state.lastKnownTerminalHibernationEnabled = settings.terminalHibernationEnabled
+        let layoutModeChanged = settings.terminalLayoutMode != state.lastKnownTerminalLayoutMode
+        state.lastKnownTerminalLayoutMode = settings.terminalLayoutMode
         let visibilityChanged = settings.appVisibility != state.lastKnownAppVisibility
         let previousVisibility = state.lastKnownAppVisibility
         // Surface the main window when the Dock icon comes back, so leaving
@@ -907,6 +911,12 @@ struct AppFeature {
           let enabled = settings.terminalHibernationEnabled
           effects.append(
             .run { _ in await terminalClient.send(.setTerminalHibernationEnabled(enabled)) }
+          )
+        }
+        if layoutModeChanged {
+          let mode = settings.terminalLayoutMode
+          effects.append(
+            .run { _ in await terminalClient.send(.setTerminalLayoutMode(mode)) }
           )
         }
         return .merge(effects)
@@ -3063,12 +3073,17 @@ struct AppFeature {
       // a phantom success.
       guard terminalClient.canMoveTabToNewSplit(worktreeID, tabID) else {
         deeplinkLogger.warning("Tab \(tabID) cannot move to a new split in worktree \(worktreeID)")
+        // The layout's own mode picks the text: in Splits in Each Tab every tab already is its own split.
+        let isSplitPerTab = state.terminals.layouts[id: worktreeID]?.mode == .splitPerTab
         state.alert = AlertState {
           TextState("Tab cannot be moved")
         } actions: {
           ButtonState(role: .cancel, action: .dismiss) { TextState("OK") }
         } message: {
-          TextState("Its pane has only this tab, or is in window mode, so there is nothing to split off.")
+          TextState(
+            isSplitPerTab
+              ? "In Splits in Each Tab mode every tab is already its own split, so there is nothing to split off."
+              : "Its pane has only this tab, or is in window mode, so there is nothing to split off.")
         }
         return .none
       }

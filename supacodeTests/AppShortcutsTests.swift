@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import CustomDump
+import Foundation
 import IdentifiedCollections
 import SwiftUI
 import Testing
@@ -651,6 +652,98 @@ struct PaneWindowShortcutTests {
     #expect(
       PaneWindowShortcut.intent(for: event, pane: pane, overrides: [:], isWorktreeSelected: true)
         == .selectTab(tabs[1].id)
+    )
+  }
+
+  // Splits in Each Tab: a pane window shows one pane holding exactly one tab.
+  // Its chords stay window-local by decision; they never drive the main
+  // window's group strip.
+
+  @Test func splitPerTabTabChordSelectsTheWindowsOnlyTabNotAGroup() {
+    let tab = Self.tab()
+    let pane = Self.pane(tabs: [tab])
+    let event = Self.keyEvent(keyCode: kVK_ANSI_2, modifiers: .command)
+    #expect(
+      PaneWindowShortcut.intent(for: event, pane: pane, overrides: [:], isWorktreeSelected: true)
+        == .selectTab(tab.id)
+    )
+  }
+
+  @Test func splitPerTabRelativeTabCyclingIsConsumedInAPaneWindow() {
+    let pane = Self.pane(tabs: [Self.tab()])
+    let next = Self.keyEvent(keyCode: kVK_Tab, modifiers: .control)
+    let previous = Self.keyEvent(keyCode: kVK_Tab, modifiers: [.control, .shift])
+    #expect(
+      PaneWindowShortcut.intent(for: next, pane: pane, overrides: [:], isWorktreeSelected: true)
+        == .ignore
+    )
+    #expect(
+      PaneWindowShortcut.intent(for: previous, pane: pane, overrides: [:], isWorktreeSelected: true)
+        == .ignore
+    )
+  }
+
+  @Test func splitPerTabFocusReturnStaysInTheWindowedPanesGroup() throws {
+    // Flat `panes` lists the parked group's pane first; the fallback must
+    // still pick the windowed pane's sibling, or the main window would jump
+    // to the parked group.
+    let parked = Self.pane(tabs: [Self.tab(title: "Parked")])
+    let windowed = Self.pane(tabs: [Self.tab(title: "Windowed")])
+    let sibling = Self.pane(tabs: [Self.tab(title: "Sibling")])
+    let activeGroup = PaneGroupID(rawValue: UUID())
+    let parkedGroup = PaneGroupID(rawValue: UUID())
+    let layout = PaneLayout(
+      tree: try SplitTree(view: windowed.id).inserting(view: sibling.id, at: windowed.id, direction: .right),
+      panes: IdentifiedArray(uniqueElements: [parked, windowed, sibling]),
+      focusedPaneID: windowed.id,
+      activeGroupID: activeGroup,
+      parkedGroups: [PaneGroup(id: parkedGroup, tree: SplitTree(view: parked.id), focusedPaneID: parked.id)],
+      groupOrder: [parkedGroup, activeGroup]
+    )
+    #expect(
+      PaneWindowFocusReturn.target(
+        leaving: windowed.id, layout: layout, mode: .splitPerTab,
+        windowedPaneIDs: [windowed.id], remembered: windowed.id
+      ) == sibling.id
+    )
+    // A remembered pane of another group is not a candidate either.
+    #expect(
+      PaneWindowFocusReturn.target(
+        leaving: windowed.id, layout: layout, mode: .splitPerTab,
+        windowedPaneIDs: [windowed.id], remembered: parked.id
+      ) == sibling.id
+    )
+    // No embedded pane left in the group: focus stays on the window.
+    #expect(
+      PaneWindowFocusReturn.target(
+        leaving: windowed.id, layout: layout, mode: .splitPerTab,
+        windowedPaneIDs: [windowed.id, sibling.id], remembered: nil
+      ) == nil
+    )
+  }
+
+  @Test func tabsPerSplitFocusReturnPrefersTheRememberedPaneElseTheFirstEmbedded() throws {
+    let first = Self.pane(tabs: [Self.tab()])
+    let windowed = Self.pane(tabs: [Self.tab()])
+    let last = Self.pane(tabs: [Self.tab()])
+    var tree = try SplitTree(view: first.id).inserting(view: windowed.id, at: first.id, direction: .right)
+    tree = try tree.inserting(view: last.id, at: windowed.id, direction: .right)
+    let layout = PaneLayout(
+      tree: tree,
+      panes: IdentifiedArray(uniqueElements: [first, windowed, last]),
+      focusedPaneID: windowed.id
+    )
+    #expect(
+      PaneWindowFocusReturn.target(
+        leaving: windowed.id, layout: layout, mode: .tabsPerSplit,
+        windowedPaneIDs: [windowed.id], remembered: last.id
+      ) == last.id
+    )
+    #expect(
+      PaneWindowFocusReturn.target(
+        leaving: windowed.id, layout: layout, mode: .tabsPerSplit,
+        windowedPaneIDs: [windowed.id], remembered: windowed.id
+      ) == first.id
     )
   }
 

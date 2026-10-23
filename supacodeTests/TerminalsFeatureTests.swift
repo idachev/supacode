@@ -743,4 +743,323 @@ struct TerminalsFeatureTests {
       $0.layouts = [LayoutFeature.State(id: Worktree.ID("/tmp/good"), layout: good)]
     }
   }
+
+  // MARK: - Layout mode.
+
+  private static func terminalTab(_ tabID: TabID, title: String, contentID: ContentID = ContentID()) -> TabItem {
+    TabItem(
+      id: tabID,
+      title: title,
+      content: ContentSnapshot(id: contentID, state: .terminal(TerminalContentState(workingDirectory: nil)))
+    )
+  }
+
+  /// One pane with two tabs, so the v2 to split-per-tab rule parks a group.
+  private static func twoTabLayout() -> PaneLayout {
+    let paneID = PaneID()
+    let first = TabID()
+    return PaneLayout(
+      tree: SplitTree(view: paneID),
+      panes: [
+        Pane(
+          id: paneID,
+          tabs: [terminalTab(first, title: "One"), terminalTab(TabID(), title: "Two")],
+          selectedTabID: first
+        )
+      ],
+      focusedPaneID: paneID
+    )
+  }
+
+  /// The split-per-tab shape the reducer mints from `layout`, replaying the
+  /// incrementing UUID sequence the store's `uuid` dependency hands out.
+  private static func convertedByRule(_ layouts: [PaneLayout]) -> [PaneLayout] {
+    let uuid = UUIDGenerator.incrementing
+    return layouts.map {
+      $0.convertedToSplitPerTab(
+        mintPaneID: { PaneID(rawValue: uuid()) },
+        mintGroupID: { PaneGroupID(rawValue: uuid()) }
+      )
+    }
+  }
+
+  /// A stored split-per-tab record: the v2 fold plus its sidecar, minted from
+  /// random ids so a fallback to the rule (incrementing ids) cannot match it.
+  private static func foldedSplitPerTabRecord() throws -> (record: LayoutRecord, sidecar: SplitPerTabSidecar) {
+    let live = twoTabLayout().convertedToSplitPerTab(
+      mintPaneID: { PaneID() },
+      mintGroupID: { PaneGroupID(rawValue: UUID()) }
+    )
+    let folded = live.foldedForPersistence()
+    let sidecar = try #require(folded.sidecar)
+    return (LayoutRecord(layout: folded.layout, splitPerTab: sidecar), sidecar)
+  }
+
+  private static func layoutState(
+    _ worktreeID: Worktree.ID,
+    _ layout: PaneLayout,
+    mode: TerminalLayoutMode,
+    titlePrefix: String = ""
+  ) -> LayoutFeature.State {
+    var state = LayoutFeature.State(id: worktreeID, layout: layout)
+    state.titlePrefix = titlePrefix
+    state.mode = mode
+    return state
+  }
+
+  @Test(.dependencies) func layoutModeChangedReadsTheCurrentSettingNotThePayload() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = false
+      $0.global.terminalLayoutMode = .splitPerTab
+    }
+    defer { $settingsFile.withLock { $0.global.terminalLayoutMode = .tabsPerSplit } }
+    let worktreeID = Worktree.ID("/tmp/flip")
+    let layout = Self.twoTabLayout()
+    let converted = Self.convertedByRule([layout])[0]
+    let store = TestStore(
+      initialState: TerminalsFeature.State(layouts: [LayoutFeature.State(id: worktreeID, layout: layout)])
+    ) {
+      TerminalsFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+    }
+    // The user flipped to tabsPerSplit and then to splitPerTab; the later flip's
+    // effect lands first and converts.
+    await store.send(.layoutModeChanged(.splitPerTab))
+    await store.receive(\.layouts) {
+      $0.layouts[id: worktreeID] = Self.layoutState(worktreeID, converted, mode: .splitPerTab)
+    }
+    // The earlier, stale flip lands last. Its payload says tabsPerSplit, but the
+    // setting says splitPerTab, so nothing converts back.
+    await store.send(.layoutModeChanged(.tabsPerSplit))
+    await store.finish()
+    #expect(store.state.layouts[id: worktreeID]?.mode == .splitPerTab)
+  }
+
+  @Test(.dependencies) func layoutModeChangedConvertsEveryLayoutIncludingAHostlessOne() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = false
+      $0.global.terminalLayoutMode = .tabsPerSplit
+    }
+    defer { $settingsFile.withLock { $0.global.terminalLayoutMode = .tabsPerSplit } }
+    let hostless = Worktree.ID("/tmp/hostless")
+    let attached = Worktree.ID("/tmp/attached")
+    let stored = Self.twoTabLayout()
+    let changed = LockIsolated<[Worktree.ID]>([])
+    let store = TestStore(initialState: TerminalsFeature.State()) {
+      TerminalsFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0[LayoutChangeObserver.self] = LayoutChangeObserver(layoutChanged: { id in
+        changed.withValue { $0.append(id) }
+      })
+    }
+    // Hydrated with no host ever attached.
+    await store.send(.layoutsHydrated(LayoutsFile(worktrees: [hostless.rawValue: LayoutRecord(layout: stored)]))) {
+      $0.layouts = [Self.layoutState(hostless, stored, mode: .tabsPerSplit)]
+    }
+    await store.send(.attachLayout(worktreeID: attached, titlePrefix: "attached")) {
+      $0.layouts.append(Self.layoutState(attached, PaneLayout(), mode: .tabsPerSplit, titlePrefix: "attached"))
+    }
+    $settingsFile.withLock { $0.global.terminalLayoutMode = .splitPerTab }
+    // Minting runs in `layouts` order: the hostless layout first, then the empty one.
+    let converted = Self.convertedByRule([stored, PaneLayout()])
+    await store.send(.layoutModeChanged(.splitPerTab))
+    await store.receive(\.layouts) {
+      $0.layouts[id: hostless] = Self.layoutState(hostless, converted[0], mode: .splitPerTab)
+    }
+    await store.receive(\.layouts) {
+      $0.layouts[id: attached] = Self.layoutState(
+        attached, converted[1], mode: .splitPerTab, titlePrefix: "attached")
+    }
+    await store.finish()
+    // One `layoutChanged` per converted worktree (the hydrate and attach above
+    // are not element actions, so they fire none).
+    #expect(changed.value.count == 2)
+    #expect(Set(changed.value) == [hostless, attached])
+  }
+
+  @Test(.dependencies) func hydrationInSplitPerTabUnfoldsAValidSidecar() async throws {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = false
+      $0.global.terminalLayoutMode = .splitPerTab
+    }
+    defer { $settingsFile.withLock { $0.global.terminalLayoutMode = .tabsPerSplit } }
+    let (record, sidecar) = try Self.foldedSplitPerTabRecord()
+    let unfolded = try #require(record.layout.unfolding(sidecar))
+    let store = TestStore(initialState: TerminalsFeature.State()) {
+      TerminalsFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+    }
+    await store.send(.layoutsHydrated(LayoutsFile(worktrees: ["/tmp/spt": record]))) {
+      $0.layouts = [Self.layoutState(Worktree.ID("/tmp/spt"), unfolded, mode: .splitPerTab)]
+    }
+  }
+
+  @Test(.dependencies) func hydrationInSplitPerTabRegroupsByRuleWhenTheSidecarIsInvalid() async throws {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = false
+      $0.global.terminalLayoutMode = .splitPerTab
+    }
+    defer { $settingsFile.withLock { $0.global.terminalLayoutMode = .tabsPerSplit } }
+    var (record, sidecar) = try Self.foldedSplitPerTabRecord()
+    // An active group missing from the strip order fails validation as a whole.
+    sidecar.activeGroupID = PaneGroupID(rawValue: UUID())
+    record.splitPerTab = sidecar
+    #expect(record.layout.unfolding(sidecar) == nil)
+    let regrouped = Self.convertedByRule([record.layout])[0]
+    let store = TestStore(initialState: TerminalsFeature.State()) {
+      TerminalsFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+    }
+    await store.send(.layoutsHydrated(LayoutsFile(worktrees: ["/tmp/spt": record]))) {
+      $0.layouts = [Self.layoutState(Worktree.ID("/tmp/spt"), regrouped, mode: .splitPerTab)]
+    }
+  }
+
+  @Test(.dependencies) func hydrationInSplitPerTabRegroupsByRuleWithoutASidecar() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = false
+      $0.global.terminalLayoutMode = .splitPerTab
+    }
+    defer { $settingsFile.withLock { $0.global.terminalLayoutMode = .tabsPerSplit } }
+    let stored = Self.twoTabLayout()
+    let regrouped = Self.convertedByRule([stored])[0]
+    let store = TestStore(initialState: TerminalsFeature.State()) {
+      TerminalsFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+    }
+    await store.send(.layoutsHydrated(LayoutsFile(worktrees: ["/tmp/v2": LayoutRecord(layout: stored)]))) {
+      $0.layouts = [Self.layoutState(Worktree.ID("/tmp/v2"), regrouped, mode: .splitPerTab)]
+    }
+    #expect(regrouped.allContentIDs == stored.allContentIDs)
+  }
+
+  @Test(.dependencies) func hydrationInTabsPerSplitIgnoresASidecar() async throws {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = false
+      $0.global.terminalLayoutMode = .tabsPerSplit
+    }
+    let (record, _) = try Self.foldedSplitPerTabRecord()
+    let store = TestStore(initialState: TerminalsFeature.State()) {
+      TerminalsFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+    }
+    await store.send(.layoutsHydrated(LayoutsFile(worktrees: ["/tmp/v2": record]))) {
+      $0.layouts = [Self.layoutState(Worktree.ID("/tmp/v2"), record.layout, mode: .tabsPerSplit)]
+    }
+  }
+
+  @Test(.dependencies) func attachLayoutTakesTheSettingsMode() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = false
+      $0.global.terminalLayoutMode = .splitPerTab
+    }
+    defer { $settingsFile.withLock { $0.global.terminalLayoutMode = .tabsPerSplit } }
+    let worktreeID = Worktree.ID("/tmp/new")
+    let store = TestStore(initialState: TerminalsFeature.State()) { TerminalsFeature() }
+    await store.send(.attachLayout(worktreeID: worktreeID, titlePrefix: "new")) {
+      $0.layouts = [Self.layoutState(worktreeID, PaneLayout(), mode: .splitPerTab, titlePrefix: "new")]
+    }
+  }
+
+  @Test(.dependencies) func aParkedGroupsTabHibernatesAndSelectGroupWakesIt() async throws {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock {
+      $0.global.terminalHibernationEnabled = true
+      $0.global.terminalLayoutMode = .splitPerTab
+    }
+    defer { $settingsFile.withLock { $0.global.terminalLayoutMode = .tabsPerSplit } }
+    let worktreeID = Worktree.ID("/tmp/spt-hib")
+    let paneID = PaneID()
+    let activeTab = TabID()
+    let parkedTab = TabID()
+    let activeContent = HibernatableContent(id: ContentID())
+    let parkedContent = HibernatableContent(id: ContentID())
+    let runtime = ContentRuntime()
+    _ = runtime.provision(activeContent, at: .fallback)
+    _ = runtime.provision(parkedContent, at: .fallback)
+    let v2 = PaneLayout(
+      tree: SplitTree(view: paneID),
+      panes: [
+        Pane(
+          id: paneID,
+          tabs: [
+            Self.terminalTab(activeTab, title: "Active", contentID: activeContent.id),
+            Self.terminalTab(parkedTab, title: "Parked", contentID: parkedContent.id),
+          ],
+          selectedTabID: activeTab
+        )
+      ],
+      focusedPaneID: paneID
+    )
+    // Group 1 keeps the active tab; the second tab parks as its own group.
+    let layout = v2.convertedToSplitPerTab(
+      mintPaneID: { PaneID() },
+      mintGroupID: { PaneGroupID(rawValue: UUID()) }
+    )
+    let parkedGroup = try #require(layout.parkedGroups.first)
+    let clock = TestClock()
+    let store = TestStore(
+      initialState: TerminalsFeature.State(layouts: [Self.layoutState(worktreeID, layout, mode: .splitPerTab)])
+    ) {
+      TerminalsFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.contentRuntime = runtime
+      $0.uuid = .incrementing
+      $0[ContentSessionKiller.self] = ContentSessionKiller(kill: { _, _ in })
+    }
+    // The parked group's pane is outside the active tree, so its tab is hidden.
+    await store.send(.selectedWorktreeChanged(worktreeID)) {
+      $0.selectedWorktreeID = worktreeID
+      $0.recentWorktreeIDs = [worktreeID]
+      $0.hibernationArmedTabs = [parkedTab]
+    }
+    await clock.advance(by: .seconds(300))
+    await store.receive(\.hibernationGraceElapsed) {
+      $0.hibernationArmedTabs = []
+    }
+    await store.receive(\.layouts) {
+      $0.layouts[id: worktreeID]?.renderEpoch = 1
+    }
+    #expect(parkedContent.renderer == nil)
+    #expect(activeContent.renderer != nil)
+
+    // Switching to the parked group shows its pane: it wakes, and the group just
+    // left hides and arms.
+    var switched = layout
+    switched.activateGroup(parkedGroup.id)
+    await store.send(.layouts(.element(id: worktreeID, action: .selectGroup(id: parkedGroup.id)))) {
+      $0.layouts[id: worktreeID]?.layout = switched
+      $0.hibernationArmedTabs = [activeTab]
+      $0.wakeRequestedTabs = [parkedTab]
+    }
+    await store.receive(\.layouts) {
+      $0.layouts[id: worktreeID]?.renderEpoch = 2
+      $0.wakeRequestedTabs = []
+    }
+    #expect(parkedContent.renderer != nil)
+    #expect(store.state.layouts[id: worktreeID]?.layout.isConsistent(for: .splitPerTab) == true)
+    // No terminal closed: hibernation keeps every content in the runtime.
+    #expect(runtime.content(for: parkedContent.id) != nil)
+    #expect(runtime.content(for: activeContent.id) != nil)
+    // Drain the armed timer so the store finishes clean.
+    $settingsFile.withLock { $0.global.terminalHibernationEnabled = false }
+    await store.send(.hibernationPolicyChanged) {
+      $0.hibernationArmedTabs = []
+    }
+    await store.finish()
+  }
 }

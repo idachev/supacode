@@ -1161,6 +1161,88 @@ struct SettingsFilePersistenceTests {
     #expect(HoverFocusMode.terminals.rawValue == "terminals")
   }
 
+  @Test func terminalLayoutModeDefaultsToTabsPerSplit() {
+    #expect(GlobalSettings.default.terminalLayoutMode == .tabsPerSplit)
+  }
+
+  @Test(.dependencies, arguments: [
+    #""terminalLayoutMode":"grid""#,  // unknown
+    #""terminalLayoutMode":3"#,  // non-string
+    #""terminalLayoutMode":null"#,
+    #""terminalLayoutMode":["splitPerTab"]"#,
+    #""unrelated":true"#,  // missing
+  ])
+  func decodesMissingOrInvalidTerminalLayoutModeAsDefaultWithoutDiscardingTheFile(field: String) throws {
+    // A hand-edit or a future build must never fail the whole settings file.
+    let json = """
+      {"appearanceMode":"light","updatesAutomaticallyCheckForUpdates":false,\
+      "updatesAutomaticallyDownloadUpdates":false,\(field)}
+      """
+    let storage = MutableTestStorage(initialData: Data(json.utf8))
+
+    let settings: SettingsFile = withDependencies {
+      $0.settingsFileStorage = storage.storage
+    } operation: {
+      @Shared(.settingsFile) var settings: SettingsFile
+      return settings
+    }
+
+    #expect(settings.global.terminalLayoutMode == .tabsPerSplit)
+    #expect(settings.global.appearanceMode == .light)
+  }
+
+  @Test(.dependencies) func decodesExplicitTerminalLayoutMode() throws {
+    let json = """
+      {"appearanceMode":"light","updatesAutomaticallyCheckForUpdates":false,\
+      "updatesAutomaticallyDownloadUpdates":false,"terminalLayoutMode":"splitPerTab"}
+      """
+    let storage = MutableTestStorage(initialData: Data(json.utf8))
+
+    let settings: SettingsFile = withDependencies {
+      $0.settingsFileStorage = storage.storage
+    } operation: {
+      @Shared(.settingsFile) var settings: SettingsFile
+      return settings
+    }
+
+    #expect(settings.global.terminalLayoutMode == .splitPerTab)
+  }
+
+  @Test(.dependencies, arguments: TerminalLayoutMode.allCases)
+  func roundTripsExplicitTerminalLayoutMode(mode: TerminalLayoutMode) throws {
+    let storage = SettingsTestStorage()
+
+    withDependencies {
+      $0.settingsFileStorage = storage.storage
+    } operation: {
+      @Shared(.settingsFile) var settings: SettingsFile
+      $settings.withLock { $0.global.terminalLayoutMode = mode }
+    }
+
+    let reloaded: SettingsFile = withDependencies {
+      $0.settingsFileStorage = storage.storage
+    } operation: {
+      @Shared(.settingsFile) var reloaded: SettingsFile
+      return reloaded
+    }
+
+    #expect(reloaded.global.terminalLayoutMode == mode)
+  }
+
+  @Test func encodesTerminalLayoutModeUnderItsStableKey() throws {
+    // The default is written too (like `hoverFocusMode`), under the pinned key.
+    let data = try JSONEncoder().encode(GlobalSettings.default)
+    let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["terminalLayoutMode"] as? String == "tabsPerSplit")
+  }
+
+  @Test func terminalLayoutModeRawValuesAreStableAcrossReleases() {
+    // The raw values are the on-disk representation and the spec's contract.
+    #expect(TerminalLayoutMode.tabsPerSplit.rawValue == "tabsPerSplit")
+    #expect(TerminalLayoutMode.splitPerTab.rawValue == "splitPerTab")
+    #expect(TerminalLayoutMode.allCases == [.tabsPerSplit, .splitPerTab])
+  }
+
   @Test(.dependencies) func roundTripsExplicitNotificationRetentionLimit() throws {
     let storage = SettingsTestStorage()
 

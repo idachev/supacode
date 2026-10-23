@@ -82,10 +82,12 @@ actor LayoutsIncrementalWriter {
       switch change {
       case .record(let record):
         // The migration origin is write-once; preserve it when the caller
-        // carries none.
+        // carries none. The split-per-tab sidecar is always replaced, never
+        // inherited, so a v2-mode write removes it.
         file.worktrees[key] = LayoutRecord(
           layout: record.layout,
-          origin: record.origin ?? file.worktrees[key]?.origin
+          origin: record.origin ?? file.worktrees[key]?.origin,
+          splitPerTab: record.splitPerTab
         )
       case .delete:
         file.worktrees.removeValue(forKey: key)

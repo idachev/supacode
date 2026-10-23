@@ -272,11 +272,15 @@ final class WorktreeTerminalManager {
     let decoded = worktreeID.removingPercentEncoding ?? worktreeID
     guard let layoutState = layoutState(for: WorktreeID(decoded)) else { return nil }
     let layout = layoutState.layout
+    let isSplitPerTab = layoutState.mode == .splitPerTab
     let focusedTabID = layout.focusedPaneID.flatMap { layout.panes[id: $0]?.selectedTabID }
     return layout.panes.flatMap { pane in
       pane.tabs.map { tab in
         var entry = ["id": tab.id.rawValue.uuidString]
         if tab.id == focusedTabID { entry["focused"] = "1" }
+        if isSplitPerTab, let index = Self.groupIndex(ofPane: pane.id, in: layout) {
+          entry["group"] = String(index)
+        }
         return entry
       }
     }
@@ -444,6 +448,11 @@ final class WorktreeTerminalManager {
   /// Selects the tab at a 1-based index, clamped to the strip, matching Ghostty
   /// goto_tab semantics.
   private func selectTab(atIndex index: Int, in worktree: Worktree) {
+    // Splits in Each Tab: the strip holds groups, so the index picks a group.
+    if let layoutState = layoutState(for: worktree.id), layoutState.mode == .splitPerTab {
+      selectGroup(layoutState.layout.groupID(atIndex: index), in: worktree, layout: layoutState.layout)
+      return
+    }
     guard let layout = layoutState(for: worktree.id)?.layout,
       let focusedPane = layout.focusedPaneID.flatMap({ layout.panes[id: $0] }),
       !focusedPane.tabs.isEmpty
@@ -455,6 +464,12 @@ final class WorktreeTerminalManager {
 
   /// Selects the next (or previous) tab in the focused pane, wrapping around.
   private func selectRelativeTab(forward: Bool, in worktree: Worktree) {
+    // Splits in Each Tab: next / previous walk the group strip, wrapping.
+    if let layoutState = layoutState(for: worktree.id), layoutState.mode == .splitPerTab {
+      selectGroup(
+        layoutState.layout.groupID(relativeToActive: forward), in: worktree, layout: layoutState.layout)
+      return
+    }
     guard let layout = layoutState(for: worktree.id)?.layout,
       let focusedPane = layout.focusedPaneID.flatMap({ layout.panes[id: $0] }),
       focusedPane.tabs.count > 1,
@@ -466,6 +481,21 @@ final class WorktreeTerminalManager {
     let target = focusedPane.tabs[targetIndex]
     sendLayout(worktree.id, .wakeTab(id: target.id))
     sendLayout(worktree.id, .selectTab(id: target.id))
+  }
+
+  /// Splits in Each Tab: wakes the group's focused tab, then makes the group active.
+  private func selectGroup(_ groupID: PaneGroupID?, in worktree: Worktree, layout: PaneLayout) {
+    guard let groupID,
+      let paneID = layout.focusedPaneID(ofGroup: groupID),
+      let target = layout.panes[id: paneID]?.selectedTabID
+    else { return }
+    sendLayout(worktree.id, .wakeTab(id: target))
+    sendLayout(worktree.id, .selectGroup(id: groupID))
+  }
+
+  /// 1-based strip position of the group holding a pane, nil outside Splits in Each Tab.
+  private static func groupIndex(ofPane paneID: PaneID, in layout: PaneLayout) -> Int? {
+    layout.groupID(containingPane: paneID).flatMap { layout.groupIndex(of: $0) }
   }
 
   /// The tab ID when it exists in the worktree's layout, else nil.
@@ -488,7 +518,7 @@ final class WorktreeTerminalManager {
       .performBindingActionOnSurface, .selectTab, .selectTabAtIndex, .selectRelativeTab, .focusSurface, .splitSurface,
       .destroyTab, .destroySurface, .renameTab, .setImagePasteAgents, .prune, .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
-      .setTerminalHibernationEnabled, .toggleWindowModeForFocusedPane,
+      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane,
       .splitFocusedPane, .focusSplit, .toggleSplitZoom, .equalizeSplits,
       .splitPane, .focusPane, .closePane, .toggleZoomPane, .toggleWindowModeForPane, .moveTabToSplit:
       return false
@@ -533,7 +563,7 @@ final class WorktreeTerminalManager {
       .navigateSearchNext, .navigateSearchPrevious, .selectTab, .selectTabAtIndex, .selectRelativeTab,
       .focusSurface, .splitSurface, .destroyTab, .destroySurface, .renameTab, .prune, .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
-      .setTerminalHibernationEnabled, .toggleWindowModeForFocusedPane:
+      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane:
       return false
     }
     return true
@@ -557,6 +587,8 @@ final class WorktreeTerminalManager {
       enforceNotificationRetentionLimit()
     case .setTerminalHibernationEnabled:
       sendTerminals(.hibernationPolicyChanged)
+    case .setTerminalLayoutMode(let mode):
+      sendTerminals(.layoutModeChanged(mode))
     case .toggleWindowModeForFocusedPane(let worktree):
       toggleWindowModeForFocusedPane(of: worktree)
     case .setSelectedWorktreeID(let id):
@@ -1295,9 +1327,11 @@ final class WorktreeTerminalManager {
   }
 
   /// Whether `tab move` is permitted: the tab's pane holds more than one tab
-  /// and is not windowed, matching the reducer's `moveTabToSplit` guard.
+  /// and is not windowed, matching the reducer's `moveTabToSplit` guard. Never in
+  /// Splits in Each Tab, where every tab already is its own split.
   func canMoveTabToNewSplit(worktreeID: Worktree.ID, tabID: UUID) -> Bool {
     guard let layoutState = layoutState(for: worktreeID),
+      layoutState.mode != .splitPerTab,
       let pane = layoutState.layout.pane(containingTab: TabID(rawValue: tabID))
     else { return false }
     return pane.tabs.count > 1 && !layoutState.windowedPaneIDs.contains(pane.id)
@@ -1425,9 +1459,14 @@ final class WorktreeTerminalManager {
     let decoded = worktreeID.removingPercentEncoding ?? worktreeID
     guard let layoutState = layoutState(for: WorktreeID(decoded)) else { return nil }
     let layout = layoutState.layout
+    let isSplitPerTab = layoutState.mode == .splitPerTab
     return layout.panes.map { pane in
       var entry = ["id": pane.id.rawValue.uuidString]
       if pane.id == layout.focusedPaneID { entry["focused"] = "1" }
+      if isSplitPerTab, let index = Self.groupIndex(ofPane: pane.id, in: layout) {
+        entry["group"] = String(index)
+        if layout.groupID(containingPane: pane.id) == layout.activeGroupID { entry["activeGroup"] = "1" }
+      }
       return entry
     }
   }
@@ -1603,8 +1642,14 @@ final class WorktreeTerminalManager {
   }
 
   /// Cancels every queued incremental save. Called before the on-quit
-  /// synchronous flush becomes the terminal write.
-  func cancelPendingLayoutSaves() {
+  /// synchronous flush becomes the terminal write. Returns the worktrees whose
+  /// debounced save or in-flight flush it dropped, so that flush can still write
+  /// them: a hydrated layout with no content host (one a mode switch converted)
+  /// is not in `hosts` and would otherwise lose its pending change. A flush Task
+  /// that has not reached the writer yet never runs once the process exits.
+  @discardableResult
+  func cancelPendingLayoutSaves() -> Set<Worktree.ID> {
+    let cancelledWorktreeIDs = Set(layoutDirtyTasks.keys).union(layoutFlushTasks.keys)
     for task in layoutDirtyTasks.values { task.cancel() }
     layoutDirtyTasks.removeAll()
     // Cancels debounced saves that have not enqueued yet; a flush already on the
@@ -1613,6 +1658,7 @@ final class WorktreeTerminalManager {
     // and can never be overtaken and regressed by a late flush.
     for entry in layoutFlushTasks.values { entry.task.cancel() }
     layoutFlushTasks.removeAll()
+    return cancelledWorktreeIDs
   }
 
   /// Tears down persistent zmx sessions for worktrees that just left the keep
@@ -2001,12 +2047,17 @@ final class WorktreeTerminalManager {
   }
 
   /// Embed `agentsBySurface` in each record so badges survive relaunch.
+  /// Writes every worktree with a content host plus `extraWorktreeIDs`, which
+  /// the quit path fills with the pending debounced saves and in-flight flushes
+  /// it cancelled (`hosts.keys ∪ layoutDirtyTasks.keys ∪ layoutFlushTasks.keys`),
+  /// so a hostless layout's change still lands.
   func saveAllLayoutSnapshots(
+    extraWorktreeIDs: Set<Worktree.ID> = [],
     agentsBySurface: [UUID: [TerminalLayoutSnapshot.SurfaceAgentRecord]]? = nil
   ) {
     guard appStore?.withState({ $0.terminals.layoutsAreReadOnly }) != true else { return }
     var changes: [String: LayoutsIncrementalWriter.RecordChange] = [:]
-    for (id, _) in hosts {
+    for id in Set(hosts.keys).union(extraWorktreeIDs) {
       guard let layoutState = layoutState(for: id) else { continue }
       let record = LayoutPersistence.record(
         for: layoutState.layout,

@@ -11,7 +11,7 @@ paths:
 
 - **Run one test.** The scheme is `supacode-tests` (`-scheme supacode` fails for tests). All
   files sit in `supacodeTests/`, but each suite belongs to one target: `supacodeTests`,
-  `supacodeFeatureTests` or `supacodeTerminalTests`, and `-only-testing:` needs that target name:
+  `supacodeGitTests`, `supacodeFeatureTests` or `supacodeTerminalTests`, and `-only-testing:` needs that target name:
   `DEVELOPER_DIR="$(./scripts/select-developer-dir.sh)" xcodebuild test -workspace supacode.xcworkspace -scheme supacode-tests -destination platform=macOS -derivedDataPath .build/DerivedData -only-testing:supacodeFeatureTests/AppFeatureCommandAckTests`.
   The failure output names the target (`✘ supacodeFeatureTests / ...`).
 - **`@Shared` settings leak between tests.** Tests run in one process, and `@Shared` settings
@@ -31,6 +31,23 @@ paths:
   `RemotePathClassificationTests.resolveRemotePathTimesOutOnAHangingProbe`. Rerun the suite
   once before you look into them. A failure that repeats is real.
   **Why:** on 2026-10-22 they failed in 3 of 6 runs with no related code change.
+- **Test files import every module whose members they use.** The test targets build with
+  `MemberImportVisibility`: comparing `.ids` to an array literal or reading `.elements` on an
+  `OrderedSet` / `IdentifiedArray` fails to compile ("not available due to missing import of
+  defining module 'OrderedCollections'") unless the file imports `OrderedCollections`. **Why:** on
+  2026-10-23 this stopped `make test` twice after the app itself built.
+- **A test helper is visible only inside its own test target.** `Project.swift` routes files by
+  glob into four targets (`supacodeGitTests`, `supacodeFeatureTests`, `supacodeTerminalTests`, e.g.
+  `supacodeTests/Layouts*.swift` and `LayoutFeature*.swift` go to the terminal one; everything else
+  to `supacodeTests`). A fixture in a file of one target cannot be used from another: put it in a
+  file that matches its users' glob, or in `sharedTestSupportSources`, which every test target compiles.
+- **A `UserDefaults` subclass in a test** must be `nonisolated`. The project sets
+  `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so its overrides otherwise differ in isolation from
+  the base and the test target does not compile.
+- **swiftlint on a doc-commented declaration.** The config is `strict: true`. To silence a rule on
+  a declaration with a `///` comment, use a trailing `// swiftlint:disable:this <rule>` on the
+  declaration line; `disable:next` above the doc comment gives `superfluous_disable_command`, and
+  between the comment and the declaration gives `orphaned_doc_comment`.
 - **swiftlint needs `DEVELOPER_DIR`** (`make lint` does not set it). Without it swiftlint crashes with
   `Loading sourcekitdInProc.framework ... failed`. Run
   `DEVELOPER_DIR="$(./scripts/select-developer-dir.sh)" mise exec -- swiftlint lint --quiet --config .swiftlint.yml <files>`.

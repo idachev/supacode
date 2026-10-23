@@ -216,6 +216,88 @@ struct AppFeatureDeeplinkTests {
     #expect(store.state.alert != nil)
   }
 
+  @Test(.dependencies) func tabMoveInSplitPerTabAlertsWithTheSplitPerTabText() async {
+    let worktree = makeWorktree()
+    let sent = LockIsolated<[TerminalClient.Command]>([])
+    var state = AppFeature.State(
+      repositories: makeRepositoriesState(worktree: worktree),
+      settings: SettingsFeature.State()
+    )
+    state.terminals.layouts = [makeTwoTabLayoutState(worktree: worktree, mode: .splitPerTab)]
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000_000))
+      $0.terminalClient.send = { command in sent.withValue { $0.append(command) } }
+      $0.terminalClient.tabExists = { _, _ in true }
+      $0.terminalClient.canMoveTabToNewSplit = { _, _ in false }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deeplink(.worktree(id: worktree.id, action: .tabMove(tabID: UUID(), direction: .right))))
+    await store.finish()
+
+    #expect(
+      !sent.value.contains {
+        if case .moveTabToSplit = $0 { return true }
+        return false
+      })
+    #expect(store.state.alert?.title == TextState("Tab cannot be moved"))
+    #expect(
+      store.state.alert?.message
+        == TextState("In Splits in Each Tab mode every tab is already its own split, so there is nothing to split off.")
+    )
+  }
+
+  @Test(.dependencies) func tabMoveInTabsPerSplitKeepsTheOriginalAlertText() async {
+    let worktree = makeWorktree()
+    var state = AppFeature.State(
+      repositories: makeRepositoriesState(worktree: worktree),
+      settings: SettingsFeature.State()
+    )
+    state.terminals.layouts = [makeTwoTabLayoutState(worktree: worktree, mode: .tabsPerSplit)]
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000_000))
+      $0.terminalClient.send = { _ in }
+      $0.terminalClient.tabExists = { _, _ in true }
+      $0.terminalClient.canMoveTabToNewSplit = { _, _ in false }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deeplink(.worktree(id: worktree.id, action: .tabMove(tabID: UUID(), direction: .right))))
+    await store.finish()
+
+    #expect(
+      store.state.alert?.message
+        == TextState("Its pane has only this tab, or is in window mode, so there is nothing to split off."))
+  }
+
+  /// A layout state holding one pane with two tabs, converted to Splits in Each Tab when asked.
+  private func makeTwoTabLayoutState(worktree: Worktree, mode: TerminalLayoutMode) -> LayoutFeature.State {
+    let tabs = (0..<2).map { index in
+      TabItem(
+        id: TabID(),
+        title: "tab-\(index)",
+        content: ContentSnapshot(id: ContentID(), state: .terminal(TerminalContentState(workingDirectory: nil)))
+      )
+    }
+    let paneID = PaneID()
+    var layout = PaneLayout(
+      tree: SplitTree(view: paneID),
+      panes: [Pane(id: paneID, tabs: IdentifiedArray(uniqueElements: tabs))],
+      focusedPaneID: paneID
+    )
+    if mode == .splitPerTab {
+      layout = layout.convertedToSplitPerTab(
+        mintPaneID: { PaneID() }, mintGroupID: { PaneGroupID(rawValue: UUID()) })
+    }
+    var state = LayoutFeature.State(id: worktree.id, layout: layout)
+    state.mode = mode
+    return state
+  }
+
   @Test(.dependencies) func paneEqualizeDeeplinkEmitsEqualizeCommand() async {
     let worktree = makeWorktree()
     let sent = LockIsolated<[TerminalClient.Command]>([])
