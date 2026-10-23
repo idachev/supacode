@@ -79,6 +79,22 @@ public struct TerminalSettingsView: View {
           )
         }
       }
+      Section {
+        Picker(selection: $store.terminalLayoutMode) {
+          ForEach(TerminalLayoutMode.allCases, id: \.self) { mode in
+            DefaultTaggedLabel(label: mode.label, isDefault: mode == GlobalSettings.default.terminalLayoutMode)
+              .tag(mode)
+          }
+        } label: {
+          Text("Terminal Layout")
+          Text("Choose whether each split has its own tabs, or each tab has its own splits.")
+        }
+        .help(
+          "Tabs in Each Split gives every split its own tab strip. Splits in Each Tab gives the worktree "
+            + "one tab strip whose tabs each hold their own splits. Switching converts open terminals "
+            + "in place; none are closed."
+        )
+      }
       Section("Persistence") {
         Toggle(isOn: $store.terminateSessionsOnQuit) {
           Text("Terminate sessions on quit")

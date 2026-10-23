@@ -277,6 +277,7 @@ struct SettingsFeatureTests {
     loaded.chromeTextSize = .extraLarge
     loaded.automaticRepositoryRefreshEnabled = false
     loaded.hoverFocusMode = .terminals
+    loaded.terminalLayoutMode = .splitPerTab
     loaded.globalToggleVisibilityHotkey = hotkey
     @Shared(.settingsFile) var settingsFile
     $settingsFile.withLock { $0.global = .default }
@@ -365,6 +366,41 @@ struct SettingsFeatureTests {
 
     await store.send(.settingsLoaded(loaded))
     #expect(store.state.hoverFocusMode == .terminals)
+    await store.skipReceivedActions()
+  }
+
+  @Test(.dependencies) func terminalLayoutModeDefaultsToTabsPerSplit() {
+    #expect(SettingsFeature.State().terminalLayoutMode == .tabsPerSplit)
+  }
+
+  @Test(.dependencies) func changingTerminalLayoutModePersistsChanges() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global = .default }
+
+    let store = TestStore(initialState: SettingsFeature.State()) {
+      SettingsFeature()
+    }
+
+    await store.send(.binding(.set(\.terminalLayoutMode, .splitPerTab))) {
+      $0.terminalLayoutMode = .splitPerTab
+    }
+    await store.receive(\.delegate.settingsChanged)
+    #expect(settingsFile.global.terminalLayoutMode == .splitPerTab)
+  }
+
+  @Test(.dependencies) func settingsLoadedAppliesTerminalLayoutMode() async {
+    var loaded = GlobalSettings.default
+    loaded.terminalLayoutMode = .splitPerTab
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global = loaded }
+
+    let store = TestStore(initialState: SettingsFeature.State()) {
+      SettingsFeature()
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.settingsLoaded(loaded))
+    #expect(store.state.terminalLayoutMode == .splitPerTab)
     await store.skipReceivedActions()
   }
 
