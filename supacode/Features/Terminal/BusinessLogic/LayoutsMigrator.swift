@@ -11,15 +11,24 @@ nonisolated struct LayoutRecord: Equatable, Codable, Sendable {
   /// The v1 snapshot verbatim, written once at migration and never read by the
   /// app; enables rollback tooling.
   let origin: TerminalLayoutSnapshot?
+  /// Split-per-tab grouping over `layout`; nil for a v2 layout. Replaced on
+  /// every write (unlike the write-once origin).
+  var splitPerTab: SplitPerTabSidecar?
 
   private enum CodingKeys: String, CodingKey {
     case layout
     case origin
+    case splitPerTab
   }
 
-  init(layout: PaneLayout, origin: TerminalLayoutSnapshot? = nil) {
+  init(
+    layout: PaneLayout,
+    origin: TerminalLayoutSnapshot? = nil,
+    splitPerTab: SplitPerTabSidecar? = nil
+  ) {
     self.layout = layout
     self.origin = origin
+    self.splitPerTab = splitPerTab
   }
 
   init(from decoder: any Decoder) throws {
@@ -30,6 +39,16 @@ nonisolated struct LayoutRecord: Equatable, Codable, Sendable {
       (try? container.decodeIfPresent(TerminalLayoutSnapshot.self, forKey: .origin)) ?? nil
     if origin == nil, container.contains(.origin) {
       migrationLogger.error("Dropped an unreadable migration origin; rollback tooling loses it.")
+    }
+    // Tolerant like `origin`, and never a decode loss: the base `layout` holds
+    // every content, so the reaper still sees all of them; only the grouping is
+    // lost, and hydration re-derives it with the v2 -> split-per-tab rule.
+    splitPerTab =
+      (try? container.decodeIfPresent(SplitPerTabSidecar.self, forKey: .splitPerTab)) ?? nil
+    if splitPerTab == nil, container.contains(.splitPerTab),
+      (try? container.decodeNil(forKey: .splitPerTab)) != true
+    {
+      migrationLogger.error("Dropped an unreadable split-per-tab sidecar; its groups are re-derived.")
     }
   }
 }

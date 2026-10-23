@@ -2,9 +2,10 @@ import Foundation
 import IdentifiedCollections
 import SupacodeSettingsShared
 
-/// Turns live layout state into the record persisted to `layouts.json`,
+/// Turns live layout state into the record persisted to the layouts store,
 /// overlaying each tab's snapshot with the runtime's live content so the saved
-/// frozen grid is always the last one actually applied.
+/// frozen grid is always the last one actually applied. A split-per-tab layout
+/// persists as its v2 fold plus a `SplitPerTabSidecar`.
 @MainActor
 enum LayoutPersistence {
   /// A record whose every tab reflects the live content's current snapshot;
@@ -72,6 +73,10 @@ enum LayoutPersistence {
         )
       }
     }
-    return LayoutRecord(layout: stripped, origin: origin)
+    // Fold last, after stripping on the live shape: the record's `layout` is
+    // always the v2 projection holding every content, and a split-per-tab
+    // layout's grouping rides in the sidecar.
+    let folded = stripped.foldedForPersistence()
+    return LayoutRecord(layout: folded.layout, origin: origin, splitPerTab: folded.sidecar)
   }
 }
