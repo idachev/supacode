@@ -932,11 +932,10 @@ SPT), `surface` = content id, `pane` = pane. Group ids are never public (ДР3).
 `WorktreeTerminalManager.canMoveTabToNewSplit` returns false when
 `layoutState.mode == .splitPerTab` (explicitly, not only through the
 one-tab-per-pane count). `AppFeature` `.tabMove` (L3060-3074) keeps the title
-"Tab cannot be moved" and picks the message by mode, read from the target
-layout's `mode` through a new `TerminalClient` query
-`layoutMode: @MainActor @Sendable (Worktree.ID) -> TerminalLayoutMode?`
-(live: `terminalManager.layoutState(for:)?.mode`; test: `unimplemented`
-with placeholder `nil`):
+"Tab cannot be moved" and picks the message by the target layout's mode,
+read from its own state as `state.terminals.layouts[id: worktreeID]?.mode`
+(AppFeature already reads `state.terminals.layouts` this way at L2109 and
+L2224; no new `TerminalClient` query):
 
 - v2 (unchanged): "Its pane has only this tab, or is in window mode, so there is nothing to split off."
 - SPT: "In Splits in Each Tab mode every tab is already its own split, so there is nothing to split off."
@@ -1135,12 +1134,12 @@ parallel. Test group numbers refer to **Tests**.
 | Task | Files and symbols | Depends on | Tests |
 |---|---|---|---|
 | **T1 Setting** | `SupacodeSettingsShared/Models/GlobalSettings.swift` (`TerminalLayoutMode`, `terminalLayoutMode` field, init, `CodingKeys`, decode); `SupacodeSettingsFeature/Reducer/SettingsFeature.swift` (state, load, apply, write-back); `SupacodeSettingsFeature/Views/TerminalSettingsView.swift` (picker) | none | 1 |
-| **T2 Model** | `supacode/Features/Terminal/Models/PaneLayout.swift`: `PaneGroupID`, `PaneGroup`, the three fields, new init, `encode` assert, `isConsistent`, `isSplitPerTabShape`, `isConsistent(for:)`, lookups, `activateGroup`, `modifyTree`, `removeLeaf`, both conversions, group-aware `strippingEphemeralContent`, `SplitPerTabSidecar`, `foldedForPersistence`, `unfolding` | T1 (`TerminalLayoutMode` for `isConsistent(for:)`; stub the enum locally if T1 is not merged, then delete the stub) | 2, model part of 3 |
+| **T2 Model** | `supacode/Features/Terminal/Models/PaneLayout.swift`: `PaneGroupID`, `PaneGroup`, the three fields, new init, `encode` assert, `isConsistent`, `isSplitPerTabShape`, `isConsistent(for:)`, lookups, `activateGroup`, `modifyTree`, `removeLeaf`, both conversions, group-aware `strippingEphemeralContent`, `SplitPerTabSidecar`, `foldedForPersistence`, `unfolding` | T1 (`TerminalLayoutMode` for `isConsistent(for:)`; T1 is small, land it first) | 2, model part of 3 |
 | **T3 Persistence** | `LayoutsMigrator.swift` (`LayoutRecord.splitPerTab`, `CodingKeys`, decode, init); `LayoutsIncrementalWriter.swift` (merge line); `LayoutPersistence.swift` (strip then fold) | T2 | 3 |
 | **T4 Reducer** | `LayoutFeature.swift` (`State.mode`, gate predicate, five actions, `convertMode`, `focus`, `collapse`, `newGroup`, `closeGroup`, `moveGroup`, `modifyTree` call sites, SPT branches); the switch rows in `TerminalsFeature.canAffectVisibility` and `RecentTerminals.canChangeCurrentTab` / `canRemoveTabs` (same commit, or the build breaks) | T2 | 4, switch rows of 8 |
 | **T5 TerminalsFeature** | `TerminalsFeature.swift` (`layoutModeChanged`, `attachLayout` mode, `layoutsHydrated` unfold / convert, `uuid` dependency) | T3, T4 | 5 |
-| **T6 Plumbing** | `TerminalClient.swift` (`setTerminalLayoutMode`, `layoutMode` query); `WorktreeTerminalManager.swift` (two `return false` lists, `handleManagementCommand`); `AppFeature.swift` (`lastKnownTerminalLayoutMode` at L167 / L208 / L772 / L905); `supacodeApp.swift` (wire `layoutMode`) | T1, T5 | 6 |
-| **T7 Manager semantics** | `WorktreeTerminalManager.swift` (`selectTab(atIndex:in:)`, `selectRelativeTab`, `listTabs`, `listPanes`, `canMoveTabToNewSplit`); `AppFeature.swift` `.tabMove` message | T4, T6 (`layoutMode` query) | 7, 8 |
+| **T6 Plumbing** | `TerminalClient.swift` (`setTerminalLayoutMode`); `WorktreeTerminalManager.swift` (two `return false` lists, `handleManagementCommand`); `AppFeature.swift` (`lastKnownTerminalLayoutMode` at L167 / L208 / L772 / L905) | T1, T5 | 6 |
+| **T7 Manager semantics** | `WorktreeTerminalManager.swift` (`selectTab(atIndex:in:)`, `selectRelativeTab`, `listTabs`, `listPanes`, `canMoveTabToNewSplit`); `AppFeature.swift` `.tabMove` message | T4 (reads `LayoutFeature.State.mode`) | 7, 8 |
 | **T8 Views** | new `WorktreeGroupStripView.swift`; `WorktreeLayoutView.swift`; `LayoutContentView.swift` `PaneStripView`; `PaneWindowManager.swift` (strip-less windowed pane); `WindowCommands.swift` (⌘W title) | T4 | 9 (reducer-backed) |
 | **T9 Close Group UI** (pending ОТ9) | `TerminalCommands.swift` or `WindowCommands.swift` (menu item, `closeTerminalTabAction` key); `WorktreeDetailView.swift` (publisher); `AppFeature.swift` (`.closeTerminalTab`); `TerminalClient.swift` (`closeActiveGroup`); `WorktreeTerminalManager.swift` (handler + both lists) | T4, T6, T8 | 4 (`closeGroup`), 6 |
 
