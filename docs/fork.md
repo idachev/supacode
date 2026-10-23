@@ -82,6 +82,60 @@ The change lives in `computeHighlightHoists` and `computeSidebarStructure`
 - The tests `pinnedActiveRowMovesIntoActiveAboveThePinnedSection` and
   `entriesRenderInActiveThenPinnedThenUnreadOrder` fail if a merge brings back the upstream order.
 
+## Terminal Layout: Splits in Each Tab
+
+Upstream #786 (`58438348`) replaced the old "split per tab" terminal layout with "tabs per
+split": one split tree per worktree, and every pane has its own tab strip. The fork adds a
+global setting that brings the old behaviour back on top of the new model. Upstream's layout
+stays the default, so a merge that does not touch the layout code needs no attention.
+
+| Setting | Where | Default | Values |
+| --- | --- | --- | --- |
+| Terminal Layout | Settings → Terminal; `terminalLayoutMode` in `~/.config/supacode/config.json` | `tabsPerSplit` | `tabsPerSplit` ("Tabs in Each Split", upstream), `splitPerTab` ("Splits in Each Tab") |
+
+In **Splits in Each Tab** a worktree has one tab strip above its panes. Each top-level tab
+holds its own split tree and zoom, and each split holds exactly one terminal. ⌘T opens a
+top-level tab, ⌘1…9 and next / previous switch top-level tabs, and ⌘W closes the focused
+terminal; closing the last terminal of a tab closes the tab. There is no separate "close the
+whole tab" command (owner's decision).
+
+Switching the setting converts every open layout at once, and no terminal closes. Tabs per
+split → splits in each tab: the current split, with each pane's selected tab, becomes tab 1,
+and every other tab becomes its own tab. Back: the selected tab's split becomes the panes, and
+the terminals of the other tabs go as tabs into the focused pane, so their split arrangement is
+lost. A hand edit of `terminalLayoutMode` in `config.json` applies at the next launch.
+
+The design is in [plans/done/2026-10-23-split-per-tab-mode-design.md](plans/done/2026-10-23-split-per-tab-mode-design.md).
+The main pieces:
+
+- Model: `PaneLayout` keeps a flat `panes` list for every group, plus one split tree per group
+  (`PaneGroup`, `parkedGroups`, `activeGroupID`), in
+  `supacode/Features/Terminal/Models/PaneLayout.swift`. In upstream mode the group fields are
+  empty.
+- Reducer: `LayoutFeature.State.mode` and the group actions in
+  `supacode/Features/Terminal/Reducer/LayoutFeature.swift`; `TerminalsFeature.layoutModeChanged`
+  converts every layout.
+- Persistence: the schema stays at version 2. The stored `layout` is always an upstream-shaped
+  layout that holds every terminal, and the grouping is an optional `splitPerTab` sidecar on
+  `LayoutRecord`. An upstream build reads the layout flattened and kills no session.
+- Views: `WorktreeGroupStripView.swift` is the top-level tab strip.
+
+### Keeping It On Upstream Merges
+
+- Keep `tabsPerSplit` as the default and keep upstream's code paths for it unchanged.
+- A new `LayoutFeature.Action` needs a row in `LayoutFeature.isExemptFromConsistencyCheck`,
+  `TerminalsFeature.canAffectVisibility`, `RecentTerminals.canChangeCurrentTab` and, if it
+  removes tabs, `RecentTerminals.canRemoveTabs` (it has a `default`, so the compiler does not
+  catch a miss).
+- Code that lists every terminal (the launch reaper, `allContentIDs`, Recent Terminals pruning,
+  the sidebar projection) must read the flat `panes`. Code that picks a pane for focus must pick
+  from the active tree, never from `panes.first`.
+- If upstream bumps the layouts schema, keep the `splitPerTab` sidecar optional and keep the
+  stored `layout` in the upstream shape.
+- The suites `SplitPerTabLayoutTests`, `LayoutFeatureSplitPerTabTests`,
+  `LayoutsSplitPerTabPersistenceTests` and `WorktreeGroupStripTests` fail if a merge breaks the
+  mode.
+
 ## Machine-Local Makefile Overrides (`Local.mk`)
 
 The `Makefile` includes an optional, gitignored `Local.mk` from the repository root
@@ -130,3 +184,35 @@ Signing every build with the same certificate keeps them.
 macOS may ask for the permissions once more after the first signed install. Later rebuilds
 keep them. A build from the Xcode GUI or a plain `xcodebuild` without these flags is still
 signed ad-hoc.
+
+### Building Without A Zig-Compatible macOS SDK
+
+Zig 0.15.2 links only against a macOS SDK of version 26.3 or older. When no installed Xcode
+or Command Line Tools has one, `make doctor` and `./scripts/select-developer-dir.sh` fail, and
+a build that has to run Zig fails with `undefined symbol: _exit`. GhosttyKit and zmx can still
+be reused from an earlier build in `.build/ghostty` and `.build/zmx`, as long as their inputs
+(the submodules, `patches/`, `scripts/build-*.sh`, `scripts/select-zig-sdk.sh`, `mise.toml`)
+have not changed since.
+
+1. Create a stand-in SDK folder named `MacOSX26.3.sdk`: symlinks to every entry of a newer SDK
+   (for example `/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`), plus a copy of its
+   `SDKSettings.plist` with `Version` set to `26.3`. Zig never runs against it; it only makes
+   the fingerprint computable.
+2. In every shell that builds, export `SUPACODE_ZIG_SDKROOT=<that folder>` and
+   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (an Xcode with the Metal
+   toolchain).
+3. Back up and rewrite the cache fingerprints:
+
+   ```bash
+   cp .build/ghostty/fingerprint .build/ghostty/fingerprint.bak
+   cp .build/zmx/fingerprint .build/zmx/fingerprint.bak
+   ./scripts/build-ghostty.sh --print-fingerprint >| .build/ghostty/fingerprint
+   ./scripts/build-zmx.sh --print-fingerprint >| .build/zmx/fingerprint
+   ```
+
+4. `make build-ghostty-xcframework build-zmx` must now finish in about a second without
+   running Zig. Then `make build-app`, `make test` or `make install-dev-build` work as usual.
+
+A fresh worktree needs `git submodule update --init --recursive`, a copy of `Local.mk`, and a
+copy of `.build/ghostty` and `.build/zmx` from the main checkout before step 3. The real fix is
+an Xcode or Command Line Tools install that ships a macOS SDK of 26.3 or older.
