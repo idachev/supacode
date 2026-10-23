@@ -66,8 +66,10 @@ Settled before this spec (not reopened here):
   new group.
 - **АР5**: `tab move` (move a tab to a new split) in SPT is refused with a
   clear error message.
-- **АР6**: `openFileWithScript` placement in SPT mirrors v1. See **ДР7**: v1 has
-  no such feature, so this spec defines the rule.
+- **АР6** (coordinator, confirmed after the first draft): `openFileWithScript`
+  placement in SPT follows **ДР7**. v1 had no `openFileWithScript` (#796 came
+  after #786), so the rule is defined here: `.tab` → new group, `.splitRight`
+  stays a split.
 - **Conversion invariant**: a pure `PaneLayout → PaneLayout` transform in one
   reducer action. It never reaps, closes or collapses, never remints a
   `TabID` or `ContentID`, cancels close alerts and exits window mode for the
@@ -117,7 +119,7 @@ in review):
   (v1's "tab" was top-level, and АР4 already routes an anchored `newTab` to a
   new group). `.splitRight` stays a split of the active group's pane. No code
   change in `openFileWithScript` is needed; the reducer's SPT `newTab`
-  routing produces it. Open for the coordinator to confirm.
+  routing produces it. Confirmed as АР6.
 - **ДР8 CLI output fields.** In SPT, every `tab list` and `pane list` response
   entry gains `"group": "<n>"` (1-based index of the owning group in strip
   order), and pane entries of the active group gain `"activeGroup": "1"`. In
@@ -136,7 +138,7 @@ in review):
 - **ДР10 Focusing a pane activates its group, windowed panes included.** This
   keeps the invariant "`focusedPaneID` is a leaf of the active tree" with no
   exception. A click into a pane window of a parked group therefore switches
-  the main window to that group. Tied to ОТ4.
+  the main window to that group. See ОП11.
 - **ДР11 v2 mode ignores a sidecar.** Hydration in v2 mode uses the record's
   `layout` as is (it already is the v2 projection); the next write for that
   worktree drops the sidecar.
@@ -154,9 +156,21 @@ in review):
   `layoutChangeObserver.layoutChanged` all run per worktree without new
   plumbing, hostless layouts included.
 
-Pending owner answers (sections marked **(pending owner ОТn)** carry the
-recommended option until the answer arrives): ОТ1 group title, ОТ3 lossless
-switch back, ОТ4 window mode in SPT, ОТ9 a "Close Group" verb.
+Owner answers (settled after the first draft; details in **Owner-settled
+behaviour**):
+
+- **ОП7** (ОТ1): the group title is derived from the focused pane's content
+  tab (`TabTitle.resolved`); rename sets `customTitle` on that `TabItem`; no
+  separate group title state.
+- **ОП9** (ОТ3): only the ВП2 lossy rule; the last SPT grouping is NOT
+  remembered for a lossless switch back. The relaunch sidecar (АР2) stays.
+- **ОП11** (ОТ4): window mode is allowed per pane in SPT, as in v2; panes the
+  conversion dissolves exit window mode.
+- **ОП14** (ОТ9): NO separate "Close Group" / "Close Tab" verb: no new menu
+  item, shortcut, strip close button or CLI verb. ⌘W closes the focused pane
+  (terminal); closing the last pane of a group closes the group through the
+  internal "group emptied" path (`promoteNeighbourOfEmptiedActiveGroup`, and
+  the parked-group removal in collapse).
 
 ## Non-goals
 
@@ -169,6 +183,8 @@ switch back, ОТ4 window mode in SPT, ОТ9 a "Close Group" verb.
   `new_tab`, `close_tab`, `goto_tab`, `move_tab`.
 - No group-to-group drag of panes (moving a split leaf into another group).
   Reordering groups in the strip is in scope.
+- No "Close Group" verb of any kind (ОП14).
+- No lossless switch back to a remembered SPT grouping (ОП9).
 - No upstream pull request.
 
 ## How the layout works today
@@ -409,7 +425,8 @@ func convertedToTabsPerSplit() -> (layout: PaneLayout, dissolvedPaneIDs: Set<Pan
 Lost by SPT → v2, by design (ВП2): each parked group's split arrangement,
 ratios, zoom and focus, and the parked panes' ids (a CLI token that is a bare
 parked pane id stops resolving; tab and content ids keep resolving). v2 → SPT
-→ v2 does not restore a background tab to its old pane. See ОТ3.
+→ v2 does not restore a background tab to its old pane, and SPT → v2 → SPT
+flattens every non-active group into one-pane groups (ОП9).
 
 ### Ephemeral stripping
 
@@ -537,14 +554,13 @@ case convertMode(to: TerminalLayoutMode)
 case selectGroup(id: PaneGroupID)
 /// Split-per-tab: a new group with one pane and one tab (⌘T, strip "+", CLI tab new).
 case newGroup(spec: NewTabSpec)
-/// Split-per-tab: closes every pane of a group, gated by confirm-close-tab.
-case closeGroup(id: PaneGroupID)
 /// Split-per-tab: reorders a group in the strip; `index` is 0-based, clamped.
 case moveGroup(id: PaneGroupID, toIndex: Int)
 ```
 
 Every one is ignored (log at info, `.none`) when `state.mode` does not match:
-`selectGroup`, `newGroup`, `closeGroup` and `moveGroup` need `.splitPerTab`.
+`selectGroup`, `newGroup` and `moveGroup` need `.splitPerTab`. There is no
+`closeGroup` action (ОП14): a group closes only when its last pane closes.
 
 ### The three exhaustive switches
 
@@ -553,7 +569,6 @@ Every one is ignored (log at info, `.none`) when `state.mode` does not match:
 | `convertMode` | false | true | false (focused pane and its selected tab are unchanged by both rules) | false (no tab disappears) |
 | `selectGroup` | false | true | true | false |
 | `newGroup` | false | true | true | false |
-| `closeGroup` | false | true | true | true (add the case explicitly; the `default` would hide it) |
 | `moveGroup` | false | false (order is not visibility) | false | false |
 
 ### `convertMode(to:)`
@@ -676,19 +691,6 @@ SPT, `collapse(&state, paneID:)`:
    group's. Do not call `focus()` again. If no group remained, the layout is
    empty (`activeGroupID == nil`, `groupOrder == []`,
    `focusedPaneID == nil`) and the alert is cleared (as today).
-
-`closeGroup(id:)`:
-
-1. Collect the tabs of every pane in the group (`tree(ofGroup:)` leaves, leaf
-   order).
-2. Same confirm gate as `reduceContentRequestedClose`
-   (`settingsFile.global.confirmCloseTab`, `closeWouldInterrupt`), with
-   `alertPaneID = nil` so the main-window host presents it
-   (`WorktreeLayoutView` L119 treats nil as "present here"), and the existing
-   `confirmClose(tabs:)` alert. Confirm → `closeTabs`.
-3. Without confirmation → `closeTabs(&state, tabIDs:)`. Each close reaps its
-   own content: this is the only multi-terminal kill path SPT adds, and it is
-   an explicit user close.
 
 ## Persistence
 
@@ -880,14 +882,17 @@ Mode is read from `LayoutFeature.State.mode` through the scoped layout store
      invalidates one group tab, never the strip or siblings.
    - Click → `store.send(.selectGroup(id:))` plus
      `host.focusSelectedTab()` through the same path the strip uses today.
-   - Close button → `.closeGroup(id:)`, tooltip "Close Tab (⌘W closes the
-     focused split)". Drag to reorder → `.moveGroup(id:toIndex:)`.
+   - No close button and no close item in a context menu (ОП14): ⌘W or a
+     pane's own close closes terminals one by one, and the group goes with
+     its last pane. Tooltip on each group tab: its title and, for the first
+     nine, "Select Tab N" with its `AppShortcuts.tabSelection` hotkey.
+   - Drag to reorder → `.moveGroup(id:toIndex:)`.
    - Trailing accessories reuse the existing strip accessory buttons for the
      focused pane: "+" sends `.newGroup` through `contentRequestedNewTab`
      (tooltip with `AppShortcuts.newTerminalTab`), split right / down, zoom,
      window mode. Every button has a tooltip with its hotkey.
    - Rename: double-click opens the inline rename of the group's focused
-     content tab (`beginTabRename(id:)`), per ОТ1.
+     content tab (`beginTabRename(id:)`), per ОП7.
    - System colours only, Dynamic Type, `.monospaced()` where the v2 strip
      uses it.
 3. `Views/LayoutContentView.swift` `PaneStripView` (L319): when
@@ -895,7 +900,8 @@ Mode is read from `LayoutFeature.State.mode` through the scoped layout store
    and the tab-drag drop zones; keep the content toolbar, `ContentHostView`,
    dim overlay and hover-focus sensor. Read `store.mode` at this leaf.
 4. `Views/PaneWindowManager.swift`: a windowed SPT pane renders without the
-   strip; its window title already follows the content (pending ОТ4).
+   strip; its window title already follows the content. Window mode works
+   per pane as in v2 (ОП11).
 5. Rendering of parked groups: none. `LayoutPaneTreeView` renders
    `tree.visibleNode`, i.e. the active group only; parked panes are not in
    the view tree (v1's `TerminalTabContentStack` rendered only the selected
@@ -914,7 +920,7 @@ Menu closures capture only the store, so no `FocusedAction` token changes
 | ⌘W | "Close Tab": closes the focused content tab | "Close Terminal": closes the focused pane (its only tab); the last pane closes the group | title in `WindowCommands`; behaviour unchanged in WTM (`closeFocusedTab` already closes the focused content tab) |
 | ⌘1..9 Select Tab N | index in the focused pane's strip | index in the group strip | `WorktreeTerminalManager.selectTab(atIndex:in:)` |
 | Select Next / Previous Tab | focused pane's strip | group strip, wrapping | `WorktreeTerminalManager.selectRelativeTab(forward:in:)` |
-| Rename Tab | focused content tab | focused content tab of the active group (= the group's title, ОТ1) | unchanged |
+| Rename Tab | focused content tab | focused content tab of the active group (= the group's title, ОП7) | unchanged |
 | Split / Focus Split / Zoom / Equalize / Window Mode | focused pane | focused pane of the active group | unchanged |
 
 `selectTab(atIndex:in:)` in SPT: `layout.groupID(atIndex: index)` →
@@ -945,7 +951,7 @@ SPT), `surface` = content id, `pane` = pane. Group ids are never public (ДР3).
 | `tab close`, `surface close`, `pane close` | closes that pane / tab; the last pane closes the group; never closes other panes of the group | unchanged WTM code |
 | `pane zoom`, `pane window`, `pane equalize` | scoped to the token's group | reducer |
 | `tab move` | refused with an alert (АР5) | `canMoveTabToNewSplit` + AppFeature `.tabMove` |
-| `tab rename` | renames the content tab (in SPT the group shows it when it is the group's focused tab, ОТ1) | unchanged |
+| `tab rename` | renames the content tab (in SPT the group shows it when it is the group's focused tab, ОП7) | unchanged |
 
 `WorktreeTerminalManager.canMoveTabToNewSplit` returns false when
 `layoutState.mode == .splitPerTab` (explicitly, not only through the
@@ -994,48 +1000,42 @@ Host tracking is keyed by `TabID`, which conversions never change, so a
 running script survives a mode switch. Persistence strips the script's pane
 and, with it, its group (group-aware `strippingEphemeralContent`).
 
-## Pending owner sections
+## Owner-settled behaviour
 
-### Group title (pending owner ОТ1)
+### Group title (ОП7)
 
-Recommended: no separate group title. A group shows its focused pane's
-content tab title (`TabTitle.resolved` over that tab and its `TabChrome`).
-Rename Tab and the strip's inline rename set `customTitle` on that `TabItem`.
-Nothing new is persisted and nothing is lost in a conversion. Consequence:
-moving focus between splits of a group changes the group's title, as v1's
-window title did. Alternative: a `title` / `customTitle` on `PaneGroup` plus
-the sidecar, lost on SPT → v2.
+A group has no title state of its own. It shows its focused pane's content
+tab title (`TabTitle.resolved` over that tab and its `TabChrome`). Rename Tab
+and the strip's inline rename set `customTitle` on that `TabItem`. Nothing new
+is persisted and nothing is lost in a conversion. Consequence: moving focus
+between splits of a group changes the group's title, as v1's window title
+did.
 
-### Switching back (pending owner ОТ3)
+### Switching back (ОП9)
 
-Recommended: the lossy rule only (ВП2 as written). SPT → v2 → SPT flattens
-every non-active group's splits into one-pane groups. Alternative: keep the
-last SPT grouping (as a sidecar on the v2 record) and restore it on the next
-switch when every referenced tab still exists. That adds a second read path
-and a staleness rule.
+Only the ВП2 lossy rule. SPT → v2 → SPT flattens every non-active group's
+splits into one-pane groups; v2 → SPT → v2 brings background tabs back in
+the focused pane. No "last SPT grouping" is remembered for the switch back.
+The АР2 sidecar is written only while the layout is in SPT (it restores SPT
+across a relaunch); a v2-mode write removes it (ДР11).
 
-### Window mode in SPT (pending owner ОТ4)
+### Window mode in SPT (ОП11)
 
-Recommended: allowed per pane, as in v2. `focus()` activates the group of a
-focused windowed pane (ДР10). A windowed pane in a parked group keeps its
-window and stays live. SPT → v2 exits window mode for every dissolved pane
-inside `convertMode`. Alternative: disable window mode in SPT (the menu item
-disabled through its `FocusedAction` `enabled`, `enterWindowMode` refused,
-and `convertMode` to SPT exits every windowed pane).
+Allowed per pane, as in v2. `focus()` activates the group of a focused
+windowed pane (ДР10). A windowed pane in a parked group keeps its window and
+stays live. SPT → v2 exits window mode for every dissolved pane inside
+`convertMode`; v2 → SPT keeps a windowed pane windowed (its id survives).
+The Toggle Window Mode menu item and the CLI `pane window` are unchanged.
 
-### Close Group verb (pending owner ОТ9)
+### No Close Group verb (ОП14)
 
-Recommended: the group strip's close button and its context menu item "Close
-Tab" send `closeGroup(id:)` (confirm-gated). The menu bar gets "Close Terminal
-Tab" (v1's title) in the File group after the ⌘W item, with no default
-shortcut, published as a new `FocusedAction<Void>` `closeTerminalTabAction`
-from `WorktreeDetailView` with
-`enabled: hasActiveWorktree && hasFocusedTab && layoutMode == .splitPerTab`,
-where `layoutMode` is read from `@Shared(.settingsFile)` in that view, and
-`token: nil` (the closure captures only the store). It sends a new AppFeature
-action `.closeTerminalTab` → new `TerminalClient.Command.closeActiveGroup(Worktree)`
-→ WTM sends `.closeGroup(id: layout.activeGroupID)`. No CLI verb: `tab close`
-keeps closing one content tab. Alternative: no menu item, strip only.
+No new menu item, shortcut, strip close button, context menu item, CLI verb
+or deeplink. ⌘W ("Close Terminal" in SPT, ДР9) closes the focused pane, and
+`tab close` / `surface close` / `pane close` close one pane. When the last
+pane of a group closes, `collapse` removes the group (parked) or promotes the
+neighbour (active, ДР5) through `removeLeaf` →
+`promoteNeighbourOfEmptiedActiveGroup()`. That internal path is the only
+group-closing code; it never reaps anything beyond the pane being closed.
 
 ## Risks
 
@@ -1055,10 +1055,11 @@ keeps closing one content tab. Alternative: no menu item, strip only.
    `focus()` would switch groups by accident. Mitigation: collapse and
    stripping fall back to the active tree's first leaf.
 5. **Exhaustive switches and the `default` in `canRemoveTabs`.** The compiler
-   catches three of four; `canRemoveTabs` needs `closeGroup` added by hand.
-6. **`TerminalClient.Command` lists.** `setTerminalLayoutMode` (and
-   `closeActiveGroup` if ОТ9 lands) must be in both WTM `return false` lists
-   and handled once.
+   catches three of four. No new action removes tabs (there is no
+   `closeGroup`, ОП14), so `canRemoveTabs` needs no new case; a future
+   tab-removing action must be added by hand.
+6. **`TerminalClient.Command` lists.** `setTerminalLayoutMode` must be in
+   both WTM `return false` lists and handled once.
 7. **Hydration order.** The reaper reads the persisted file, not the state,
    so converting at hydration is safe as long as the transform never drops a
    content (it cannot: pure, id-preserving).
@@ -1111,8 +1112,8 @@ Every existing suite must pass unchanged with the default mode.
    parked pane with `select: false` keeps the active group; closing the last
    pane of a parked group removes the group; closing the active group's last
    pane activates the previous, else the next group; closing the last group
-   empties the layout; `closeGroup` with each confirm mode and its alert;
-   `moveGroup` clamps; refused `moveTab*` in SPT; `contentRequestedGotoTab`
+   empties the layout; ⌘W (`contentRequestedClose(.tab)`) on a group's only
+   pane with each confirm mode closes that group; `moveGroup` clamps; refused `moveTab*` in SPT; `contentRequestedGotoTab`
    over groups; zoom stays per group across switches.
 5. **TerminalsFeature** (`TerminalsFeatureTests`): `layoutModeChanged` sends
    one `convertMode` per layout including a hostless hydrated one (receive
@@ -1154,12 +1155,11 @@ parallel. Test group numbers refer to **Tests**.
 | **T1 Setting** | `SupacodeSettingsShared/Models/GlobalSettings.swift` (`TerminalLayoutMode`, `terminalLayoutMode` field, init, `CodingKeys`, decode); `SupacodeSettingsFeature/Reducer/SettingsFeature.swift` (state, load, apply, write-back); `SupacodeSettingsFeature/Views/TerminalSettingsView.swift` (picker) | none | 1 |
 | **T2 Model** | `supacode/Features/Terminal/Models/PaneLayout.swift`: `PaneGroupID`, `PaneGroup`, the three fields, new init, `encode` assert, `isConsistent`, `isSplitPerTabShape`, `isConsistent(for:)`, lookups, `activateGroup`, `modifyTree`, `removeLeaf`, both conversions, group-aware `strippingEphemeralContent`, `SplitPerTabSidecar`, `foldedForPersistence`, `unfolding` | T1 (`TerminalLayoutMode` for `isConsistent(for:)`; T1 is small, land it first) | 2, model part of 3 |
 | **T3 Persistence** | `LayoutsMigrator.swift` (`LayoutRecord.splitPerTab`, `CodingKeys`, decode, init); `LayoutsIncrementalWriter.swift` (merge line); `LayoutPersistence.swift` (strip then fold) | T2 | 3 |
-| **T4 Reducer** | `LayoutFeature.swift` (`State.mode`, gate predicate, five actions, `convertMode`, `focus`, `collapse`, `newGroup`, `closeGroup`, `moveGroup`, `modifyTree` call sites, SPT branches); the switch rows in `TerminalsFeature.canAffectVisibility` and `RecentTerminals.canChangeCurrentTab` / `canRemoveTabs` (same commit, or the build breaks) | T2 | 4, switch rows of 8 |
+| **T4 Reducer** | `LayoutFeature.swift` (`State.mode`, gate predicate, four actions, `convertMode`, `focus`, `collapse`, `newGroup`, `moveGroup`, `modifyTree` call sites, SPT branches); the switch rows in `TerminalsFeature.canAffectVisibility` and `RecentTerminals.canChangeCurrentTab` / `canRemoveTabs` (same commit, or the build breaks) | T2 | 4, switch rows of 8 |
 | **T5 TerminalsFeature** | `TerminalsFeature.swift` (`layoutModeChanged`, `attachLayout` mode, `layoutsHydrated` unfold / convert, `uuid` dependency) | T3, T4 | 5 |
 | **T6 Plumbing** | `TerminalClient.swift` (`setTerminalLayoutMode`); `WorktreeTerminalManager.swift` (two `return false` lists, `handleManagementCommand`); `AppFeature.swift` (`lastKnownTerminalLayoutMode` at L167 / L208 / L772 / L905) | T1, T5 | 6 |
 | **T7 Manager semantics** | `WorktreeTerminalManager.swift` (`selectTab(atIndex:in:)`, `selectRelativeTab`, `listTabs`, `listPanes`, `canMoveTabToNewSplit`); `AppFeature.swift` `.tabMove` message | T4 (reads `LayoutFeature.State.mode`) | 7, 8 |
 | **T8 Views** | new `WorktreeGroupStripView.swift`; `WorktreeLayoutView.swift`; `LayoutContentView.swift` `PaneStripView`; `PaneWindowManager.swift` (strip-less windowed pane); `WindowCommands.swift` (⌘W title) | T4 | 9 (reducer-backed) |
-| **T9 Close Group UI** (pending ОТ9) | `TerminalCommands.swift` or `WindowCommands.swift` (menu item, `closeTerminalTabAction` key); `WorktreeDetailView.swift` (publisher); `AppFeature.swift` (`.closeTerminalTab`); `TerminalClient.swift` (`closeActiveGroup`); `WorktreeTerminalManager.swift` (handler + both lists) | T4, T6, T8 | 4 (`closeGroup`), 6 |
 
 T6 and T7 both edit `WorktreeTerminalManager.swift` and `AppFeature.swift`
 in different functions; run them in sequence or rebase the second.
