@@ -85,6 +85,8 @@ struct TerminalsFeature {
     /// The system reported memory pressure: drop the recency budget to the
     /// selection and hibernate the hidden tabs now, skipping the grace window.
     case memoryPressureWarning
+    /// The global layout mode changed: convert every layout in place.
+    case layoutModeChanged(TerminalLayoutMode)
   }
 
   private static let logger = SupaLogger("TerminalsFeature")
@@ -109,6 +111,7 @@ struct TerminalsFeature {
   @Dependency(LayoutChangeObserver.self) private var layoutChangeObserver
   @Dependency(MemoryPressureClient.self) private var memoryPressure
   @Dependency(\.continuousClock) private var clock
+  @Dependency(\.uuid) private var uuid
 
   var body: some Reducer<State, Action> {
     Reduce { state, action in
@@ -136,7 +139,10 @@ struct TerminalsFeature {
 
       case .attachLayout(let worktreeID, let titlePrefix):
         if state.layouts[id: worktreeID] == nil {
-          state.layouts.append(LayoutFeature.State(id: worktreeID, layout: PaneLayout()))
+          @Shared(.settingsFile) var settingsFile: SettingsFile
+          var layoutState = LayoutFeature.State(id: worktreeID, layout: PaneLayout())
+          layoutState.mode = settingsFile.global.terminalLayoutMode
+          state.layouts.append(layoutState)
         }
         state.layouts[id: worktreeID]?.titlePrefix = titlePrefix
         return .none
@@ -162,6 +168,9 @@ struct TerminalsFeature {
       case .memoryPressureWarning:
         return reduceMemoryPressureWarning(&state)
 
+      case .layoutModeChanged:
+        return reduceLayoutModeChanged(state)
+
       case .layoutsHydrated(let file):
         state.layoutsAreReadOnly = file.schemaVersion > LayoutsFile.currentSchemaVersion
         // The runtime keys globally by content id and hibernation by tab id, so
@@ -169,6 +178,8 @@ struct TerminalsFeature {
         // id from another worktree (possible in pre-creation-gate layouts).
         var seenContentIDs = Set(state.layouts.flatMap { $0.layout.allContentIDs })
         var seenTabIDs = Set(state.layouts.flatMap { $0.layout.panes.flatMap(\.tabs.ids) })
+        @Shared(.settingsFile) var settingsFile: SettingsFile
+        let mode = settingsFile.global.terminalLayoutMode
         for (key, record) in file.worktrees.sorted(by: { $0.key < $1.key }) {
           guard record.layout.isConsistent else {
             Self.logger.error("Dropping inconsistent persisted layout for \(key)")
@@ -182,7 +193,12 @@ struct TerminalsFeature {
           }
           let worktreeID = Worktree.ID(key)
           guard state.layouts[id: worktreeID] == nil else { continue }
-          state.layouts.append(LayoutFeature.State(id: worktreeID, layout: record.layout))
+          var layoutState = LayoutFeature.State(
+            id: worktreeID,
+            layout: hydratedLayout(record, key: key, mode: mode)
+          )
+          layoutState.mode = mode
+          state.layouts.append(layoutState)
           seenContentIDs.formUnion(contentIDs)
           seenTabIDs.formUnion(tabIDs)
         }
@@ -193,6 +209,46 @@ struct TerminalsFeature {
     }
     .forEach(\.layouts, action: \.layouts) {
       LayoutFeature()
+    }
+  }
+}
+
+// MARK: - Layout mode.
+
+extension TerminalsFeature {
+  /// The payload of `layoutModeChanged` is only a start signal: the CURRENT
+  /// setting decides, so two quick flips whose effects land out of order still
+  /// end in the last one. Each conversion goes through the element action, so
+  /// the invariant gate, the hibernation re-diff and `layoutChanged` run per
+  /// worktree, hostless layouts included.
+  private func reduceLayoutModeChanged(_ state: State) -> Effect<Action> {
+    @Shared(.settingsFile) var settingsFile: SettingsFile
+    let newMode = settingsFile.global.terminalLayoutMode
+    let conversions: [Effect<Action>] = state.layouts
+      .filter { $0.mode != newMode }
+      .map { .send(.layouts(.element(id: $0.id, action: .convertMode(to: newMode)))) }
+    return conversions.isEmpty ? .none : .merge(conversions)
+  }
+
+  /// The live layout for a stored record under `mode`. tabsPerSplit uses the
+  /// record's v2 layout as is and ignores any sidecar; splitPerTab rebuilds the
+  /// groups from a sidecar that validates, else runs the v2 to split-per-tab
+  /// rule on the base layout. Pure and id-preserving, so nothing is dropped.
+  private func hydratedLayout(_ record: LayoutRecord, key: String, mode: TerminalLayoutMode) -> PaneLayout {
+    switch mode {
+    case .tabsPerSplit:
+      return record.layout
+    case .splitPerTab:
+      if let sidecar = record.splitPerTab {
+        if let unfolded = record.layout.unfolding(sidecar) {
+          return unfolded
+        }
+        Self.logger.error("Discarding an invalid split-per-tab sidecar for \(key); regrouping by rule")
+      }
+      return record.layout.convertedToSplitPerTab(
+        mintPaneID: { PaneID(rawValue: uuid()) },
+        mintGroupID: { PaneGroupID(rawValue: uuid()) }
+      )
     }
   }
 }
