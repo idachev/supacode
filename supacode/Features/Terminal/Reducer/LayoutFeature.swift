@@ -112,6 +112,10 @@ struct LayoutFeature {
   struct State: Equatable, Identifiable {
     let id: Worktree.ID
     var layout: PaneLayout
+    /// The shape the layout is in. Live-only, never persisted: the integration
+    /// layer sets it at attach and hydrate, `convertMode` flips it. Every
+    /// split-per-tab branch reads this, never the global setting.
+    var mode: TerminalLayoutMode = .tabsPerSplit
     /// Base for minted tab titles ("<prefix> N"); the worktree's name once the
     /// integration layer attaches it.
     var titlePrefix = ""
@@ -217,6 +221,14 @@ struct LayoutFeature {
     /// A content asked to reorder its tab by `amount` strip positions,
     /// wrapping at the ends.
     case contentRequestedMoveTab(content: ContentID, amount: Int)
+    /// Converts the layout to `mode` in place (pure transform; never closes).
+    case convertMode(to: TerminalLayoutMode)  // swiftlint:disable:this identifier_name
+    /// Split-per-tab: makes a group active (strip click, ⌘1..9, next/previous).
+    case selectGroup(id: PaneGroupID)
+    /// Split-per-tab: a new group with one pane and one tab (⌘T, strip "+", CLI tab new).
+    case newGroup(spec: NewTabSpec)
+    /// Split-per-tab: reorders a group in the strip; `index` is 0-based, clamped.
+    case moveGroup(id: PaneGroupID, toIndex: Int)
     case alert(PresentationAction<Alert>)
 
     nonisolated enum Alert: Equatable, Sendable {
@@ -238,7 +250,7 @@ struct LayoutFeature {
       .runtime(.titleCommitted), .contentRequestedClose, .contentRequestedNewTab,
       .contentRequestedSplit, .contentRequestedFocus, .contentRequestedFocusSplit,
       .contentRequestedToggleZoom, .contentRequestedResize, .contentRequestedGotoTab,
-      .contentRequestedMoveTab, .alert:
+      .contentRequestedMoveTab, .convertMode, .selectGroup, .newGroup, .moveGroup, .alert:
       return false
     }
   }
@@ -251,11 +263,12 @@ struct LayoutFeature {
 
   var body: some Reducer<State, Action> {
     Reduce { state, action in
-      // Single invariant gate: every action must leave the layout consistent.
-      // The assert compiles out in release, where the log is the only witness.
+      // Single invariant gate: every action must leave the layout consistent,
+      // in the shape its mode demands. The assert compiles out in release,
+      // where the log is the only witness.
       defer {
         if !Self.isExemptFromConsistencyCheck(action) {
-          let consistent = state.layout.isConsistent
+          let consistent = state.layout.isConsistent(for: state.mode)
           assert(consistent, "Inconsistent layout after \(action).")
           if !consistent {
             Self.logger.error("Inconsistent layout after \(action).")
@@ -287,11 +300,14 @@ struct LayoutFeature {
       case .focusPane(let target):
         return reduceFocusPane(&state, target: target)
       case .moveTab(let tabID, let targetPaneID, let index):
+        guard !Self.refusesTabMove(state, operation: "moveTab") else { return .none }
         return reduceMoveTab(&state, tabID: tabID, targetPaneID: targetPaneID, index: index)
       case .moveTabToSplit(let tabID, let anchorID, let direction, let select):
+        guard !Self.refusesTabMove(state, operation: "moveTabToSplit") else { return .none }
         return reduceMoveTabToSplit(
           &state, tabID: tabID, anchorID: anchorID, direction: direction, select: select)
       case .moveTabToSpanningSplit(let tabID, let anchorID, let direction):
+        guard !Self.refusesTabMove(state, operation: "moveTabToSpanningSplit") else { return .none }
         return reduceMoveTabToSpanningSplit(
           &state, tabID: tabID, anchorID: anchorID, direction: direction)
       case .enterWindowMode(let paneID):
@@ -341,7 +357,19 @@ struct LayoutFeature {
       case .contentRequestedGotoTab(let contentID, let target):
         return reduceContentRequestedGotoTab(&state, contentID: contentID, target: target)
       case .contentRequestedMoveTab(let contentID, let amount):
+        guard !Self.refusesTabMove(state, operation: "contentRequestedMoveTab") else { return .none }
         return reduceContentRequestedMoveTab(&state, contentID: contentID, amount: amount)
+      case .convertMode(let mode):
+        return reduceConvertMode(&state, to: mode)
+      case .selectGroup(let groupID):
+        guard Self.allowsGroupAction(state, operation: "selectGroup") else { return .none }
+        return reduceSelectGroup(&state, groupID: groupID)
+      case .newGroup(let spec):
+        guard Self.allowsGroupAction(state, operation: "newGroup") else { return .none }
+        return reduceNewGroup(&state, spec: spec)
+      case .moveGroup(let groupID, let index):
+        guard Self.allowsGroupAction(state, operation: "moveGroup") else { return .none }
+        return reduceMoveGroup(&state, groupID: groupID, index: index)
       case .alert(.presented(.confirmClose(let tabIDs))):
         state.alertPaneID = nil
         return closeTabs(&state, tabIDs: tabIDs)
@@ -358,6 +386,11 @@ struct LayoutFeature {
 
 extension LayoutFeature {
   private func reduceNewTab(_ state: inout State, paneID: PaneID, spec: NewTabSpec) -> Effect<Action> {
+    // Split-per-tab: a tab is a top-level group, so the pane anchor is ignored
+    // (CLI and deeplink anchors included).
+    if state.mode == .splitPerTab {
+      return reduceNewGroup(&state, spec: spec)
+    }
     // An emptied layout can only be re-entered here, by materializing the
     // target pane as the new root; validate everything before mutating.
     let bootstraps = state.layout.panes.isEmpty
@@ -517,6 +550,9 @@ extension LayoutFeature {
     target: TabTarget
   ) -> Effect<Action> {
     guard let located = state.layout.tab(containingContent: contentID) else { return .none }
+    if state.mode == .splitPerTab {
+      return reduceGotoGroup(&state, target: target)
+    }
     let tabs = located.pane.tabs
     guard !tabs.isEmpty else { return .none }
     let selectedIndex = located.pane.selectedTabID.flatMap { tabs.index(id: $0) } ?? 0
@@ -811,8 +847,14 @@ extension LayoutFeature {
     guard provisionContent(request, at: spec.geometry, operation: "splitPane") else { return .none }
     let paneID = PaneID(rawValue: uuid())
     do {
-      // `inserting` clears zoom by design: the new pane must be visible.
-      state.layout.tree = try state.layout.tree.inserting(view: paneID, at: anchorID, direction: direction)
+      // `inserting` clears zoom by design: the new pane must be visible. The
+      // owning tree may be a parked group's (a background split there grows
+      // that group without switching).
+      let inserted = try state.layout.modifyTree(containing: anchorID) { tree -> Bool in
+        tree = try tree.inserting(view: paneID, at: anchorID, direction: direction)
+        return true
+      }
+      guard inserted == true else { throw SplitTree<PaneID>.SplitError.viewNotFound }
     } catch {
       // Defense in depth behind the anchor pre-check; reaping routes the
       // started session into the kill path instead of leaking it.
@@ -838,9 +880,12 @@ extension LayoutFeature {
   /// placeholder while the pane renders in its own window.
   private func reduceEnterWindowMode(_ state: inout State, paneID: PaneID) -> Effect<Action> {
     guard state.layout.panes[id: paneID] != nil else { return .none }
-    // A zoomed placeholder would fill the whole layout with no content.
-    if case .leaf(let leaf) = state.layout.tree.zoomed, leaf == paneID {
-      state.layout.tree = state.layout.tree.settingZoomed(nil)
+    // A zoomed placeholder would fill the whole layout with no content; clear
+    // it on the owning tree, so a parked group never keeps it either.
+    _ = state.layout.modifyTree(containing: paneID) { tree in
+      if case .leaf(let leaf) = tree.zoomed, leaf == paneID {
+        tree = tree.settingZoomed(nil)
+      }
     }
     state.windowedPaneIDs.insert(paneID)
     cancelAlert(&state, ifOwnedBy: paneID)
@@ -880,9 +925,10 @@ extension LayoutFeature {
     direction: SplitTree<PaneID>.SpatialDirection,
     amount: UInt16
   ) -> Effect<Action> {
-    guard let located = state.layout.tab(containingContent: contentID),
-      let node = state.layout.tree.find(id: located.pane.id.rawValue)
-    else { return .none }
+    guard let located = state.layout.tab(containingContent: contentID) else { return .none }
+    let paneID = located.pane.id
+    let tree = Self.owningTree(in: state.layout, of: paneID)
+    guard let node = tree.find(id: paneID.rawValue) else { return .none }
     // A pane window has no dividers to drag.
     guard !state.windowedPaneIDs.contains(located.pane.id) else {
       Self.logger.info("resize refused: pane \(located.pane.id.rawValue) is windowed")
@@ -895,8 +941,8 @@ extension LayoutFeature {
     // the placeholder's area, an accepted approximation.
     let panes = state.layout.panes
     let windowedPaneIDs = state.windowedPaneIDs
-    let size = state.layout.tree.viewBounds { paneID in
-      guard !windowedPaneIDs.contains(paneID), let selected = panes[id: paneID]?.selectedTab else { return .zero }
+    let size = tree.viewBounds { leafID in
+      guard !windowedPaneIDs.contains(leafID), let selected = panes[id: leafID]?.selectedTab else { return .zero }
       return contentRuntime.renderer(for: selected.content.id)?.bounds.size ?? .zero
     }
     guard size.width >= 1, size.height >= 1 else {
@@ -904,12 +950,13 @@ extension LayoutFeature {
       return .none
     }
     do {
-      state.layout.tree = try state.layout.tree.resizing(
+      let resized = try tree.resizing(
         node: node,
         by: amount,
         in: direction,
         with: CGRect(origin: .zero, size: size)
       )
+      _ = state.layout.modifyTree(containing: paneID) { $0 = resized }
     } catch {
       Self.logger.warning("contentRequestedResize found no resizable split for \(contentID.rawValue)")
     }
@@ -932,10 +979,12 @@ extension LayoutFeature {
     // Only split nodes carry a ratio.
     guard case .split = node else { return .none }
     do {
-      state.layout.tree = try state.layout.tree.replacing(
-        node: node,
-        with: node.resizing(to: min(0.9, max(0.1, ratio)))
-      )
+      // Any leaf under the node names the tree that holds it, active or parked.
+      let replaced = try state.layout.modifyTree(containing: node.leftmostLeaf()) { tree -> Bool in
+        tree = try tree.replacing(node: node, with: node.resizing(to: min(0.9, max(0.1, ratio))))
+        return true
+      }
+      guard replaced == true else { throw SplitTree<PaneID>.SplitError.viewNotFound }
     } catch {
       Self.logger.warning("resizePane on a node outside the tree")
     }
@@ -952,6 +1001,10 @@ extension LayoutFeature {
   /// Removes a pane's leaf and the pane, retargeting focus to the neighbor
   /// computed before the removal only when the closed pane held it.
   private func collapse(_ state: inout State, paneID: PaneID) {
+    guard state.mode == .tabsPerSplit else {
+      collapseSplitPerTab(&state, paneID: paneID)
+      return
+    }
     let node = state.layout.tree.find(id: paneID.rawValue)
     if node == nil {
       // Only observable trace of a pane whose leaf already left the tree.
@@ -973,6 +1026,44 @@ extension LayoutFeature {
     guard !focusSurvives else { return }
     let resolvedTarget = target.flatMap { state.layout.panes[id: $0] != nil ? $0 : nil }
     if let newFocus = resolvedTarget ?? state.layout.panes.first?.id {
+      focus(&state, paneID: newFocus)
+    } else {
+      state.layout.focusedPaneID = nil
+    }
+  }
+
+  /// Split-per-tab collapse: the leaf leaves whichever group holds it. A parked
+  /// group that empties disappears and active focus stays put; an emptied
+  /// active group hands over to its neighbour through `removeLeaf` (previous,
+  /// else next), so focus never falls back to `panes.first`, which can be a
+  /// parked pane.
+  private func collapseSplitPerTab(_ state: inout State, paneID: PaneID) {
+    let parkedGroupID = state.layout.parkedGroupID(containingPane: paneID)
+    let owningTree = Self.owningTree(in: state.layout, of: paneID)
+    let node = owningTree.find(id: paneID.rawValue)
+    if node == nil {
+      Self.logger.warning("Collapsing pane \(paneID.rawValue) with no tree leaf.")
+    }
+    let target = node.flatMap { owningTree.focusTargetAfterClosing($0) }
+    if node != nil {
+      state.layout.removeLeaf(paneID)
+    }
+    state.layout.panes.remove(id: paneID)
+    state.windowedPaneIDs.remove(paneID)
+    if state.layout.panes.isEmpty || state.alertPaneID == paneID {
+      state.alert = nil
+      state.alertPaneID = nil
+    }
+    // A parked leaf: `removeLeaf` already dropped an emptied group or
+    // retargeted the group's remembered focus. Active focus does not move.
+    guard parkedGroupID == nil else { return }
+    // The active tree emptied: `removeLeaf` already promoted the neighbour
+    // group (or emptied the layout), so its focus survives below.
+    let activeLeaves = state.layout.tree.leaves()
+    let focusSurvives = state.layout.focusedPaneID.map { activeLeaves.contains($0) } ?? false
+    guard !focusSurvives else { return }
+    let resolvedTarget = target.flatMap { activeLeaves.contains($0) ? $0 : nil }
+    if let newFocus = resolvedTarget ?? activeLeaves.first {
       focus(&state, paneID: newFocus)
     } else {
       state.layout.focusedPaneID = nil
@@ -1009,8 +1100,14 @@ extension LayoutFeature {
   /// Focuses a pane; when focus actually moves while zoomed, the
   /// split-preserve-zoom policy decides whether the zoom follows or clears,
   /// mirroring `gotoSplit`. Re-focusing the current pane never touches zoom.
+  /// Split-per-tab: focusing a parked pane first activates its group (windowed
+  /// panes included), so focus is always a leaf of the active tree.
   private func focus(_ state: inout State, paneID: PaneID) {
-    guard state.layout.panes[id: paneID] != nil, state.layout.focusedPaneID != paneID else { return }
+    guard state.layout.panes[id: paneID] != nil else { return }
+    if let groupID = state.layout.parkedGroupID(containingPane: paneID) {
+      activateGroup(&state, groupID: groupID)
+    }
+    guard state.layout.focusedPaneID != paneID else { return }
     state.layout.focusedPaneID = paneID
     guard state.layout.tree.zoomed != nil else { return }
     // Focusing a windowed pane happens in its own window; the main tree's
@@ -1023,7 +1120,24 @@ extension LayoutFeature {
     state.layout.tree = state.layout.tree.settingZoomed(node)
   }
 
+  /// Swaps a parked group in. An alert raised by a pane of the outgoing group
+  /// can no longer present once that group is parked, so it is cancelled.
+  private func activateGroup(_ state: inout State, groupID: PaneGroupID) {
+    if let owner = state.alertPaneID,
+      state.layout.groupID(containingPane: owner) == state.layout.activeGroupID
+    {
+      cancelAlert(&state, ifOwnedBy: owner)
+    }
+    state.layout.activateGroup(groupID)
+  }
+
   private func reduceToggleZoom(_ state: inout State, paneID: PaneID) -> Effect<Action> {
+    // Split-per-tab: a parked pane's group becomes active first, directly and
+    // not through `focus()`, whose preserve-zoom policy would move the active
+    // zoom onto the pane and make the toggle below clear it again.
+    if let groupID = state.layout.parkedGroupID(containingPane: paneID) {
+      activateGroup(&state, groupID: groupID)
+    }
     // Mirror toggleSplitZoom: zooming a lone leaf is meaningless, and the
     // toggled pane takes focus either way.
     guard state.layout.tree.isSplit, let node = state.layout.tree.find(id: paneID.rawValue) else { return .none }
@@ -1035,6 +1149,158 @@ extension LayoutFeature {
     state.layout.focusedPaneID = paneID
     state.layout.tree = state.layout.tree.settingZoomed(state.layout.tree.zoomed == node ? nil : node)
     return .none
+  }
+}
+
+// MARK: - Layout mode and split-per-tab groups.
+
+extension LayoutFeature {
+  /// Converts the layout to `mode` as one pure value transform. Never reaps,
+  /// closes, collapses or provisions, and never remints a tab or content id, so
+  /// every session survives; only panes the fold dissolves leave window mode
+  /// and drop a pending close confirmation.
+  private func reduceConvertMode(_ state: inout State, to mode: TerminalLayoutMode) -> Effect<Action> {
+    guard state.mode != mode else { return .none }
+    switch mode {
+    case .splitPerTab:
+      state.layout = state.layout.convertedToSplitPerTab(
+        mintPaneID: { PaneID(rawValue: uuid()) },
+        mintGroupID: { PaneGroupID(rawValue: uuid()) }
+      )
+    case .tabsPerSplit:
+      let result = state.layout.convertedToTabsPerSplit()
+      state.layout = result.layout
+      for paneID in result.dissolvedPaneIDs {
+        state.windowedPaneIDs.remove(paneID)
+        cancelAlert(&state, ifOwnedBy: paneID)
+      }
+    }
+    state.mode = mode
+    return .none
+  }
+
+  /// Makes a group active through its remembered focus; the active group is a
+  /// no-op.
+  private func reduceSelectGroup(_ state: inout State, groupID: PaneGroupID) -> Effect<Action> {
+    guard let target = state.layout.focusedPaneID(ofGroup: groupID) else {
+      Self.logger.info("selectGroup ignored: unknown group \(groupID.rawValue)")
+      return .none
+    }
+    focus(&state, paneID: target)
+    return .none
+  }
+
+  /// A new group with one pane holding one tab. A selected group goes right
+  /// after the active one and takes focus; a background group appends. An empty
+  /// layout bootstraps as group 1.
+  private func reduceNewGroup(_ state: inout State, spec: NewTabSpec) -> Effect<Action> {
+    let bootstraps = state.layout.panes.isEmpty
+    // Validate before provisioning: a session started for a doomed insert leaks.
+    guard bootstraps || state.layout.activeGroupID != nil else {
+      Self.logger.warning("newGroup refused: populated layout has no active group")
+      return .none
+    }
+    guard let identity = mintedIdentity(in: state.layout, for: spec, operation: "newGroup") else { return .none }
+    let request = ContentRequest(
+      worktreeID: state.id,
+      tabID: identity.tabID,
+      contentID: identity.contentID,
+      content: spec.content,
+      origin: bootstraps ? .first : .tab,
+      inheritedFrom: spec.inheritedFrom
+    )
+    guard provisionContent(request, at: spec.geometry, operation: "newGroup") else { return .none }
+    let paneID = PaneID(rawValue: uuid())
+    let groupID = PaneGroupID(rawValue: uuid())
+    guard state.layout.panes[id: paneID] == nil, !state.layout.groupOrder.contains(groupID) else {
+      // Defense in depth against a colliding mint; route the started session
+      // into the kill path instead of leaking it.
+      Self.logger.error("newGroup minted a colliding pane or group id")
+      return reap(identity.contentID, worktree: state.id)
+    }
+    let tab = TabItem(
+      id: identity.tabID,
+      title: spec.title,
+      icon: spec.icon,
+      tintColor: spec.tintColor,
+      content: ContentSnapshot(id: identity.contentID, state: spec.content),
+      isLocked: spec.isLocked
+    )
+    state.layout.panes.append(Pane(id: paneID, tabs: [tab], selectedTabID: tab.id))
+    // A populated layout always has an active group (pre-checked above).
+    guard !bootstraps, let activeGroupID = state.layout.activeGroupID else {
+      state.layout.tree = SplitTree(view: paneID)
+      state.layout.focusedPaneID = paneID
+      state.layout.activeGroupID = groupID
+      state.layout.groupOrder = [groupID]
+      return .none
+    }
+    state.layout.parkedGroups.append(
+      PaneGroup(id: groupID, tree: SplitTree(view: paneID), focusedPaneID: paneID)
+    )
+    if spec.select, let activeIndex = state.layout.groupOrder.firstIndex(of: activeGroupID) {
+      state.layout.groupOrder.insert(groupID, at: activeIndex + 1)
+    } else {
+      state.layout.groupOrder.append(groupID)
+    }
+    if spec.select {
+      focus(&state, paneID: paneID)
+    }
+    return .none
+  }
+
+  /// Reorders a group in the strip; the 0-based index clamps to the strip.
+  private func reduceMoveGroup(_ state: inout State, groupID: PaneGroupID, index: Int) -> Effect<Action> {
+    guard let from = state.layout.groupOrder.firstIndex(of: groupID) else {
+      Self.logger.info("moveGroup ignored: unknown group \(groupID.rawValue)")
+      return .none
+    }
+    var order = state.layout.groupOrder
+    order.remove(at: from)
+    order.insert(groupID, at: min(max(index, 0), order.count))
+    guard order != state.layout.groupOrder else { return .none }
+    state.layout.groupOrder = order
+    return .none
+  }
+
+  /// Ghostty `goto_tab` in split-per-tab: strip positions are groups.
+  private func reduceGotoGroup(_ state: inout State, target: TabTarget) -> Effect<Action> {
+    let groupID: PaneGroupID?
+    switch target {
+    case .previous:
+      groupID = state.layout.groupID(relativeToActive: false)
+    case .next:
+      groupID = state.layout.groupID(relativeToActive: true)
+    case .last:
+      groupID = state.layout.groupOrder.last
+    case .position(let position):
+      guard position >= 1 else { return .none }
+      groupID = state.layout.groupID(atIndex: position)
+    }
+    guard let groupID else { return .none }
+    return reduceSelectGroup(&state, groupID: groupID)
+  }
+
+  /// The group actions only exist in split-per-tab; elsewhere they are ignored.
+  private static func allowsGroupAction(_ state: State, operation: StaticString) -> Bool {
+    guard state.mode == .splitPerTab else {
+      Self.logger.info("\(operation) ignored: layout is not split per tab")
+      return false
+    }
+    return true
+  }
+
+  /// Split-per-tab keeps one tab per pane, so a tab never moves between panes.
+  private static func refusesTabMove(_ state: State, operation: StaticString) -> Bool {
+    guard state.mode == .splitPerTab else { return false }
+    Self.logger.info("\(operation) refused: every tab is its own split in split per tab")
+    return true
+  }
+
+  /// The tree holding a pane: its parked group's, else the active one (the only
+  /// tree in tabs-per-split).
+  private static func owningTree(in layout: PaneLayout, of paneID: PaneID) -> SplitTree<PaneID> {
+    layout.parkedGroupID(containingPane: paneID).flatMap { layout.tree(ofGroup: $0) } ?? layout.tree
   }
 }
 
