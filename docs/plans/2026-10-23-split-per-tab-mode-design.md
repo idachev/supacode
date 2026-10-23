@@ -129,7 +129,10 @@ in review):
   The ⌘W item reads "Close Tab" in v2 and "Close Terminal" in SPT (v1's
   title), because in SPT ⌘W closes the focused split, not the whole tab.
   `WindowCommands` already reads `@Shared(.settingsFile)` in its body, so the
-  title change needs no `FocusedAction` token.
+  title change needs no `FocusedAction` token. This is the one place that
+  reads the setting instead of a layout's `mode` (ДР2): the menu bar has no
+  layout scope, and the two differ only for the single `settingsChanged`
+  turn before the conversion lands.
 - **ДР10 Focusing a pane activates its group, windowed panes included.** This
   keeps the invariant "`focusedPaneID` is a leaf of the active tree" with no
   exception. A click into a pane window of a parked group therefore switches
@@ -345,7 +348,21 @@ mutating func modifyTree<R>(
 /// Removes a leaf from whichever tree holds it and keeps the group
 /// bookkeeping consistent (see Close semantics). Does not touch `panes`.
 mutating func removeLeaf(_ paneID: PaneID)
+
+/// The active tree just emptied: promote the neighbour group (ДР5).
+mutating func promoteNeighbourOfEmptiedActiveGroup()
 ```
+
+`promoteNeighbourOfEmptiedActiveGroup()` never calls `activateGroup` (an empty
+tree cannot be parked: it would break invariant 6 and `PaneGroup` has a
+non-optional focus). It removes the emptied `activeGroupID` from `groupOrder`,
+takes the neighbour (the id before it in the old `groupOrder`, else the one
+after it) out of `parkedGroups`, and assigns that group's `tree`,
+`focusedPaneID` and `id` directly to `tree`, `focusedPaneID` and
+`activeGroupID`. When no parked group remains it sets `activeGroupID = nil`,
+`groupOrder = []`, `focusedPaneID = nil`. `removeLeaf` calls it when the
+leaf it removed emptied the active tree; collapse (step 5) and
+`strippingEphemeralContent` reach it only through `removeLeaf`.
 
 ### Conversions (pure)
 
@@ -653,11 +670,12 @@ SPT, `collapse(&state, paneID:)`:
 4. The leaf was in the active group and the tree still has leaves: refocus as
    today, but the fallback is the active tree's first leaf, never
    `panes.first?.id`.
-5. The active tree is now empty: if parked groups remain, activate the group
-   before it in `groupOrder`, else the one after it (ДР5), remove the emptied
-   id from `groupOrder`, and focus that group's `focusedPaneID`. If none
-   remain, the layout becomes empty: `activeGroupID = nil`,
-   `groupOrder = []`, `focusedPaneID = nil`, alert cleared (as today).
+5. The active tree is now empty: `removeLeaf` has already run
+   `promoteNeighbourOfEmptiedActiveGroup()` (previous group, else next, ДР5;
+   never `activateGroup`), so `tree` / `focusedPaneID` are the promoted
+   group's. Do not call `focus()` again. If no group remained, the layout is
+   empty (`activeGroupID == nil`, `groupOrder == []`,
+   `focusedPaneID == nil`) and the alert is cleared (as today).
 
 `closeGroup(id:)`:
 
