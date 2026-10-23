@@ -364,11 +364,14 @@ struct LayoutFeatureSplitPerTabTests {
     #expect(layout.isConsistent(for: .splitPerTab))
   }
 
-  @Test func toggleZoomOnALoneParkedPaneIsRefusedWithoutSwitching() async {
+  @Test func toggleZoomOnALoneParkedPaneActivatesItsGroupWithoutZooming() async {
     let bundle = await makeSplitPerTab()
-    let before = bundle.store.state
     await bundle.store.send(.toggleZoom(paneID: Fixture.paneA3))
-    #expect(bundle.store.state == before)
+    // The group switches first; a lone leaf then has nothing to zoom.
+    #expect(bundle.layout.activeGroupID == Fixture.groupA3)
+    #expect(bundle.layout.focusedPaneID == Fixture.paneA3)
+    #expect(bundle.layout.tree.zoomed == nil)
+    #expect(bundle.layout.isConsistent(for: .splitPerTab))
   }
 
   @Test func enterWindowModeOnAZoomedParkedPaneClearsThatGroupsZoom() async {

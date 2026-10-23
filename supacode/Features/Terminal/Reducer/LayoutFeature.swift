@@ -1045,7 +1045,6 @@ extension LayoutFeature {
       Self.logger.warning("Collapsing pane \(paneID.rawValue) with no tree leaf.")
     }
     let target = node.flatMap { owningTree.focusTargetAfterClosing($0) }
-    let heldParkedFocus = parkedGroupID.flatMap { state.layout.parkedGroups[id: $0]?.focusedPaneID } == paneID
     if node != nil {
       state.layout.removeLeaf(paneID)
     }
@@ -1055,21 +1054,9 @@ extension LayoutFeature {
       state.alert = nil
       state.alertPaneID = nil
     }
-    if let parkedGroupID {
-      // Idempotent behind `removeLeaf`: drop an emptied parked group, else
-      // retarget its remembered focus. Active focus does not move.
-      guard let group = state.layout.parkedGroups[id: parkedGroupID] else { return }
-      if group.tree.isEmpty {
-        state.layout.parkedGroups.remove(id: parkedGroupID)
-        state.layout.groupOrder.removeAll { $0 == parkedGroupID }
-      } else if heldParkedFocus || !group.tree.leaves().contains(group.focusedPaneID) {
-        let leaves = group.tree.leaves()
-        if let newFocus = target.flatMap({ leaves.contains($0) ? $0 : nil }) ?? leaves.first {
-          state.layout.parkedGroups[id: parkedGroupID]?.focusedPaneID = newFocus
-        }
-      }
-      return
-    }
+    // A parked leaf: `removeLeaf` already dropped an emptied group or
+    // retargeted the group's remembered focus. Active focus does not move.
+    guard parkedGroupID == nil else { return }
     // The active tree emptied: `removeLeaf` already promoted the neighbour
     // group (or emptied the layout), so its focus survives below.
     let activeLeaves = state.layout.tree.leaves()
@@ -1147,16 +1134,8 @@ extension LayoutFeature {
   private func reduceToggleZoom(_ state: inout State, paneID: PaneID) -> Effect<Action> {
     // Split-per-tab: a parked pane's group becomes active first, directly and
     // not through `focus()`, whose preserve-zoom policy would move the active
-    // zoom onto the pane and make the toggle below clear it again. Validate on
-    // the owning tree first so a refused toggle never switches groups.
+    // zoom onto the pane and make the toggle below clear it again.
     if let groupID = state.layout.parkedGroupID(containingPane: paneID) {
-      guard let owning = state.layout.tree(ofGroup: groupID), owning.isSplit,
-        owning.find(id: paneID.rawValue) != nil
-      else { return .none }
-      guard !state.windowedPaneIDs.contains(paneID) else {
-        Self.logger.info("toggleZoom refused: pane \(paneID.rawValue) is windowed")
-        return .none
-      }
       activateGroup(&state, groupID: groupID)
     }
     // Mirror toggleSplitZoom: zooming a lone leaf is meaningless, and the
