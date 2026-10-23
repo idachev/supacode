@@ -273,6 +273,75 @@ struct AppFeatureRecentTerminalsTests {
     await store.receive(\.delegate.selectTerminalTab)
   }
 
+  // MARK: - Splits in Each Tab.
+
+  @Test(.dependency(\.defaultAppStorage, .inMemory)) func parkedGroupTabsAreListed() async {
+    let fixture = Fixture(worktreeNames: ["a"], tabsPerWorktree: [3])
+    let worktreeID = fixture.worktrees[0].id
+    let store = makeStore(fixture: fixture, selected: worktreeID)
+
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .convertMode(to: .splitPerTab)))))
+    await store.finish()
+
+    let layouts = store.state.terminals.layouts
+    // Two tabs now live in parked groups; the listing still shows all three.
+    #expect(layouts[id: worktreeID]?.layout.parkedGroups.count == 2)
+    let items = RecentTerminals.items(
+      from: store.state.repositories,
+      layouts: layouts,
+      access: [:],
+      resolveTitle: \.title,
+      isDormant: { _ in false }
+    )
+    #expect(Set(items.map(\.title)) == ["a-tab-0", "a-tab-1", "a-tab-2"])
+  }
+
+  @Test(.dependency(\.defaultAppStorage, .inMemory)) func parkedGroupTabsAreNotPrunedWhenAnotherTabCloses() async {
+    let fixture = Fixture(worktreeNames: ["a"], tabsPerWorktree: [3])
+    let worktreeID = fixture.worktrees[0].id
+    let active = fixture.tabs[0][0].id
+    let parked = [fixture.tabs[0][1].id, fixture.tabs[0][2].id]
+    @Shared(.recentTerminalTabAccess) var access
+    $access.withLock {
+      $0 = [
+        active.rawValue.uuidString: 1, parked[0].rawValue.uuidString: 2, parked[1].rawValue.uuidString: 3,
+      ]
+    }
+    let store = makeStore(fixture: fixture, selected: worktreeID)
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .convertMode(to: .splitPerTab)))))
+
+    // Closing the active group's terminal prunes it, never the parked history.
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .closeTab(id: active)))))
+    await store.finish()
+
+    #expect(Set(access.keys) == Set(parked.map { $0.rawValue.uuidString }))
+  }
+
+  @Test(.dependency(\.defaultAppStorage, .inMemory)) func pickingAParkedTabSwitchesGroup() async {
+    let fixture = Fixture(worktreeNames: ["a"], tabsPerWorktree: [3])
+    let worktree = fixture.worktrees[0]
+    let target = fixture.tabs[0][2].id
+    let store = makeStore(fixture: fixture, selected: worktree.id)
+    await store.send(.terminals(.layouts(.element(id: worktree.id, action: .convertMode(to: .splitPerTab)))))
+
+    await store.send(.commandPalette(.delegate(.selectTerminalTab(worktree.id, target))))
+    await store.receive(\.repositories.selectWorktree)
+    await store.finish()
+
+    guard let layout = store.state.terminals.layouts[id: worktree.id]?.layout,
+      let targetPane = layout.pane(containingTab: target)
+    else {
+      Issue.record("Expected the target tab in the layout")
+      return
+    }
+    #expect(layout.focusedPaneID == targetPane.id)
+    #expect(layout.activeGroupID == layout.groupID(containingPane: targetPane.id))
+    #expect(layout.groupOrder.count == 3)
+    #expect(RecentTerminals.currentTabID(in: store.state.terminals.layouts[id: worktree.id]) == target)
+    @Shared(.recentTerminalTabAccess) var access
+    #expect(Set(access.keys) == [target.rawValue.uuidString])
+  }
+
   // MARK: - Helpers.
 
   private func makeStore(
