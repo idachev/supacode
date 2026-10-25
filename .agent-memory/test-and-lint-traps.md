@@ -31,6 +31,11 @@ paths:
   `RemotePathClassificationTests.resolveRemotePathTimesOutOnAHangingProbe`. Rerun the suite
   once before you look into them. A failure that repeats is real.
   **Why:** on 2026-10-22 they failed in 3 of 6 runs with no related code change.
+- **`check-isolated-deinits.sh` also scans the test bundles** and runs only after every test
+  passes, as the last step of `make test`. A main-actor class declared in a test file (even a
+  `private` stub such as an `NSView` subclass) needs `nonisolated deinit {}` too, or `make test`
+  fails after a green run. **Why:** on 2026-10-25 a fork-only test stub failed it right after
+  the upstream merge that added the check.
 - **Test files import every module whose members they use.** The test targets build with
   `MemberImportVisibility`: comparing `.ids` to an array literal or reading `.elements` on an
   `OrderedSet` / `IdentifiedArray` fails to compile ("not available due to missing import of
