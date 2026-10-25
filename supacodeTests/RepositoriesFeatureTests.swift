@@ -3143,6 +3143,33 @@ struct RepositoriesFeatureTests {
     #expect(store.state.sidebarGrouping.bucketsByRepository[repository.id]?[.pinned] == [main.id])
   }
 
+  @Test(.dependencies) func requestArchiveWorktreeOmitsTheChordWhenArchivedWorktreesIsUnbound() async {
+    let worktree = makeWorktree(id: "/tmp/wt", name: "owl")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global.shortcutOverrides = [.archivedWorktrees: .disabled] }
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    }
+
+    let expectedAlert = AlertState<RepositoriesFeature.Alert> {
+      TextState("Archive worktree?")
+    } actions: {
+      ButtonState(role: .destructive, action: .confirmArchiveWorktree(worktree.id, repository.id)) {
+        TextState("Archive worktree")
+      }
+      ButtonState(role: .cancel) {
+        TextState("Cancel")
+      }
+    } message: {
+      TextState("You can find \(worktree.name) later in Menu Bar > Worktrees > Archived Worktrees.")
+    }
+
+    await store.send(.requestArchiveWorktree(worktree.id, repository.id)) {
+      $0.alert = expectedAlert
+    }
+  }
+
   @Test func folderPinUnpinFlowsThroughBucketMachinery() async {
     // Folders use the same `pinWorktree` / `unpinWorktree` actions as git
     // worktrees. The two invariants this test locks:
@@ -4328,6 +4355,38 @@ struct RepositoriesFeatureTests {
       TextState(
         "You can find them later in Menu Bar > Worktrees > Archived Worktrees (\(archivedDisplay))."
       )
+    }
+
+    await store.send(.requestArchiveWorktrees(targets)) {
+      $0.alert = expectedAlert
+    }
+  }
+
+  @Test(.dependencies) func requestArchiveWorktreesOmitsTheChordWhenArchivedWorktreesIsUnbound() async {
+    let worktree1 = makeWorktree(id: "/tmp/repo/wt1", name: "owl", repoRoot: "/tmp/repo")
+    let worktree2 = makeWorktree(id: "/tmp/repo/wt2", name: "hawk", repoRoot: "/tmp/repo")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree1, worktree2])
+    let targets = [
+      RepositoriesFeature.ArchiveWorktreeTarget(worktreeID: worktree1.id, repositoryID: repository.id),
+      RepositoriesFeature.ArchiveWorktreeTarget(worktreeID: worktree2.id, repositoryID: repository.id),
+    ]
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global.shortcutOverrides = [.archivedWorktrees: .disabled] }
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    }
+
+    let expectedAlert = AlertState<RepositoriesFeature.Alert> {
+      TextState("Archive 2 worktrees?")
+    } actions: {
+      ButtonState(role: .destructive, action: .confirmArchiveWorktrees(targets)) {
+        TextState("Archive 2 worktrees")
+      }
+      ButtonState(role: .cancel) {
+        TextState("Cancel")
+      }
+    } message: {
+      TextState("You can find them later in Menu Bar > Worktrees > Archived Worktrees.")
     }
 
     await store.send(.requestArchiveWorktrees(targets)) {

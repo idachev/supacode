@@ -87,6 +87,8 @@ struct WorktreeTerminalManagerAckTests {
       iterator = manager.eventStream().makeAsyncIterator()
     }
 
+    nonisolated deinit {}
+
     func next(_ count: Int) async -> [TerminalClient.Event] {
       var events: [TerminalClient.Event] = []
       while events.count < count, let event = await iterator.next() {

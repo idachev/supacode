@@ -29,62 +29,59 @@ struct SidebarCommands: Commands {
         toggleLeftSidebarAction?()
       }
       .appKeyboardShortcut(toggleLeftSidebar)
-      .help("Toggle Left Sidebar (\(toggleLeftSidebar?.display ?? "none"))")
+      .help(AppShortcut.helpText("Toggle Left Sidebar", shortcut: toggleLeftSidebar))
       .disabled(toggleLeftSidebarAction?.isEnabled != true)
       Button("Reveal in Sidebar") {
         revealInSidebarAction?()
       }
       .appKeyboardShortcut(revealInSidebar)
-      .help("Reveal in Sidebar (\(revealInSidebar?.display ?? "none"))")
+      .help(AppShortcut.helpText("Reveal in Sidebar", shortcut: revealInSidebar))
       .disabled(revealInSidebarAction?.isEnabled != true)
-      Section {
-        Button("Expand All", systemImage: "chevron.down") {
-          expandAllSidebarGroupsAction?()
-        }
-        .appKeyboardShortcut(expandAll)
-        .help("Expand all sidebar groups (\(expandAll?.display ?? "none"))")
-        .disabled(expandAllSidebarGroupsAction?.isEnabled != true)
-        Button("Collapse All", systemImage: "chevron.right") {
-          collapseAllSidebarGroupsAction?()
-        }
-        .appKeyboardShortcut(collapseAll)
-        .help("Collapse all sidebar groups (\(collapseAll?.display ?? "none"))")
-        .disabled(collapseAllSidebarGroupsAction?.isEnabled != true)
+      Divider()
+      Button("Expand All", systemImage: "chevron.down") {
+        expandAllSidebarGroupsAction?()
       }
-      Section {
-        Button("Toggle Pull Request Inspector", systemImage: "arrow.trianglehead.branch") {
-          toggleInspectorPaneAction?(.git)
-        }
-        .appKeyboardShortcut(togglePullRequestInspector)
-        .help("Toggle Pull Request Inspector (\(togglePullRequestInspector?.display ?? "none"))")
-        .disabled(toggleInspectorPaneAction?.isEnabled != true)
-        Button("Toggle Files Inspector", systemImage: "list.bullet") {
-          toggleInspectorPaneAction?(.files)
-        }
-        .appKeyboardShortcut(toggleFilesInspector)
-        .help("Toggle Files Inspector (\(toggleFilesInspector?.display ?? "none"))")
-        .disabled(toggleInspectorPaneAction?.isEnabled != true)
-        Button("Toggle Notifications Inspector", systemImage: "bell") {
-          toggleInspectorPaneAction?(.notifications)
-        }
-        .appKeyboardShortcut(toggleNotificationsInspector)
-        .help("Toggle Notifications Inspector (\(toggleNotificationsInspector?.display ?? "none"))")
-        .disabled(toggleInspectorPaneAction?.isEnabled != true)
+      .appKeyboardShortcut(expandAll)
+      .help(AppShortcut.helpText("Expand all sidebar groups", shortcut: expandAll))
+      .disabled(expandAllSidebarGroupsAction?.isEnabled != true)
+      Button("Collapse All", systemImage: "chevron.right") {
+        collapseAllSidebarGroupsAction?()
       }
-      Section {
-        Menu("Group Relevant Sidebar Rows") {
-          Toggle("Group Pinned Rows", isOn: Binding($groupPinnedRows))
-          Toggle("Group Active Rows", isOn: Binding($groupActiveRows))
-        }
-        Picker("Sort Sidebar Sections", selection: Binding($sectionSort)) {
-          ForEach(SidebarSectionSort.allCases) { mode in
-            Text(mode.menuTitle).tag(mode)
-          }
-        }
-        .help("Order sidebar folders and repositories")
-        Toggle("Nest Worktrees by Branch", isOn: Binding($nestWorktreesByBranch))
-        Toggle("Hide Worktree Name on Match", isOn: Binding($hideSubtitleOnMatch))
+      .appKeyboardShortcut(collapseAll)
+      .help(AppShortcut.helpText("Collapse all sidebar groups", shortcut: collapseAll))
+      .disabled(collapseAllSidebarGroupsAction?.isEnabled != true)
+      Divider()
+      Button("Toggle Pull Request Inspector", systemImage: "arrow.trianglehead.branch") {
+        toggleInspectorPaneAction?(.git)
       }
+      .appKeyboardShortcut(togglePullRequestInspector)
+      .help(AppShortcut.helpText("Toggle Pull Request Inspector", shortcut: togglePullRequestInspector))
+      .disabled(toggleInspectorPaneAction?.isEnabled != true)
+      Button("Toggle Files Inspector", systemImage: "list.bullet") {
+        toggleInspectorPaneAction?(.files)
+      }
+      .appKeyboardShortcut(toggleFilesInspector)
+      .help(AppShortcut.helpText("Toggle Files Inspector", shortcut: toggleFilesInspector))
+      .disabled(toggleInspectorPaneAction?.isEnabled != true)
+      Button("Toggle Notifications Inspector", systemImage: "bell") {
+        toggleInspectorPaneAction?(.notifications)
+      }
+      .appKeyboardShortcut(toggleNotificationsInspector)
+      .help(AppShortcut.helpText("Toggle Notifications Inspector", shortcut: toggleNotificationsInspector))
+      .disabled(toggleInspectorPaneAction?.isEnabled != true)
+      Divider()
+      Menu("Group Relevant Sidebar Rows") {
+        Toggle("Group Pinned Rows", isOn: Binding($groupPinnedRows))
+        Toggle("Group Active Rows", isOn: Binding($groupActiveRows))
+      }
+      Picker("Sort Sidebar Sections", selection: Binding($sectionSort)) {
+        ForEach(SidebarSectionSort.allCases) { mode in
+          Text(mode.menuTitle).tag(mode)
+        }
+      }
+      .help("Order sidebar folders and repositories")
+      Toggle("Nest Worktrees by Branch", isOn: Binding($nestWorktreesByBranch))
+      Toggle("Hide Worktree Name on Match", isOn: Binding($hideSubtitleOnMatch))
     }
   }
 }

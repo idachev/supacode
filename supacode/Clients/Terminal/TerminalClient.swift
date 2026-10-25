@@ -2,7 +2,7 @@ import ComposableArchitecture
 import Foundation
 import SupacodeSettingsShared
 
-struct TerminalClient {
+nonisolated struct TerminalClient: Sendable {
   var send: @MainActor @Sendable (Command) -> Void
   var events: @MainActor @Sendable () -> AsyncStream<Event>
   var tabExists: @MainActor @Sendable (Worktree.ID, TabID) -> Bool
@@ -168,7 +168,7 @@ struct TerminalClient {
   }
 }
 
-extension TerminalClient: DependencyKey {
+nonisolated extension TerminalClient: DependencyKey {
   static let liveValue = TerminalClient(
     send: { _ in fatalError("TerminalClient.send not configured") },
     events: { fatalError("TerminalClient.events not configured") },
@@ -216,7 +216,7 @@ extension TerminalClient: DependencyKey {
   )
 }
 
-extension DependencyValues {
+nonisolated extension DependencyValues {
   var terminalClient: TerminalClient {
     get { self[TerminalClient.self] }
     set { self[TerminalClient.self] = newValue }

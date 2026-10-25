@@ -283,6 +283,7 @@ public struct SettingsFeature {
     case repositoryGroupsChanged(RepositoryGroup.Mutation)
     case addGlobalScript
     case removeGlobalScript(ScriptDefinition.ID)
+    case licenseDeactivationRequested
     case alert(PresentationAction<Alert>)
     case delegate(Delegate)
     case binding(BindingAction<State>)
@@ -293,11 +294,13 @@ public struct SettingsFeature {
     case openSystemNotificationSettings
     case confirmAutoDeleteDaysChange(AutoDeletePeriod)
     case confirmRemoveGlobalScript(ScriptDefinition.ID)
+    case confirmLicenseDeactivation
   }
 
   @CasePathable
   public enum Delegate: Equatable {
     case settingsChanged(GlobalSettings)
+    case deactivateLicense
   }
 
   @Dependency(AnalyticsClient.self) private var analyticsClient
@@ -358,11 +361,10 @@ public struct SettingsFeature {
           await withTaskGroup(of: (AgentInstallTarget, Result<AgentIntegrationState, Error>).self) { group in
             for target in targets {
               group.addTask {
-                do {
-                  return (target, .success(try await agentIntegrationClient.state(target)))
-                } catch {
-                  return (target, .failure(error))
-                }
+                // Build the result first: inlining the throwing await into the
+                // returned tuple miscompiles under -O, zeroing `target`.
+                let probe = await Result { try await agentIntegrationClient.state(target) }
+                return (target, probe)
               }
             }
             for await (target, probe) in group {
@@ -958,6 +960,25 @@ public struct SettingsFeature {
         @Shared(.settingsFile) var settingsFile
         $settingsFile.withLock { $0.updateRepositoryGroups(mutation) }
         return .none
+      case .licenseDeactivationRequested:
+        guard state.alert == nil else { return .none }
+        state.alert = AlertState {
+          TextState("Deactivate this Mac?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmLicenseDeactivation) {
+            TextState("Deactivate")
+          }
+          ButtonState(role: .cancel, action: .dismiss) {
+            TextState("Cancel")
+          }
+        } message: {
+          TextState("You can activate your license again on this Mac or another one with your key.")
+        }
+        return .none
+
+      case .alert(.presented(.confirmLicenseDeactivation)):
+        state.alert = nil
+        return .send(.delegate(.deactivateLicense))
 
       case .repositoriesChanged(let repositories):
         state.repositorySummaries =

@@ -21,6 +21,12 @@ struct KeyboardShortcutsSettingsView: View {
   @State private var searchText = ""
   @State private var showRestoreConfirmation = false
   @State private var expandedGroups: Set<String> = Set(Self.visibleGroups.map(\.id))
+  // Display strings follow the keyboard layout, so the snapshot refreshes when it changes.
+  @State private var menuReserved: [String: String] = [:]
+
+  private static let keyboardLayoutChanges = NotificationCenter.default.publisher(
+    for: NSTextInputContext.keyboardSelectionDidChangeNotification
+  )
 
   // Non-customizable shortcuts are hardcoded chords; they get no row at all.
   private static let visibleGroups: [AppShortcutGroup] = AppShortcuts.groups.compactMap { group in
@@ -62,12 +68,13 @@ struct KeyboardShortcutsSettingsView: View {
     !store.shortcutOverrides.isEmpty
   }
 
-  // No terminal-conflict pass here: every effective shortcut's chord is
-  // unbound inside Ghostty via the app's keybind config lines, so a terminal
-  // "conflict" is resolved in the app's favor by construction. The recorder
-  // still flags terminal chords at record time.
+  // No terminal pass: Ghostty unbinds every terminal-reachable chord.
   private var warningsByID: [AppShortcutID: String] {
-    AppShortcuts.conflictWarnings(from: store.shortcutOverrides)
+    AppShortcuts.conflictWarnings(from: store.shortcutOverrides, menuReserved: menuReserved)
+  }
+
+  private func reloadMenuReserved() {
+    menuReserved = AppShortcutOverride.menuReservedShortcuts(in: NSApp.mainMenu)
   }
 
   var body: some View {
@@ -77,7 +84,7 @@ struct KeyboardShortcutsSettingsView: View {
         NameCell(item: item, overrides: store.shortcutOverrides)
       }
       TableColumn("Hotkey") { item in
-        HotkeyCell(item: item, store: store, warning: warnings)
+        HotkeyCell(item: item, store: store, warning: warnings, menuReserved: menuReserved)
       }
       .width(min: 90, ideal: 120, max: 200)
       TableColumn("Enabled") { item in
@@ -88,16 +95,7 @@ struct KeyboardShortcutsSettingsView: View {
       ForEach(tableItems) { group in
         DisclosureTableRow(
           group,
-          isExpanded: Binding(
-            get: { expandedGroups.contains(group.id) },
-            set: { expanded in
-              if expanded {
-                expandedGroups.insert(group.id)
-              } else {
-                expandedGroups.remove(group.id)
-              }
-            }
-          )
+          isExpanded: $expandedGroups[contains: group.id]
         ) {
           if let children = group.children {
             ForEach(children) { child in
@@ -111,6 +109,11 @@ struct KeyboardShortcutsSettingsView: View {
     .padding(.leading, -6)
     .searchable(text: $searchText, placement: .toolbar, prompt: "Search...")
     .navigationTitle("Shortcuts")
+    .onAppear { reloadMenuReserved() }
+    .onReceive(Self.keyboardLayoutChanges) { _ in
+      // Hop so the key-stroke cache clears on the same notification first.
+      Task { @MainActor in reloadMenuReserved() }
+    }
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button {
@@ -158,6 +161,7 @@ private struct HotkeyCell: View {
   let item: ShortcutTableItem
   let store: StoreOf<SettingsFeature>
   let warning: [AppShortcutID: String]
+  let menuReserved: [String: String]
 
   var body: some View {
     switch item.kind {
@@ -175,8 +179,7 @@ private struct HotkeyCell: View {
         onReset: {
           store.send(.updateShortcut(id: shortcut.id, override: nil))
         },
-        // No terminal check: the app unbinds every recorded chord inside
-        // Ghostty, so a terminal binding is claimable, not a conflict.
+        // No terminal check: Ghostty unbinds reachable chords; sidebar-only ones fire only from the sidebar.
         conflictChecker: { proposed in
           let proposedDisplay = proposed.displayString
           // The hardcoded close chord has no row of its own to explain a
@@ -187,6 +190,10 @@ private struct HotkeyCell: View {
           // Check system-reserved shortcuts.
           guard !AppShortcutOverride.allReservedDisplayStrings().contains(proposedDisplay) else {
             return "System"
+          }
+          // Built-in menu items (Hide Others, Undo) keep their chords.
+          if let builtIn = menuReserved[proposedDisplay] {
+            return builtIn
           }
           // Check other app shortcuts.
           let overrides = store.shortcutOverrides
@@ -212,24 +219,25 @@ private struct EnabledCell: View {
       if let group = AppShortcuts.groups.first(where: { $0.category == category }) {
         MixedStateCheckbox(
           state: groupCheckboxState(for: group),
+          accessibilityLabel: category.displayName,
           onToggle: { enabled in
             for shortcut in group.shortcuts where shortcut.isCustomizable {
               store.send(.toggleShortcutEnabled(id: shortcut.id, enabled: enabled))
             }
           }
-        ).frame(maxWidth: .infinity, alignment: .center)
+        )
+        .frame(maxWidth: .infinity, alignment: .center)
       }
     case .shortcut(let shortcut):
-      Toggle(
-        "",
-        isOn: Binding(
-          get: { store.shortcutOverrides[shortcut.id]?.isEnabled ?? shortcut.isEnabledByDefault },
-          set: { store.send(.toggleShortcutEnabled(id: shortcut.id, enabled: $0)) }
-        )
+      let isEnabled = store.shortcutOverrides[shortcut.id]?.isEnabled ?? shortcut.isEnabledByDefault
+      MixedStateCheckbox(
+        state: isEnabled ? .checked : .unchecked,
+        accessibilityLabel: shortcut.displayName,
+        onToggle: { enabled in
+          store.send(.toggleShortcutEnabled(id: shortcut.id, enabled: enabled))
+        }
       )
       .frame(maxWidth: .infinity, alignment: .center)
-      .toggleStyle(.checkbox)
-      .labelsHidden()
     }
   }
 
@@ -242,5 +250,19 @@ private struct EnabledCell: View {
     if enabledCount == customizable.count { return .checked }
     if enabledCount == 0 { return .unchecked }
     return .mixed
+  }
+}
+
+extension Set {
+  // Membership as a writable key path, so `$set[contains: element]` is a stable binding.
+  fileprivate subscript(contains element: Element) -> Bool {
+    get { contains(element) }
+    set {
+      if newValue {
+        insert(element)
+      } else {
+        remove(element)
+      }
+    }
   }
 }

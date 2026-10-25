@@ -616,6 +616,8 @@ private struct SidebarRightArrowMonitor: NSViewRepresentable {
     private var handle: () -> Bool = { false }
     private var monitor: Any?
 
+    nonisolated deinit {}
+
     func update(isSidebarFocused: Bool, handle: @escaping () -> Bool) {
       self.isSidebarFocused = isSidebarFocused
       self.handle = handle

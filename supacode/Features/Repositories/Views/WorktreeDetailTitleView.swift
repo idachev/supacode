@@ -78,6 +78,8 @@ final class SchemeHostingView<Content: View>: NSHostingView<Content> {
     }
   }
 
+  nonisolated deinit {}
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     pinToolbarHostAppearance()
@@ -190,8 +192,14 @@ private struct RepositoryOwnerAvatar: View {
   @State private var avatarURL: URL?
   @Dependency(GitClientDependency.self) private var gitClient
 
+  init(rootURL: URL) {
+    self.rootURL = rootURL
+    _avatarURL = State(initialValue: GitHubOwnerAvatar.cachedURL(for: rootURL))
+  }
+
   var body: some View {
     KFImage(avatarURL)
+      .startLoadingBeforeViewAppear()
       .placeholder {
         Image(systemName: "arrow.trianglehead.branch")
           .resizable()
@@ -206,15 +214,33 @@ private struct RepositoryOwnerAvatar: View {
       .shadow(radius: 1, y: 0.5)
       .accessibilityHidden(true)
       .task(id: rootURL) {
+        avatarURL = GitHubOwnerAvatar.cachedURL(for: rootURL)
         avatarURL = await GitHubOwnerAvatar.url(for: rootURL, gitClient: gitClient)
       }
   }
 }
 
 enum GitHubOwnerAvatar {
+  // Last resolved avatar per repository root, so a remounted label skips the placeholder.
+  private static var resolvedURLs: [URL: URL] = [:]
+
+  static func cachedURL(for rootURL: URL) -> URL? {
+    resolvedURLs[rootURL]
+  }
+
+  /// Resolves the owner avatar, keeping the cached one when the lookup is cancelled.
   static func url(for rootURL: URL, gitClient: GitClientDependency) async -> URL? {
-    guard let info = await gitClient.remoteInfo(rootURL) else { return nil }
-    return URL(string: "https://github.com/\(info.owner).png?size=64")
+    guard let info = await gitClient.remoteInfo(rootURL) else {
+      // `remoteInfo` reports cancellation as nil; only a completed miss evicts the cached URL.
+      guard Task.isCancelled else {
+        resolvedURLs[rootURL] = nil
+        return nil
+      }
+      return resolvedURLs[rootURL]
+    }
+    let url = URL(string: "https://github.com/\(info.owner).png?size=64")
+    resolvedURLs[rootURL] = url
+    return url
   }
 }
 

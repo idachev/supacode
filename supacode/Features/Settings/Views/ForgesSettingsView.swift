@@ -22,6 +22,8 @@ final class GithubSettingsViewModel {
   @ObservationIgnored
   @Dependency(GithubCLIClient.self) private var githubCLI
 
+  nonisolated deinit {}
+
   func load() async {
     state = .loading
     let isAvailable = await githubIntegration.isAvailable()
@@ -67,6 +69,8 @@ final class GitLabSettingsViewModel {
   @ObservationIgnored
   @Dependency(GitLabCLIClient.self) private var gitlabCLI
 
+  nonisolated deinit {}
+
   func load() async {
     state = .loading
     guard await gitlabCLI.isAvailable() else {
@@ -90,7 +94,7 @@ private struct ForgeStatusLine: View {
   }
 }
 
-extension ForgeCapabilities {
+nonisolated extension ForgeCapabilities {
   fileprivate var features: [FeatureCapability] {
     [
       FeatureCapability(name: "Sidebar \(vocabulary.abbreviation) icons", isSupported: true),
@@ -103,6 +107,8 @@ extension ForgeCapabilities {
       FeatureCapability(
         name: "Re-run failed \(vocabulary.ciNoun.lowercased())", isSupported: canRerunChecks),
       FeatureCapability(name: "Copy failure logs", isSupported: canCopyCIFailureLogs),
+      FeatureCapability(name: "Review status", isSupported: reviewStatusSupport != nil),
+      FeatureCapability(name: "Full approval status", isSupported: reviewStatusSupport == .full),
     ]
   }
 }

@@ -73,7 +73,7 @@ you can bind an action to a hotkey or fire it from another app.
 - macOS 26.0+
 - [mise](https://mise.jdx.dev/) for the pinned toolchain. Add `~/.local/bin` to your `PATH`.
 - git submodules: `git submodule update --init --recursive`
-- **Xcode 26 or 27**, plus a macOS SDK <= 26.3 for Zig (see [below](#building-on-macos-264-tahoe)).
+- Xcode, with its license accepted and first launch complete.
 
 ## Quick start
 
@@ -85,7 +85,7 @@ make doctor    # check every build prerequisite and print fixes for anything mis
 make run-app   # build and launch the Debug app
 ```
 
-`make doctor` verifies mise, submodules, a Zig-linkable Xcode, the Metal Toolchain, and the
+`make doctor` verifies mise, submodules, Xcode, the Metal Toolchain, and the
 pinned tools, and prints the exact command to fix anything that is missing. The build targets
 run it automatically as a quiet preflight.
 
@@ -97,30 +97,15 @@ make build-app                   # build the macOS app (Debug)
 make run-app                     # build and launch
 ```
 
-### Building on macOS 26.4+ (Tahoe)
-
-GhosttyKit uses Zig 0.15.2, whose linker cannot use the newer SDK's arm64 stubs.
-Xcode 26.3 includes a compatible macOS 26.2 SDK and works directly.
-
-Xcode 27 can also build the app when a compatible older SDK is installed.
-The build automatically checks the Command Line Tools SDKs for a fallback.
-Only Zig uses that SDK; Swift and Metal continue using the selected Xcode.
-To use a compatible SDK at another path:
+On a fresh Xcode, finish its setup once:
 
 ```bash
-SUPACODE_ZIG_SDKROOT=/path/to/MacOSX26.2.sdk make build-app
+sudo xcodebuild -license accept
+sudo xcodebuild -runFirstLaunch
+sudo xcodebuild -downloadComponent MetalToolchain
 ```
 
-The build does not change the global Xcode selection or modify installed SDKs.
-Finish first launch and install the Metal Toolchain for the selected Xcode:
-
-```bash
-sudo DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -license accept
-sudo DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -runFirstLaunch
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain
-```
-
-See [AGENTS.md](AGENTS.md) for the full rationale and the rest of the architecture.
+See [AGENTS.md](AGENTS.md) for the rest of the architecture.
 
 ## Development
 

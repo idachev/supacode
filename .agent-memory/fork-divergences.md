@@ -30,6 +30,11 @@ open layouts live and closes no terminal, and there is no separate "close the wh
 tab" command. Details and merge rules: the "Terminal Layout" section of `docs/fork.md` and
 [[split-per-tab-invariants]].
 
+Settled shortcut decision (2026-10-25): keep upstream #919. Archive Worktree (⌘⌫) and Delete
+Worktree (⇧⌘⌫) are sidebar-only (`isReachableFromTerminal == false`); from a focused terminal
+the chord goes to the shell. Do not make them terminal-reachable again: the owner chose this so
+typing never archives a worktree by accident.
+
 How to diverge (owner's decision): put a fork switch behind a build setting and keep upstream's
 code, so merges stay clean; do not delete upstream code. Document fork-only behaviour in
 `docs/fork.md`, never in `README.md`, because any `README.md` edit conflicts on the next merge.

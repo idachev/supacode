@@ -22,7 +22,7 @@ public nonisolated struct AgentIntegrationClient: Sendable {
   }
 }
 
-extension AgentIntegrationClient: DependencyKey {
+nonisolated extension AgentIntegrationClient: DependencyKey {
   public static let liveValue = Self(
     state: { target in
       try AgentIntegrationFactory.make(
@@ -48,8 +48,8 @@ extension AgentIntegrationClient: DependencyKey {
   )
 }
 
-extension DependencyValues {
-  public nonisolated var agentIntegrationClient: AgentIntegrationClient {
+nonisolated extension DependencyValues {
+  public var agentIntegrationClient: AgentIntegrationClient {
     get { self[AgentIntegrationClient.self] }
     set { self[AgentIntegrationClient.self] = newValue }
   }

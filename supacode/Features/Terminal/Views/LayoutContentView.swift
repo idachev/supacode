@@ -23,8 +23,6 @@ struct LayoutContentView: View {
   // NSHostingView boundary, which environment objects do not cross.
   @Environment(GhosttyShortcutManager.self) private var ghosttyShortcuts
   @Environment(CommandKeyObserver.self) private var commandKeyObserver
-  /// One drag source per worktree layout, stable across rebuilds.
-  @State private var dragModel = PaneTabDragModel()
 
   var body: some View {
     // Body reads register the observation; the AppKit container below only
@@ -39,8 +37,7 @@ struct LayoutContentView: View {
         unfocusedOverlay: unfocusedOverlay,
         surfaceState: surfaceState,
         isLifecycleBusy: isLifecycleBusy,
-        showWindowedPane: showWindowedPane,
-        dragModel: dragModel
+        showWindowedPane: showWindowedPane
       ),
       ghosttyShortcuts: ghosttyShortcuts,
       commandKeyObserver: commandKeyObserver,
@@ -63,8 +60,8 @@ struct PaneRenderContext {
   var surfaceState: (UUID) -> WorktreeSurfaceState? = { _ in nil }
   var isLifecycleBusy = false
   var showWindowedPane: (PaneID) -> Void = { _ in }
-  /// Shared tab-drag source, so a pane's split zones can gray out invalid drops.
-  var dragModel = PaneTabDragModel()
+  /// App-wide tab-drag state; its source decides whether the split zones mount.
+  var dragModel = PaneTabDragModel.shared
 }
 
 /// Renders the pane tree itself: the split structure over panes, each pane a
@@ -131,6 +128,8 @@ final class LayoutAXContainerView: NSView {
   private var panes: [NSView] = []
   private var panesLabel = "Terminal split: 0 panes"
   private var lastPaneIDs: [ObjectIdentifier] = []
+
+  nonisolated deinit {}
 
   func update(rootView: LayoutPaneTreeView, panes: [NSView]) {
     if let hostingView {
@@ -330,8 +329,7 @@ struct PaneStripView: View {
   var surfaceState: (UUID) -> WorktreeSurfaceState? = { _ in nil }
   var isLifecycleBusy = false
   var context: Context = .embedded
-  /// Shared tab-drag source; nil in a pane window, where there are no drop zones.
-  var dragModel: PaneTabDragModel?
+  let dragModel: PaneTabDragModel
 
   @Shared(.settingsFile) private var settingsFile
 
@@ -412,7 +410,7 @@ struct PaneStripView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       // On the whole content region, so a dormant pane still takes drops.
       .overlay {
-        if context == .embedded, showsTabStrip, let dragModel {
+        if context == .embedded, showsTabStrip, dragModel.isDraggingTab {
           PaneSplitDropZones(pane: pane, store: store, dragModel: dragModel)
         }
       }
@@ -486,6 +484,8 @@ private final class HoverFocusSensorView: NSView {
   @available(*, unavailable)
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+  nonisolated deinit {}
+
   // Never claim the pointer: clicks, drags, and selection reach the surface
   // beneath. The tracking area still delivers hover events.
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -546,10 +546,9 @@ private struct WindowedPanePlaceholderView: View {
   }
 }
 
-/// Edge drop zones over a pane's content: dropping a dragged tab on an edge
-/// splits the pane toward it, previewing the half the new pane will occupy.
-/// The zones register only the private tab-drag payload, so file drags still
-/// reach the terminal beneath.
+/// Edge drop zones that split the pane toward the edge a tab is dropped on.
+/// Mounted only during a tab drag: each zone's AppKit drop view registers
+/// `public.item`, so an idle one would take file drops from the terminal.
 private struct PaneSplitDropZones: View {
   let pane: Pane
   let store: StoreOf<LayoutFeature>
@@ -558,26 +557,18 @@ private struct PaneSplitDropZones: View {
   @State private var targetedDirection: SplitTree<PaneID>.NewDirection?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// The pane's shared divider, if any: the edge the full-span band sits
-  /// against and the two perpendicular directions it offers.
-  private struct SpanBand {
-    let alignment: Alignment
-    let isVertical: Bool
-    let near: SplitTree<PaneID>.NewDirection
-    let far: SplitTree<PaneID>.NewDirection
-  }
-
-  private var spanBand: SpanBand? {
+  private var spanBand: PaneSpanBand? {
     guard let info = store.layout.tree.parentSplitInfo(ofLeaf: pane.id) else { return nil }
     switch info.axis {
     case .horizontal:
       // Side-by-side: divider is vertical, full-span is top / down, and the
       // band is a vertical strip against the divider edge.
-      return SpanBand(alignment: info.isLeadingChild ? .trailing : .leading, isVertical: true, near: .top, far: .down)
+      return PaneSpanBand(
+        alignment: info.isLeadingChild ? .trailing : .leading, isVertical: true, near: .top, far: .down)
     case .vertical:
       // Stacked: divider is horizontal, full-span is left / right, band is a
       // horizontal strip against the divider edge.
-      return SpanBand(alignment: info.isLeadingChild ? .bottom : .top, isVertical: false, near: .left, far: .right)
+      return PaneSpanBand(alignment: info.isLeadingChild ? .bottom : .top, isVertical: false, near: .left, far: .right)
     }
   }
 
@@ -597,7 +588,11 @@ private struct PaneSplitDropZones: View {
     // The divider band sits above the per-pane zones so it wins near the shared
     // edge; away from the divider the per-pane split still takes. The full-span
     // preview is painted by the parent split, which reaches across both panes.
-    .overlay { spanZones }
+    .overlay {
+      if let spanBand {
+        PaneSpanDropZones(band: spanBand, pane: pane, store: store, dragModel: dragModel)
+      }
+    }
     .overlay {
       if let targetedDirection {
         PaneSplitDropPreview(direction: targetedDirection).transition(.opacity)
@@ -605,28 +600,41 @@ private struct PaneSplitDropZones: View {
     }
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: targetedDirection)
   }
+}
 
-  @ViewBuilder private var spanZones: some View {
-    if let band = spanBand {
-      let near = PaneSpanDropZone(
-        direction: band.near, pane: pane, store: store, dragModel: dragModel)
-      let far = PaneSpanDropZone(
-        direction: band.far, pane: pane, store: store, dragModel: dragModel)
-      Group {
-        if band.isVertical {
-          VStack(spacing: 0) {
-            near
-            far
-          }.frame(width: PaneSplitDropMetrics.dividerBand)
-        } else {
-          HStack(spacing: 0) {
-            near
-            far
-          }.frame(height: PaneSplitDropMetrics.dividerBand)
-        }
+/// The pane's shared divider: the edge the full-span band sits against and the
+/// two perpendicular directions it offers.
+private struct PaneSpanBand {
+  let alignment: Alignment
+  let isVertical: Bool
+  let near: SplitTree<PaneID>.NewDirection
+  let far: SplitTree<PaneID>.NewDirection
+}
+
+/// The pair of full-span drop zones along a pane's shared divider.
+private struct PaneSpanDropZones: View {
+  let band: PaneSpanBand
+  let pane: Pane
+  let store: StoreOf<LayoutFeature>
+  let dragModel: PaneTabDragModel
+
+  var body: some View {
+    let near = PaneSpanDropZone(direction: band.near, pane: pane, store: store, dragModel: dragModel)
+    let far = PaneSpanDropZone(direction: band.far, pane: pane, store: store, dragModel: dragModel)
+    Group {
+      if band.isVertical {
+        VStack(spacing: 0) {
+          near
+          far
+        }.frame(width: PaneSplitDropMetrics.dividerBand)
+      } else {
+        HStack(spacing: 0) {
+          near
+          far
+        }.frame(height: PaneSplitDropMetrics.dividerBand)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: band.alignment)
     }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: band.alignment)
   }
 }
 
@@ -651,9 +659,8 @@ private struct PaneSplitDropZone: View {
       .dropDestination(for: PaneTabDragPayload.self) { items, _ in
         PaneTabDrag.performSplitDrop(items, anchor: pane, direction: direction, store: store, dragModel: dragModel)
       } isTargeted: { isTargeted in
-        // Only preview a drop the pane would actually take, so hovering a tab
-        // over its own single-tab pane does not light up.
-        if isTargeted, PaneTabDrag.canSplitDrop(sourceTabID: dragModel.sourceTabID, anchor: pane, store: store) {
+        // Only preview a drop the pane would actually take.
+        if isTargeted, PaneTabDrag.canSplitDrop(sourceTabID: dragModel.sourceTabID, anchor: pane, in: store.layout) {
           targeted = direction
         } else if targeted == direction {
           targeted = nil
@@ -725,7 +732,7 @@ private struct PaneSpanDropZone: View {
           items, anchor: pane, direction: direction, store: store, dragModel: dragModel)
       } isTargeted: { isTargeted in
         let target = PaneTabDragModel.SpanTarget(anchorPaneID: pane.id, direction: direction)
-        if isTargeted, PaneTabDrag.canSplitDrop(sourceTabID: dragModel.sourceTabID, anchor: pane, store: store) {
+        if isTargeted, PaneTabDrag.canSplitDrop(sourceTabID: dragModel.sourceTabID, anchor: pane, in: store.layout) {
           dragModel.spanTarget = target
         } else if dragModel.spanTarget == target {
           dragModel.spanTarget = nil
@@ -739,7 +746,35 @@ private struct PaneSpanDropZone: View {
 private struct PaneSpanDropPreview: View {
   let direction: SplitTree<PaneID>.NewDirection
 
-  private var bar: some View {
+  var body: some View {
+    switch direction {
+    case .top:
+      VStack(spacing: 0) {
+        PaneSpanDropBar().frame(height: PaneSplitDropMetrics.spanBar)
+        Color.clear
+      }
+    case .down:
+      VStack(spacing: 0) {
+        Color.clear
+        PaneSpanDropBar().frame(height: PaneSplitDropMetrics.spanBar)
+      }
+    case .left:
+      HStack(spacing: 0) {
+        PaneSpanDropBar().frame(width: PaneSplitDropMetrics.spanBar)
+        Color.clear
+      }
+    case .right:
+      HStack(spacing: 0) {
+        Color.clear
+        PaneSpanDropBar().frame(width: PaneSplitDropMetrics.spanBar)
+      }
+    }
+  }
+}
+
+/// The accent bar a full-span drop preview draws along its edge.
+private struct PaneSpanDropBar: View {
+  var body: some View {
     RoundedRectangle(cornerRadius: 4)
       .fill(Color.accentColor.opacity(0.35))
       .overlay {
@@ -747,31 +782,6 @@ private struct PaneSpanDropPreview: View {
           .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.5)
       }
       .allowsHitTesting(false)
-  }
-
-  var body: some View {
-    switch direction {
-    case .top:
-      VStack(spacing: 0) {
-        bar.frame(height: PaneSplitDropMetrics.spanBar)
-        Color.clear
-      }
-    case .down:
-      VStack(spacing: 0) {
-        Color.clear
-        bar.frame(height: PaneSplitDropMetrics.spanBar)
-      }
-    case .left:
-      HStack(spacing: 0) {
-        bar.frame(width: PaneSplitDropMetrics.spanBar)
-        Color.clear
-      }
-    case .right:
-      HStack(spacing: 0) {
-        Color.clear
-        bar.frame(width: PaneSplitDropMetrics.spanBar)
-      }
-    }
   }
 }
 
@@ -790,6 +800,8 @@ private struct ContentHostView: NSViewRepresentable {
   final class Coordinator {
     var claimedContentID: ContentID?
     var claim: UInt64 = 0
+
+    nonisolated deinit {}
   }
 
   func makeCoordinator() -> Coordinator {

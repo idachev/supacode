@@ -15,7 +15,7 @@ public nonisolated struct AnalyticsClient: Sendable {
   }
 }
 
-extension AnalyticsClient: DependencyKey {
+nonisolated extension AnalyticsClient: DependencyKey {
   public static let liveValue = AnalyticsClient(
     capture: { event, properties in
       #if !DEBUG
@@ -39,8 +39,8 @@ extension AnalyticsClient: DependencyKey {
   )
 }
 
-extension DependencyValues {
-  public nonisolated var analyticsClient: AnalyticsClient {
+nonisolated extension DependencyValues {
+  public var analyticsClient: AnalyticsClient {
     get { self[AnalyticsClient.self] }
     set { self[AnalyticsClient.self] = newValue }
   }

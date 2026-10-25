@@ -130,7 +130,7 @@ extension AppFeature.Action {
       .refreshWorktreesRequested,
       .worktreeSettingsLoaded, .openSelectedWorktree, .revealInFinder,
       .openWorktree, .openWorktreeFailed, .openFile, .openFileFromExplorer, .requestQuit,
-      .requestTerminateAllTerminalSessions, .newTerminal, .renameSelectedTerminalTab,
+      .requestTerminateAllTerminalSessions, .newTerminal, .newTerminalInWorktree, .renameSelectedTerminalTab,
       .selectTerminalTabAtIndex, .selectNextTerminalTab, .selectPreviousTerminalTab,
       .splitTerminal, .toggleWindowModeForFocusedPane, .toggleSplitZoom,
       .equalizeSplits, .focusSplit, .jumpToLatestUnread,
@@ -141,7 +141,7 @@ extension AppFeature.Action {
       .navigateSearchPrevious,
       .systemNotificationsPermissionFailed, .deeplinkReceived,
       .deeplink, .commandAckTimedOut, .deeplinkConfirmationTimedOut,
-      .deeplinkReferenceOpened, .settingsRelocationDidNotFinish, .settingsStoreUnreadable,
+      .deeplinkReferenceOpened, .settingsWindowOpened, .settingsRelocationDidNotFinish, .settingsStoreUnreadable,
       .alert, .deeplinkInputConfirmation:
       return false
     }

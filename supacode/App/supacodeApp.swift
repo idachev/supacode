@@ -48,6 +48,8 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
   private var bufferedDeeplinkURLs: [URL] = []
   private var physicalShortcutMonitor: Any?
 
+  nonisolated deinit {}
+
   func applicationWillTerminate(_ notification: Notification) {
     if let physicalShortcutMonitor {
       NSEvent.removeMonitor(physicalShortcutMonitor)

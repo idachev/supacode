@@ -20,18 +20,25 @@ nonisolated struct PaneTabDragPayload: Codable, Sendable, Transferable {
   }
 }
 
-/// Per-worktree drag state shared across sibling panes: the source tab
-/// (captured at drag start, since `.dropDestination`'s `isTargeted` has no
-/// payload access) and the full-span target the parent split paints across both
-/// its sides.
+/// App-wide tab drag state: the source tab (captured at drag start, since
+/// `.dropDestination`'s `isTargeted` has no payload access) and the full-span
+/// target the parent split paints across both its sides.
 @MainActor @Observable final class PaneTabDragModel {
+  /// One tab drag runs at a time, so every layout and pane window shares it.
+  static let shared = PaneTabDragModel()
+
   var sourceTabID: TabID?
   var spanTarget: SpanTarget?
+
+  /// Whether a tab drag is in flight.
+  var isDraggingTab: Bool { sourceTabID != nil }
 
   struct SpanTarget: Equatable {
     let anchorPaneID: PaneID
     let direction: SplitTree<PaneID>.NewDirection
   }
+
+  nonisolated deinit {}
 
   /// Records the source at drag start, clearing any target a prior drag left.
   func startDrag(from tabID: TabID) {
@@ -57,8 +64,7 @@ struct PaneTabStrip: View {
   let store: StoreOf<LayoutFeature>
   let runtime: ContentRuntime
   let surfaceState: (UUID) -> WorktreeSurfaceState?
-  /// Shared drag source, nil in a pane window; drives the split-zone graying.
-  var dragModel: PaneTabDragModel?
+  let dragModel: PaneTabDragModel
 
   @Environment(\.controlActiveState) private var controlActiveState
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -87,7 +93,7 @@ struct PaneTabStrip: View {
       // A drop on the strip body (past the tabs) appends to this pane.
       PaneTabDrag.performDrop(items, into: pane, at: pane.tabs.count, store: store, dragModel: dragModel)
     } isTargeted: {
-      isAppendDropTargeted = $0
+      isAppendDropTargeted = $0 && PaneTabDrag.canDrop(sourceTabID: dragModel.sourceTabID, in: store.layout)
     }
   }
 
@@ -296,18 +302,18 @@ enum PaneTabDrag {
   }
 
   /// Whether a split drop of the dragged tab onto `pane`'s edge would take.
-  /// A pane's only tab dropped on its own edge is refused; an unknown source
-  /// (another window) can't be proven invalid, so it stays highlightable.
-  @MainActor
-  static func canSplitDrop(
-    sourceTabID: TabID?,
-    anchor pane: Pane,
-    store: StoreOf<LayoutFeature>
-  ) -> Bool {
-    guard let sourceTabID, let sourcePane = store.layout.pane(containingTab: sourceTabID) else {
-      return true
-    }
+  /// Refuses a pane's only tab on its own edge and a tab from another worktree;
+  /// an untracked source stays allowed, since the drop itself re-checks it.
+  static func canSplitDrop(sourceTabID: TabID?, anchor pane: Pane, in layout: PaneLayout) -> Bool {
+    guard let sourceTabID else { return true }
+    guard let sourcePane = layout.pane(containingTab: sourceTabID) else { return false }
     return sourcePane.id != pane.id || sourcePane.tabs.count > 1
+  }
+
+  /// Whether the dragged tab can land in `layout`; a tab from another worktree can't.
+  static func canDrop(sourceTabID: TabID?, in layout: PaneLayout) -> Bool {
+    guard let sourceTabID else { return true }
+    return layout.pane(containingTab: sourceTabID) != nil
   }
 }
 
@@ -352,7 +358,7 @@ private struct PaneTabView: View {
   let store: StoreOf<LayoutFeature>
   let runtime: ContentRuntime
   let surfaceState: (UUID) -> WorktreeSurfaceState?
-  var dragModel: PaneTabDragModel?
+  let dragModel: PaneTabDragModel
 
   @State private var isHovering = false
   @State private var isPressing = false
@@ -449,12 +455,19 @@ private struct PaneTabView: View {
       .accessibilityValue(progressDisplay?.accessibilityValue ?? "")
       .allowsHitTesting(!isEditing)
       .draggable(PaneTabDragPayload(tabID: tab.id.rawValue)) {
-        // The preview lives for the drag's duration: capture the source on
-        // appear so the split zones can gray out drops this tab can't take, and
-        // reset on disappear so a cancelled drag leaves no stale highlight.
+        // The preview appears when the drag starts, so it records the source
+        // that mounts the split zones and lets them refuse drops this tab can't take.
         PaneTabDragPreview(title: displayTitle)
-          .onAppear { dragModel?.startDrag(from: tab.id) }
-          .onDisappear { dragModel?.reset() }
+          .onAppear { dragModel.startDrag(from: tab.id) }
+          .onDisappear { endDragIfSource() }
+      }
+      // The session end catches cancels the preview misses; a stale source would keep the zones over the terminal.
+      .onDragSessionUpdated { session in
+        switch session.phase {
+        case .ended, .dataTransferCompleted: dragModel.reset()
+        case .initial, .active: break
+        @unknown default: break
+        }
       }
     }
     .overlay {
@@ -527,6 +540,8 @@ private struct PaneTabView: View {
       guard !cancelOnExit, editingTitle != initialEditingTitle else { return }
       store.send(.renameTab(id: tab.id, title: editingTitle))
     }
+    // A tab torn down mid-drag never sees its session end, which would leave the zones up.
+    .onDisappear { endDragIfSource() }
     .zIndex(isSelected ? 2 : 0)
     .overlay {
       MiddleClickView(action: requestClose)
@@ -538,16 +553,25 @@ private struct PaneTabView: View {
       }
     }
     .dropDestination(for: PaneTabDragPayload.self) { items, _ in
-      guard let index = pane.tabs.index(id: tab.id) else { return false }
+      guard let index = pane.tabs.index(id: tab.id) else {
+        dragModel.reset()
+        return false
+      }
       return PaneTabDrag.performDrop(items, into: pane, at: index, store: store, dragModel: dragModel)
     } isTargeted: {
-      isDropTargeted = $0
+      isDropTargeted = $0 && PaneTabDrag.canDrop(sourceTabID: dragModel.sourceTabID, in: store.layout)
     }
     .contextMenu { contextMenuItems }
   }
 
   private var displayTitle: String {
     TabTitle.resolved(for: tab, runtime: runtime)
+  }
+
+  /// Ends the drag only if this tab started it, so a late teardown can't cancel a newer drag.
+  private func endDragIfSource() {
+    guard dragModel.sourceTabID == tab.id else { return }
+    dragModel.reset()
   }
 
   private var contentOpacity: Double {
@@ -982,7 +1006,7 @@ private struct PaneTabStripNewTabControl: View {
   }
 }
 
-extension TerminalSplitMenuDirection {
+nonisolated extension TerminalSplitMenuDirection {
   fileprivate var paneDirection: SplitTree<PaneID>.NewDirection {
     switch self {
     case .right: .right
@@ -1003,8 +1027,6 @@ private struct PaneTabStripAccessoryButton: View {
   @Shared(.settingsFile) private var settingsFile
 
   var body: some View {
-    let shortcut = shortcut.effective(from: settingsFile.global.shortcutOverrides)?.display
-
     Button(action: action) {
       Label(title, systemImage: systemImage)
         .labelStyle(.iconOnly)
@@ -1013,12 +1035,7 @@ private struct PaneTabStripAccessoryButton: View {
     }
     .buttonStyle(.plain)
     .foregroundStyle(isProminent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-    .help(helpText(shortcut: shortcut))
-  }
-
-  private func helpText(shortcut: String?) -> String {
-    guard let shortcut else { return title }
-    return "\(title) (\(shortcut))"
+    .help(AppShortcut.helpText(title, shortcut: shortcut.effective(from: settingsFile.global.shortcutOverrides)))
   }
 }
 
@@ -1044,6 +1061,8 @@ private final class MiddleClickNSView: NSView {
 
   @available(*, unavailable)
   required init?(coder: NSCoder) { fatalError() }
+
+  nonisolated deinit {}
 
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard let event = NSApp.currentEvent,

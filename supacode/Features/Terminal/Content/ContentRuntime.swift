@@ -21,6 +21,8 @@ final class ContentRuntime {
 
   nonisolated init() {}
 
+  nonisolated deinit {}
+
   /// Registers `content` and starts its session synchronously, exactly once.
   /// Refuses IDs that are tombstoned or already registered, and unregisters
   /// content whose session failed to start so no dead tab is listed.
@@ -96,7 +98,7 @@ final class ContentRuntime {
   }
 }
 
-extension ContentRuntime: DependencyKey {
+nonisolated extension ContentRuntime: DependencyKey {
   // Stored nonisolated `let` so reducers resolve the shared registry
   // synchronously; the nonisolated init makes the off-actor creation safe.
   nonisolated static let liveValue = ContentRuntime()
@@ -104,7 +106,7 @@ extension ContentRuntime: DependencyKey {
   nonisolated static var testValue: ContentRuntime { ContentRuntime() }
 }
 
-extension DependencyValues {
+nonisolated extension DependencyValues {
   var contentRuntime: ContentRuntime {
     get { self[ContentRuntime.self] }
     set { self[ContentRuntime.self] = newValue }

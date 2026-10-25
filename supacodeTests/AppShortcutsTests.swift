@@ -430,6 +430,91 @@ struct AppShortcutsTests {
     #expect(lines.contains { $0 == AppShortcuts.newWorktree.ghosttyUnbindConfigLine } == false)
   }
 
+  // MARK: - Terminal reachability.
+
+  @Test func ghosttyKeybindConfigLinesKeepSidebarOnlyChordsBound() throws {
+    let lines = AppShortcuts.ghosttyKeybindConfigLines(from: [:])
+    // Ghostty keeps `super+backspace` (delete line) while Archive only runs from the sidebar.
+    let archiveLine = try #require(AppShortcuts.archiveWorktree.ghosttyUnbindConfigLine)
+    let deleteLine = try #require(AppShortcuts.deleteWorktree.ghosttyUnbindConfigLine)
+    #expect(archiveLine == "keybind = super+backspace=unbind")
+    #expect(!lines.contains(archiveLine))
+    #expect(!lines.contains(deleteLine))
+    for shortcut in AppShortcuts.all where shortcut.id.isReachableFromTerminal {
+      guard let effective = shortcut.effective(from: [:]), let line = effective.ghosttyUnbindConfigLine else {
+        continue
+      }
+      #expect(lines.contains(line), "\(shortcut.displayName) is not released from the terminal")
+    }
+  }
+
+  @Test func ghosttyKeybindConfigLinesKeepReachableOwnerOfSharedChord() {
+    let override = AppShortcutOverride(keyCode: UInt16(kVK_ANSI_D), modifiers: [.command])
+    let lines = AppShortcuts.ghosttyKeybindConfigLines(from: [.archiveWorktree: override])
+    // Split Right still owns ⌘D, so Ghostty still unbinds it.
+    #expect(lines.contains("keybind = super+d=unbind"))
+  }
+
+  @Test func ghosttyKeybindConfigLinesUnbindReachableShortcutMovedOntoCommandDelete() {
+    let override = AppShortcutOverride(keyCode: UInt16(kVK_Delete), modifiers: [.command])
+    let lines = AppShortcuts.ghosttyKeybindConfigLines(from: [.newWorktree: override])
+    #expect(lines.contains("keybind = super+backspace=unbind"))
+  }
+
+  @Test func terminalUnreachableChordMatchesOnlySidebarOnlyShortcuts() {
+    let commandDelete = Self.keyEvent(keyCode: kVK_Delete, modifiers: [.command])
+    #expect(AppShortcuts.isTerminalUnreachableChord(commandDelete, overrides: [:]))
+
+    let shiftCommandDelete = Self.keyEvent(keyCode: kVK_Delete, modifiers: [.command, .shift])
+    #expect(AppShortcuts.isTerminalUnreachableChord(shiftCommandDelete, overrides: [:]))
+
+    let optionCommandDelete = Self.keyEvent(keyCode: kVK_Delete, modifiers: [.command, .option])
+    #expect(!AppShortcuts.isTerminalUnreachableChord(optionCommandDelete, overrides: [:]))
+
+    let commandD = Self.keyEvent(keyCode: kVK_ANSI_D, modifiers: [.command])
+    #expect(!AppShortcuts.isTerminalUnreachableChord(commandD, overrides: [:]))
+
+    let unbound = Self.keyEvent(keyCode: kVK_ANSI_J, modifiers: [.command, .option, .control])
+    #expect(!AppShortcuts.isTerminalUnreachableChord(unbound, overrides: [:]))
+  }
+
+  @Test func terminalUnreachableChordYieldsToReachableShortcutSharingIt() {
+    let override = AppShortcutOverride(keyCode: UInt16(kVK_Delete), modifiers: [.command])
+    let commandDelete = Self.keyEvent(keyCode: kVK_Delete, modifiers: [.command])
+    #expect(!AppShortcuts.isTerminalUnreachableChord(commandDelete, overrides: [.newWorktree: override]))
+  }
+
+  @Test func terminalUnreachableChordReleasesDisabledArchive() {
+    let commandDelete = Self.keyEvent(keyCode: kVK_Delete, modifiers: [.command])
+    #expect(!AppShortcuts.isTerminalUnreachableChord(commandDelete, overrides: [.archiveWorktree: .disabled]))
+  }
+
+  @Test func onlyWorktreeArchiveAndDeleteAreSidebarOnly() {
+    var sidebarOnly: Set<AppShortcutID> = []
+    for shortcut in AppShortcuts.all {
+      guard !shortcut.id.isReachableFromTerminal else { continue }
+      sidebarOnly.insert(shortcut.id)
+    }
+    #expect(sidebarOnly == [.archiveWorktree, .deleteWorktree])
+  }
+
+  @Test func reboundSidebarOnlyChordMovesWithTheShortcut() {
+    let override = AppShortcutOverride(keyCode: UInt16(kVK_ANSI_K), modifiers: [.command, .option])
+    let overrides: [AppShortcutID: AppShortcutOverride] = [.archiveWorktree: override]
+    let rebound = Self.keyEvent(keyCode: kVK_ANSI_K, modifiers: [.command, .option])
+    #expect(AppShortcuts.isTerminalUnreachableChord(rebound, overrides: overrides))
+    let commandDelete = Self.keyEvent(keyCode: kVK_Delete, modifiers: [.command])
+    #expect(!AppShortcuts.isTerminalUnreachableChord(commandDelete, overrides: overrides))
+    #expect(!AppShortcuts.ghosttyKeybindConfigLines(from: overrides).contains("keybind = super+alt+k=unbind"))
+  }
+
+  @Test func terminalUnreachableChordYieldsToLaterReachableShortcut() {
+    // Archive precedes Split Right in `all`, so the sidebar-only match comes first.
+    let override = AppShortcutOverride(keyCode: UInt16(kVK_ANSI_D), modifiers: [.command])
+    let commandD = Self.keyEvent(keyCode: kVK_ANSI_D, modifiers: [.command])
+    #expect(!AppShortcuts.isTerminalUnreachableChord(commandD, overrides: [.archiveWorktree: override]))
+  }
+
   // MARK: - Category display names.
 
   @Test func categoryDisplayNames() {
@@ -528,6 +613,106 @@ struct AppShortcutsTests {
     #expect(AppShortcutOverride.appKitReservedDisplayStrings == ["⌘Q", "⌘H", "⌘M", "⌘W"])
   }
 
+  @Test func menuReservedShortcutsCollectResponderChainBuiltIns() {
+    let appMenu = NSMenu()
+    appMenu.addItem(
+      Self.menuItem("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))
+    appMenu.addItem(Self.menuItem("Redo", Selector(("redo:")), "Z", [.command]))
+    let root = NSMenu()
+    root.addItem(withTitle: "App", action: nil, keyEquivalent: "").submenu = appMenu
+
+    let reserved = AppShortcutOverride.menuReservedShortcuts(in: root)
+    let hideOthers = AppShortcutOverride(keyCode: Self.layoutKeyCode("h"), modifiers: [.command, .option]).displayString
+    let redo = AppShortcutOverride(keyCode: Self.layoutKeyCode("z"), modifiers: [.command, .shift]).displayString
+    #expect(reserved == [hideOthers: "Hide Others", redo: "Redo"])
+  }
+
+  @Test func menuReservedShortcutsSkipAppOwnedHiddenAndUnmodifiedItems() {
+    let menu = NSMenu()
+    // SwiftUI command items carry their own target; disabled ones drop their action.
+    let appOwned = Self.menuItem("Focus Split Left", Selector(("menuAction:")), "j", [.command, .option])
+    appOwned.target = menu
+    menu.addItem(appOwned)
+    menu.addItem(Self.menuItem("Disabled", nil, "k", [.command, .option]))
+    let hidden = Self.menuItem("Emoji & Symbols", Selector(("orderFrontCharacterPalette:")), " ", [.command, .control])
+    hidden.isHidden = true
+    menu.addItem(hidden)
+    menu.addItem(Self.menuItem("Unmodified", Selector(("complete:")), "d", []))
+    menu.addItem(Self.menuItem("Bring All to Front", Selector(("arrangeInFront:")), "", [.command]))
+    let hiddenParent = NSMenuItem(title: "Hidden", action: nil, keyEquivalent: "")
+    hiddenParent.isHidden = true
+    hiddenParent.submenu = NSMenu()
+    hiddenParent.submenu?.addItem(Self.menuItem("Nested", Selector(("undo:")), "u", [.command]))
+    menu.addItem(hiddenParent)
+
+    #expect(AppShortcutOverride.menuReservedShortcuts(in: menu).isEmpty)
+    #expect(AppShortcutOverride.menuReservedShortcuts(in: nil).isEmpty)
+  }
+
+  @Test func menuReservedShortcutsKeepHiddenItemsThatStillFire() {
+    let menu = NSMenu()
+    let hidden = Self.menuItem("Find…", Selector(("performFindPanelAction:")), "j", [.command, .option])
+    hidden.isHidden = true
+    hidden.allowsKeyEquivalentWhenHidden = true
+    menu.addItem(hidden)
+    let findChord = AppShortcutOverride(keyCode: Self.layoutKeyCode("j"), modifiers: [.command, .option]).displayString
+    #expect(AppShortcutOverride.menuReservedShortcuts(in: menu) == [findChord: "Find"])
+  }
+
+  @Test func menuChordDisplayAddsShiftAndSkipsOptionSymbols() {
+    // `?` sits on shifted slash; `@` on option-2 (Italian-style).
+    let strokes: [Character: AppShortcutOverride.KeyStroke] = [
+      "?": (UInt16(kVK_ANSI_Slash), 0x02),
+      "@": (UInt16(kVK_ANSI_2), 0x08),
+    ]
+    let question = AppShortcutOverride.displayString(forKeyEquivalent: "?", mask: [.command]) { strokes[$0] }
+    #expect(
+      question == AppShortcutOverride(keyCode: UInt16(kVK_ANSI_Slash), modifiers: [.command, .shift]).displayString)
+    let atSign = AppShortcutOverride.displayString(forKeyEquivalent: "@", mask: [.command]) { strokes[$0] }
+    #expect(atSign == nil)
+  }
+
+  @Test func menuChordDisplayFallsBackToTheASCIIKeyAndSkipsFnChords() {
+    // A non-Latin layout types no `h`, but AppKit still matches Hide Others on it.
+    let hideOthers = AppShortcutOverride.displayString(forKeyEquivalent: "h", mask: [.command, .option]) { _ in nil }
+    #expect(
+      hideOthers == AppShortcutOverride(keyCode: UInt16(kVK_ANSI_H), modifiers: [.command, .option]).displayString)
+    // A letter the layout only types with option still matches its plain ASCII key.
+    let optionLetter = AppShortcutOverride.displayString(forKeyEquivalent: "h", mask: [.command]) { _ in
+      (UInt16(kVK_ANSI_J), 0x08)
+    }
+    #expect(optionLetter == AppShortcutOverride(keyCode: UInt16(kVK_ANSI_H), modifiers: [.command]).displayString)
+    let fnChord = AppShortcutOverride.displayString(forKeyEquivalent: "e", mask: [.command, .function]) { _ in nil }
+    #expect(fnChord == nil)
+  }
+
+  @Test func shortcutOnBuiltInMenuChordIsFlagged() {
+    // The display follows the active input source, so derive it instead of hardcoding "⌘⌥H".
+    let override = AppShortcutOverride(keyCode: Self.layoutKeyCode("h"), modifiers: [.command, .option])
+    let display = override.displayString
+    let warnings = AppShortcuts.conflictWarnings(
+      from: [.focusSplitLeft: override],
+      menuReserved: [display: "Hide Others"]
+    )
+    #expect(warnings[.focusSplitLeft] == "\(display) is used by Hide Others.")
+  }
+
+  // Where the live layout types `letter`, as the menu scan resolves it.
+  private static func layoutKeyCode(_ letter: Character) -> UInt16 {
+    AppShortcutOverride.keyCode(forDisplayedKeyEquivalent: letter) ?? AppShortcutOverride.keyCode(for: letter) ?? 0
+  }
+
+  private static func menuItem(
+    _ title: String,
+    _ action: Selector?,
+    _ keyEquivalent: String,
+    _ mask: NSEvent.ModifierFlags
+  ) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+    item.keyEquivalentModifierMask = mask
+    return item
+  }
+
   @Test func rebindingOntoCloseTabChordIsFlaggedAsAConflict() {
     let override = AppShortcutOverride(keyCode: UInt16(kVK_ANSI_W), modifiers: [.command])
     let warnings = AppShortcuts.conflictWarnings(from: [.runScript: override])
@@ -560,6 +745,19 @@ struct AppShortcutsTests {
     #expect(lines.contains("keybind = super+w=unbind"))
   }
 
+  @Test func helpTextAppendsTheShortcutChord() {
+    let shortcut = AppShortcuts.newTerminalTab
+    #expect(AppShortcut.helpText("New Terminal Tab", shortcut: shortcut) == "New Terminal Tab (\(shortcut.display))")
+  }
+
+  @Test func helpTextIsTheBareTitleWhenUnbound() {
+    #expect(AppShortcut.helpText("New Terminal Tab", shortcut: nil) == "New Terminal Tab")
+  }
+
+  @Test func displayOfIsNilOnlyWhenUnbound() {
+    #expect(AppShortcut.display(of: nil) == nil)
+    #expect(AppShortcut.display(of: AppShortcuts.newTerminalTab) == AppShortcuts.newTerminalTab.display)
+  }
 }
 
 @MainActor

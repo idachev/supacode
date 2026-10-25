@@ -60,7 +60,7 @@ nonisolated struct GitLabMergeRequest: Decodable, Equatable {
   }
 }
 
-extension GitLabMergeRequest {
+nonisolated extension GitLabMergeRequest {
   /// Branch-to-proposal matching over one page of merge requests, using the
   /// shared tie-break: open beats merged beats the rest, then recency, then
   /// the highest iid.
@@ -220,6 +220,10 @@ nonisolated enum GitLabMergeStatusMapping {
       mergeable = "CONFLICTING"
     case "requested_changes":
       reviewDecision = "CHANGES_REQUESTED"
+    case "not_approved":
+      reviewDecision = "REVIEW_REQUIRED"
+      // Still blocks (or conflicts) via the default arm; readiness ignores review required.
+      fallthrough
     default:
       if detail.hasConflicts == true {
         mergeable = "CONFLICTING"

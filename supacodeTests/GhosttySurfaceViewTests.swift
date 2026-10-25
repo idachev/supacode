@@ -7,7 +7,9 @@ import Testing
 
 @testable import supacode
 
-private final class HotkeyRecorderNSView: NSView {}
+private final class HotkeyRecorderNSView: NSView {
+  nonisolated deinit {}
+}
 
 @MainActor
 struct GhosttySurfaceViewTests {
@@ -534,6 +536,9 @@ struct GhosttySurfaceViewTests {
 
   private final class MenuActionTarget: NSObject {
     var fired = false
+
+    nonisolated deinit {}
+
     @objc func fire(_ sender: Any?) { fired = true }
   }
 

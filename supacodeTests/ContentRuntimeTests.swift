@@ -20,6 +20,8 @@ struct ContentRuntimeTests {
       self.failsToStart = failsToStart
     }
 
+    nonisolated deinit {}
+
     var renderer: NSView? { view }
 
     func startSession(at geometry: ContentGeometry) {

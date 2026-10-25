@@ -124,7 +124,7 @@ public nonisolated struct ShellClient: Sendable {
   }
 }
 
-extension ShellClient: DependencyKey {
+nonisolated extension ShellClient: DependencyKey {
   public nonisolated static let live = ShellClient(
     run: { executableURL, arguments, currentDirectoryURL in
       try await runProcess(
@@ -198,8 +198,8 @@ extension ShellClient: DependencyKey {
   )
 }
 
-extension DependencyValues {
-  public nonisolated var shellClient: ShellClient {
+nonisolated extension DependencyValues {
+  public var shellClient: ShellClient {
     get { self[ShellClient.self] }
     set { self[ShellClient.self] = newValue }
   }
@@ -457,7 +457,7 @@ nonisolated private func collectOutput(
   return finalOutput
 }
 
-extension ShellClient {
+nonisolated extension ShellClient {
   /// Exit status when the working directory could not be entered.
   nonisolated static let workingDirectoryExitCode = 125
 

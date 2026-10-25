@@ -38,16 +38,16 @@ private nonisolated let toastAutoDismissDelay: Duration = .milliseconds(2500)
 private nonisolated let delayedPullRequestRefreshDelay: Duration = .seconds(2)
 
 /// Injected so the open paths stay testable without launching a real browser.
-struct URLOpenerClient: Sendable {
+nonisolated struct URLOpenerClient: Sendable {
   var open: @Sendable (URL) -> Void
 }
 
-extension URLOpenerClient: DependencyKey {
+nonisolated extension URLOpenerClient: DependencyKey {
   static let liveValue = URLOpenerClient { NSWorkspace.shared.open($0) }
   static let testValue = URLOpenerClient { _ in }
 }
 
-extension DependencyValues {
+nonisolated extension DependencyValues {
   var urlOpener: URLOpenerClient {
     get { self[URLOpenerClient.self] }
     set { self[URLOpenerClient.self] = newValue }
@@ -810,9 +810,10 @@ struct RepositoriesFeature {
           return .send(.archiveWorktreeConfirmed(worktree.id, repository.id))
         }
         @Shared(.settingsFile) var settingsFile
-        let archivedDisplay =
-          AppShortcuts.archivedWorktrees
-          .effective(from: settingsFile.global.shortcutOverrides)?.display ?? "none"
+        let archivedLocation = AppShortcut.helpText(
+          "Menu Bar > Worktrees > Archived Worktrees",
+          shortcut: AppShortcuts.archivedWorktrees.effective(from: settingsFile.global.shortcutOverrides)
+        )
         let alertWorktreeName =
           SidebarDisplayName.resolved(
             custom: state.sidebarItems[id: worktree.id]?.customTitle,
@@ -829,7 +830,7 @@ struct RepositoriesFeature {
           }
         } message: {
           TextState(
-            "You can find \(alertWorktreeName) later in Menu Bar > Worktrees > Archived Worktrees (\(archivedDisplay))."
+            "You can find \(alertWorktreeName) later in \(archivedLocation)."
           )
         }
         return .none
@@ -864,9 +865,10 @@ struct RepositoriesFeature {
         }
         let count = validTargets.count
         @Shared(.settingsFile) var settingsFile
-        let archivedDisplay =
-          AppShortcuts.archivedWorktrees
-          .effective(from: settingsFile.global.shortcutOverrides)?.display ?? "none"
+        let archivedLocation = AppShortcut.helpText(
+          "Menu Bar > Worktrees > Archived Worktrees",
+          shortcut: AppShortcuts.archivedWorktrees.effective(from: settingsFile.global.shortcutOverrides)
+        )
         state.alert = AlertState {
           TextState("Archive \(count) worktrees?")
         } actions: {
@@ -878,7 +880,7 @@ struct RepositoriesFeature {
           }
         } message: {
           TextState(
-            "You can find them later in Menu Bar > Worktrees > Archived Worktrees (\(archivedDisplay))."
+            "You can find them later in \(archivedLocation)."
           )
         }
         return .none
@@ -999,11 +1001,8 @@ struct RepositoriesFeature {
         }
 
       case .archiveWorktreeApply(let worktreeID, let repositoryID):
-        // Deliver the commit from a Task so the teardown never runs on a
-        // synchronous UI send: the departing surface's isolated deinit, freed
-        // inside the still-live TCA task-local scope during the commit's
-        // `withAnimation` flush, aborts with an invalid free (issue #784). Keep
-        // this a pure forward; mutating here re-arms the crash.
+        // Deliver the commit from a Task so the teardown stays off the
+        // synchronous UI send (#784); keep this a pure forward.
         return .run { send in await send(.archiveWorktreeCommit(worktreeID, repositoryID)) }
 
       case .archiveWorktreeCommit(let worktreeID, let repositoryID):
@@ -7183,7 +7182,7 @@ extension RepositoriesFeature.State {
   }
 }
 
-extension SidebarState {
+nonisolated extension SidebarState {
   /// Preserve user-curated `.archived` / `.pinned` buckets and title / color
   /// customization for repositories no longer in `availableRepoIDs`. Tombstones
   /// are appended after live repos so the natural ordering stays "live first,

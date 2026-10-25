@@ -1,6 +1,6 @@
 import Foundation
 
-extension ShellClient {
+nonisolated extension ShellClient {
   /// Host-aware transport: a `ShellClient` that runs every command on `host`
   /// over SSH instead of locally, by rewriting each call into an `ssh <host>
   /// <remoteCommand>` invocation (the working directory becomes a remote `cd`)
@@ -10,7 +10,7 @@ extension ShellClient {
   /// `runLogin*` entries must not re-wrap it and route to the plain `base.run*`.
   /// `extraOptions` injects per-call `ssh -o` flags (e.g. the non-interactive
   /// background-probe profile) on top of the shared multiplexing options.
-  public nonisolated static func ssh(
+  public static func ssh(
     host: RemoteHost,
     base: ShellClient = .live,
     extraOptions: [String] = []

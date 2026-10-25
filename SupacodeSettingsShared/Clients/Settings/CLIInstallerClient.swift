@@ -17,7 +17,7 @@ public nonisolated struct CLIInstallerClient: Sendable {
   }
 }
 
-extension CLIInstallerClient: DependencyKey {
+nonisolated extension CLIInstallerClient: DependencyKey {
   public static let liveValue = Self(
     checkInstalled: {
       CLIInstaller().isInstalled()
@@ -36,8 +36,8 @@ extension CLIInstallerClient: DependencyKey {
   )
 }
 
-extension DependencyValues {
-  public nonisolated var cliInstallerClient: CLIInstallerClient {
+nonisolated extension DependencyValues {
+  public var cliInstallerClient: CLIInstallerClient {
     get { self[CLIInstallerClient.self] }
     set { self[CLIInstallerClient.self] = newValue }
   }

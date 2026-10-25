@@ -11,6 +11,7 @@ CURRENT_MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CURRENT_MAKEFILE_DIR := $(patsubst %/,%,$(dir $(CURRENT_MAKEFILE_PATH)))
 PROJECT_WORKSPACE := $(CURRENT_MAKEFILE_DIR)/supacode.xcworkspace
 DERIVED_DATA_PATH := $(CURRENT_MAKEFILE_DIR)/.build/DerivedData
+DEBUG_APP_BUNDLE := $(DERIVED_DATA_PATH)/Build/Products/Debug/supacode.app
 APP_SCHEME := supacode
 PROJECT_CONFIG_PATH := Configurations/Project.xcconfig
 TUIST_GENERATION_STAMP_DIR := $(CURRENT_MAKEFILE_DIR)/.build/.tuist-generated-stamps
@@ -20,7 +21,7 @@ TUIST_SOURCE_GENERATION_STAMP := $(TUIST_GENERATION_STAMP_DIR)/none
 TUIST_RELEASE_GENERATION_STAMP := $(TUIST_GENERATION_STAMP_DIR)/development-release
 # Test targets use explicit source globs expanded at generation time, so a new
 # test file must trigger a regen or it would silently run in no bundle.
-TUIST_GENERATION_INPUTS := Project.swift Workspace.swift Tuist.swift Tuist/Package.swift $(wildcard Tuist/Package.resolved) $(PROJECT_CONFIG_PATH) mise.toml scripts/build-ghostty.sh scripts/build-zmx.sh scripts/select-zig-sdk.sh scripts/with-zig-sdk.sh scripts/zig-sdk-bin/xcrun $(wildcard patches/ghostty/*.patch) $(wildcard patches/zmx/*.patch) $(wildcard supacodeTests/*.swift)
+TUIST_GENERATION_INPUTS := Project.swift Workspace.swift Tuist.swift Tuist/Package.swift $(wildcard Tuist/Package.resolved) $(PROJECT_CONFIG_PATH) mise.toml scripts/build-ghostty.sh scripts/build-zmx.sh $(wildcard patches/ghostty/*.patch) $(wildcard patches/zmx/*.patch) $(wildcard supacodeTests/*.swift)
 TUIST_GENERATE_CACHE_PROFILE ?= development
 TUIST_CACHE_CONFIGURATION ?= Debug
 VERSION ?=
@@ -41,7 +42,7 @@ TEST_SCHEME := supacode-tests
 # text only lives in the result bundle, which `make test` dumps on failure.
 TEST_RESULT_BUNDLE := build/supacode-tests.xcresult
 
-# Export a Zig-linkable Xcode per build recipe (no global xcode-select -s). Plain
+# Export the selected Xcode per build recipe (no global xcode-select -s). Plain
 # assignment so a missing Xcode aborts the recipe under -e.
 SELECT_DEVELOPER_DIR = DEVELOPER_DIR="$$(./scripts/select-developer-dir.sh)"; export DEVELOPER_DIR
 
@@ -112,7 +113,8 @@ warm-cache: $(TUIST_INSTALL_STAMP) # Warm the full Tuist cacheable graph
 
 build-app: $(TUIST_DEVELOPMENT_GENERATION_STAMP) # Build the macOS app (Debug)
 	$(SELECT_DEVELOPER_DIR); \
-	bash -o pipefail -c 'xcodebuild -workspace "$(PROJECT_WORKSPACE)" -scheme "$(APP_SCHEME)" -configuration Debug -derivedDataPath "$(DERIVED_DATA_PATH)" build -skipMacroValidation $(XCODEBUILD_FLAGS) 2>&1 | { mise exec -- xcbeautify --disable-logging || cat; }'
+	bash -o pipefail -c 'xcodebuild -workspace "$(PROJECT_WORKSPACE)" -scheme "$(APP_SCHEME)" -configuration Debug -derivedDataPath "$(DERIVED_DATA_PATH)" build -skipMacroValidation $(XCODEBUILD_FLAGS) 2>&1 | { mise exec -- xcbeautify --disable-logging || cat; }' && \
+	./scripts/check-isolated-deinits.sh "$(DEBUG_APP_BUNDLE)"/Contents/MacOS/* "$(DEBUG_APP_BUNDLE)"/Contents/Resources/bin/supacode
 
 run-app: build-app # Build then launch (Debug) with log streaming
 	@$(SELECT_DEVELOPER_DIR); \
@@ -157,6 +159,7 @@ test: $(TUIST_DEVELOPMENT_GENERATION_STAMP) # Run all tests
 		xcodebuild test -workspace "$(PROJECT_WORKSPACE)" -scheme "$(TEST_SCHEME)" -destination "platform=macOS" -derivedDataPath "$(DERIVED_DATA_PATH)" -resultBundlePath "$(TEST_RESULT_BUNDLE)" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -skipMacroValidation -parallel-testing-enabled $(TEST_PARALLEL) || status=$$?; \
 	fi; \
 	[ $$status -eq 0 ] || ./scripts/print-test-failures.sh "$(TEST_RESULT_BUNDLE)" || true; \
+	[ $$status -ne 0 ] || ./scripts/check-isolated-deinits.sh "$(DEBUG_APP_BUNDLE)"/Contents/PlugIns/*.xctest/Contents/MacOS/* || status=1; \
 	exit $$status
 
 format: # Format code with swift-format (mise-pinned for reproducibility).
