@@ -992,7 +992,7 @@ struct TerminalsFeatureTests {
     let runtime = ContentRuntime()
     _ = runtime.provision(activeContent, at: .fallback)
     _ = runtime.provision(parkedContent, at: .fallback)
-    let v2 = PaneLayout(
+    let flatLayout = PaneLayout(
       tree: SplitTree(view: paneID),
       panes: [
         Pane(
@@ -1007,7 +1007,7 @@ struct TerminalsFeatureTests {
       focusedPaneID: paneID
     )
     // Group 1 keeps the active tab; the second tab parks as its own group.
-    let layout = v2.convertedToSplitPerTab(
+    let layout = flatLayout.convertedToSplitPerTab(
       mintPaneID: { PaneID() },
       mintGroupID: { PaneGroupID(rawValue: UUID()) }
     )

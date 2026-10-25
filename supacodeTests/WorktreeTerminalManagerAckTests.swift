@@ -527,7 +527,7 @@ struct WorktreeTerminalManagerAckTests {
     harness.manager.handleCommand(.selectTabAtIndex(harness.worktree, index: 3))
     var layout = layoutState(harness)?.layout
     #expect(layout?.focusedPaneID == layout?.pane(containingTab: TabID(rawValue: ids[2]))?.id)
-    #expect(layout.flatMap { l in l.activeGroupID.flatMap { l.groupIndex(of: $0) } } == 3)
+    #expect(layout.flatMap { current in current.activeGroupID.flatMap { current.groupIndex(of: $0) } } == 3)
 
     harness.manager.handleCommand(.selectTabAtIndex(harness.worktree, index: 2))
     layout = layoutState(harness)?.layout
@@ -536,7 +536,7 @@ struct WorktreeTerminalManagerAckTests {
     // Past the end clamps to the last group, Ghostty goto_tab style.
     harness.manager.handleCommand(.selectTabAtIndex(harness.worktree, index: 9))
     layout = layoutState(harness)?.layout
-    #expect(layout.flatMap { l in l.activeGroupID.flatMap { l.groupIndex(of: $0) } } == 3)
+    #expect(layout.flatMap { current in current.activeGroupID.flatMap { current.groupIndex(of: $0) } } == 3)
   }
 
   @Test(.dependencies) func selectRelativeTabWalksGroupsAndWrapsInSplitPerTab() async {
