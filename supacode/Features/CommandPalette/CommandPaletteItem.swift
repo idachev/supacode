@@ -139,8 +139,11 @@ struct CommandPaletteItem: Identifiable, Equatable {
   var isRootAction: Bool {
     switch kind {
     case .checkForUpdates, .openRepository, .addRemoteRepository, .openSettings, .newWorktree,
-      .viewArchivedWorktrees, .refreshWorktrees, .resumeAgentSessions:
+      .viewArchivedWorktrees, .refreshWorktrees:
       true
+    // Shown on an empty query while a resume is pending (it is listed only then).
+    case .resumeAgentSessions:
+      false
     case .ghosttyCommand, .toggleWindowMode, .layoutCommand:
       false
     case .openPullRequest,

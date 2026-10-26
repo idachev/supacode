@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import DependenciesTestSupport
 import Foundation
 import IdentifiedCollections
 import Sharing
@@ -71,22 +72,27 @@ struct AgentResumePickerFeatureTests {
     #expect(item?.id == "global.resume-agent-sessions")
     #expect(item?.title == "Resume Agent Sessions")
     #expect(item?.isGlobal == true)
-    #expect(item?.isRootAction == true)
+    #expect(item?.isRootAction == false)
     #expect(item?.appShortcut?.id == .resumeAgentSessions)
   }
 
-  /// `isRootAction` is true as for "View Archived Worktrees", so the item is
-  /// found by typing, exactly like the other root actions.
-  @Test func paletteItemIsFoundByTyping() {
+  /// `isRootAction` is false, so the item shows on an empty query while
+  /// something is pending, and is still found by typing.
+  @Test func paletteItemShowsOnAnEmptyQueryAndIsFoundByTyping() {
     let items = CommandPaletteFeature.items(
       in: .commands,
       from: RepositoriesFeature.State(),
       hasPendingAgentResumes: true
     )
+    let withoutPending = CommandPaletteFeature.items(in: .commands, from: RepositoriesFeature.State())
 
-    let result = CommandPaletteFeature.filterItems(items: items, query: "resume agent")
+    let emptyQuery = CommandPaletteFeature.filterItems(items: items, query: "")
+    let emptyQueryWithoutPending = CommandPaletteFeature.filterItems(items: withoutPending, query: "")
+    let typed = CommandPaletteFeature.filterItems(items: items, query: "resume agent")
 
-    #expect(result.first?.kind == .resumeAgentSessions)
+    #expect(emptyQuery.contains { $0.kind == .resumeAgentSessions })
+    #expect(!emptyQueryWithoutPending.contains { $0.kind == .resumeAgentSessions })
+    #expect(typed.first?.kind == .resumeAgentSessions)
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))

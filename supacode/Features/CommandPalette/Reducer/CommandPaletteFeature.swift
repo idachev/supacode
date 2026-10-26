@@ -930,7 +930,7 @@ private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPalette
     .layoutCommand:
     return selectedEntryDelegateAction(for: kind)!
   case .viewArchivedWorktrees, .refreshWorktrees, .resumeAgentSessions:
-    return worktreeListDelegateAction(for: kind)!
+    return CommandPaletteFeature.worktreeListDelegateAction(for: kind)!
   case .ghosttyCommand(let action):
     return .ghosttyCommand(action)
   case .openPullRequest,
@@ -966,6 +966,23 @@ extension CommandPaletteFeature {
       return nil
     }
   }
+
+  /// Delegates for the worktree-list actions of the global section, grouped so
+  /// the main dispatch stays under the cyclomatic-complexity limit.
+  fileprivate static func worktreeListDelegateAction(
+    for kind: CommandPaletteItem.Kind
+  ) -> Delegate? {
+    switch kind {
+    case .viewArchivedWorktrees:
+      return .viewArchivedWorktrees
+    case .refreshWorktrees:
+      return .refreshWorktrees
+    case .resumeAgentSessions:
+      return .resumeAgentSessions
+    default:
+      return nil
+    }
+  }
 }
 
 /// Delegates for actions that mutate the selected sidebar entry (rename or
@@ -995,23 +1012,6 @@ private func selectedEntryDelegateAction(
     case .debugTestToast:
       return nil
   #endif
-  }
-}
-
-/// Delegates for the worktree-list actions of the global section, grouped so
-/// the main dispatch stays under the cyclomatic-complexity limit.
-private func worktreeListDelegateAction(
-  for kind: CommandPaletteItem.Kind
-) -> CommandPaletteFeature.Delegate? {
-  switch kind {
-  case .viewArchivedWorktrees:
-    return .viewArchivedWorktrees
-  case .refreshWorktrees:
-    return .refreshWorktrees
-  case .resumeAgentSessions:
-    return .resumeAgentSessions
-  default:
-    return nil
   }
 }
 
