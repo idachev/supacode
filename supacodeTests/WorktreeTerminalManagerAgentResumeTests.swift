@@ -37,16 +37,20 @@ struct WorktreeTerminalManagerAgentResumeTests {
   @Test func gateNeverClaimsALiveSession() {
     let live = ContentID()
     var gate = AgentResumeGate(liveSessionNames: [session(for: live)])
-    #expect(!gate.claim(live))
-    #expect(!gate.claim(live))
+    let first = gate.claim(live)
+    let second = gate.claim(live)
+    #expect(!first)
+    #expect(!second)
     #expect(gate.claimed.isEmpty)
   }
 
   @Test func gateClaimsADeadSessionOnce() {
     let dead = ContentID()
     var gate = AgentResumeGate(liveSessionNames: [session(for: ContentID())])
-    #expect(gate.claim(dead))
-    #expect(!gate.claim(dead))
+    let first = gate.claim(dead)
+    let second = gate.claim(dead)
+    #expect(first)
+    #expect(!second)
     #expect(gate.claimed == [dead])
   }
 
