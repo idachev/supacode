@@ -181,6 +181,8 @@ struct AppFeature {
     var worktreeMenuSnapshot: WorktreeMenuSnapshot = .init()
     @Presents var alert: AlertState<Alert>?
     @Presents var deeplinkInputConfirmation: DeeplinkInputConfirmationFeature.State?
+    /// The "Resume agent sessions" sheet; its rows follow `agentResume.pending`.
+    @Presents var agentResumePicker: AgentResumePickerFeature.State?
     /// CLI socket commands whose ack is deferred until the operation is
     /// observably complete, keyed by the open client fd. A watchdog drains each
     /// on timeout so the fd never leaks.
@@ -362,6 +364,20 @@ struct AppFeature {
     case alert(PresentationAction<Alert>)
     case deeplinkInputConfirmation(PresentationAction<DeeplinkInputConfirmationFeature.Action>)
     case terminalEvent(TerminalClient.Event)
+    // Agent resume picker (task (c)).
+    case agentResumePicker(PresentationAction<AgentResumePickerFeature.Action>)
+    /// Reopen the picker (menu, palette); a no-op when nothing is pending or it is up.
+    case agentResumePickerRequested
+    /// Wake these pending agent resume panes in the background, staggered. The
+    /// entry point of the background wake; the picker's "Resume selected" sends it.
+    case agentResumeWakeRequested([ContentID])
+    /// Wakes the next queued pane that is still pending.
+    case agentResumeWakeTick
+  }
+
+  enum AgentResumeCancelID: Hashable {
+    /// The stagger timer of the background wake queue.
+    case wake
   }
 
   enum Alert: Equatable {
@@ -385,6 +401,7 @@ struct AppFeature {
   @Dependency(WorktreeInfoWatcherClient.self) private var worktreeInfoWatcher
   @Dependency(\.date.now) private var now
   @Dependency(\.continuousClock) private var clock
+  @Dependency(\.uuid) private var uuid
 
   var body: some Reducer<State, Action> {
     let core = Reduce<State, Action> { state, action in
@@ -1580,6 +1597,24 @@ struct AppFeature {
       case .deeplinkInputConfirmation:
         return .none
 
+      // Agent resume picker (task (c)).
+      case .agentResumePickerRequested:
+        guard state.agentResumePicker == nil, !state.agentResume.pending.isEmpty else {
+          appLogger.debug(
+            "resume picker not shown: \(state.agentResume.pending.count) pending, "
+              + "open=\(state.agentResumePicker != nil)"
+          )
+          return .none
+        }
+        presentAgentResumePicker(&state)
+        return .none
+
+      case .agentResumePicker(.presented(.delegate(.resumeRequested(let contentIDs)))):
+        return .send(.agentResumeWakeRequested(contentIDs))
+
+      case .agentResumePicker:
+        return .none
+
       case .repositories(.delegate(.licenseRequired)):
         analyticsClient.capture("license_gate_shown", ["trial_creations": state.license.snapshot.trialCreations])
         return .send(.license(.purchaseRequired))
@@ -1862,6 +1897,9 @@ struct AppFeature {
 
       case .commandPalette(.delegate(.viewArchivedWorktrees)):
         return .send(.repositories(.selectArchivedWorktrees))
+
+      case .commandPalette(.delegate(.resumeAgentSessions)):
+        return .send(.agentResumePickerRequested)
 
       case .commandPalette(.delegate(.refreshWorktrees)):
         return .send(.refreshWorktreesRequested)
@@ -2190,6 +2228,12 @@ struct AppFeature {
         state.agentResume.claimed.insert(contentID)
         return .none
 
+      case .agentResumeWakeRequested(let ids):
+        return agentResumeWakeRequested(ids, state: &state)
+
+      case .agentResumeWakeTick:
+        return agentResumeWakeTick(state: &state)
+
       case .terminalEvent:
         return .none
       }
@@ -2218,6 +2262,9 @@ struct AppFeature {
     }
     .ifLet(\.$deeplinkInputConfirmation, action: \.deeplinkInputConfirmation) {
       DeeplinkInputConfirmationFeature()
+    }
+    .ifLet(\.$agentResumePicker, action: \.agentResumePicker) {
+      AgentResumePickerFeature()
     }
     // After the scopes, so the layouts already reflect the action.
     Reduce { state, action in
@@ -2292,7 +2339,119 @@ struct AppFeature {
     if pending != state.agentResume.pending {
       state.agentResume.pending = pending
     }
-    return .none
+    // Agent resume picker (task (c)): live rows, auto-close, once-after-launch present.
+    syncAgentResumePicker(&state)
+    // Sidebar marker: one action per row whose marker flips, none otherwise.
+    return pendingAgentResumeMarkerEffect(state: state)
+  }
+
+  /// Sidebar marker fan-out. Sends `.pendingAgentResumeChanged` only to the rows
+  /// whose marker flips, so an unchanged row never re-renders (CLAUDE.md: no
+  /// sidebar fan-out). Rows absent from `sidebarItems` get nothing; a rebuilt
+  /// row starts at false and the refresh on `.repositoriesChanged` sets it again.
+  private func pendingAgentResumeMarkerEffect(state: State) -> Effect<Action> {
+    let flips = Self.pendingAgentResumeMarkerFlips(
+      pending: state.agentResume.pending,
+      sidebarItems: state.repositories.sidebarItems
+    )
+    guard !flips.isEmpty else { return .none }
+    return .merge(
+      flips.map { rowID, isPending -> Effect<Action> in
+        .send(.repositories(.sidebarItems(.element(id: rowID, action: .pendingAgentResumeChanged(isPending)))))
+      }
+    )
+  }
+
+  /// The rows whose `hasPendingAgentResume` differs from "this worktree has a
+  /// pending row", mapped to the new value.
+  static func pendingAgentResumeMarkerFlips(
+    pending: IdentifiedArrayOf<PendingAgentResume>,
+    sidebarItems: IdentifiedArrayOf<SidebarItemFeature.State>
+  ) -> [SidebarItemID: Bool] {
+    let marked = Set(pending.map(\.worktreeID))
+    var flips: [SidebarItemID: Bool] = [:]
+    for row in sidebarItems where row.hasPendingAgentResume != marked.contains(row.id) {
+      flips[row.id] = marked.contains(row.id)
+    }
+    return flips
+  }
+
+  /// Replaces the wake queue and starts it. The explicit cancel stops the timer
+  /// of an earlier queue even when the new one never arms a timer (one id, or
+  /// every id already claimed).
+  private func agentResumeWakeRequested(_ ids: [ContentID], state: inout State) -> Effect<Action> {
+    state.agentResume.wakeQueue = ids
+    appLogger.info("resume requested: \(ids.count) of \(state.agentResume.pending.count) selected")
+    return .concatenate(
+      .cancel(id: AgentResumeCancelID.wake),
+      .send(.agentResumeWakeTick)
+    )
+  }
+
+  /// Pops the next queued id. A pane that is no longer pending (claimed by a
+  /// lazy show meanwhile, closed, setting off) is skipped without a wait. A
+  /// pending one gets one effect that dispatches its wake and, only when more
+  /// ids remain, waits the stagger before the next tick.
+  private func agentResumeWakeTick(state: inout State) -> Effect<Action> {
+    guard !state.agentResume.wakeQueue.isEmpty else { return .none }
+    let id = state.agentResume.wakeQueue.removeFirst()
+    guard let row = state.agentResume.pending[id: id],
+      let worktree = state.repositories.worktree(for: row.worktreeID)
+    else {
+      appLogger.debug("resume wake skipped: no longer pending content=\(id.rawValue)")
+      return .send(.agentResumeWakeTick)
+    }
+    appLogger.info("resume wake sent: worktree=\(worktree.id.rawValue) tab=\(row.tabID.rawValue)")
+    let hasMore = !state.agentResume.wakeQueue.isEmpty
+    let tabID = row.tabID
+    return .run { [clock] send in
+      await terminalClient.send(.wakeTabInBackground(worktree, tabID: tabID))
+      guard hasMore else { return }
+      try await clock.sleep(for: AgentResumePending.wakeStagger)
+      await send(.agentResumeWakeTick)
+    }
+    .cancellable(id: AgentResumeCancelID.wake, cancelInFlight: true)
+  }
+
+  /// Keeps an open picker on the live pending list (S5): a row that left pending
+  /// drops off, a newly pending row comes in ticked, and an empty list closes the
+  /// sheet. Then makes the once-per-process auto-present decision, as soon as the
+  /// gate is captured and the repositories are loaded.
+  private func syncAgentResumePicker(_ state: inout State) {
+    let pending = state.agentResume.pending
+    if let picker = state.agentResumePicker {
+      if pending.isEmpty {
+        state.agentResumePicker = nil
+        appLogger.debug("resume picker closed: nothing pending")
+      } else if picker.rows != pending {
+        let pendingIDs = Set(pending.ids)
+        let newIDs = pendingIDs.subtracting(picker.rows.ids)
+        let selected = picker.selected.intersection(pendingIDs).union(newIDs)
+        state.agentResumePicker?.rows = pending
+        if selected != picker.selected {
+          state.agentResumePicker?.selected = selected
+        }
+      }
+    }
+    guard !state.agentResume.didEvaluateAutoPresent,
+      state.agentResume.liveness != .notCaptured,
+      state.repositories.isInitialLoadComplete
+    else { return }
+    state.agentResume.didEvaluateAutoPresent = true
+    if !pending.isEmpty, state.agentResumePicker == nil {
+      presentAgentResumePicker(&state)
+    }
+  }
+
+  /// Presents the picker with the current pending list, every row ticked.
+  private func presentAgentResumePicker(_ state: inout State) {
+    let pending = state.agentResume.pending
+    state.agentResumePicker = AgentResumePickerFeature.State(
+      id: uuid(),
+      rows: pending,
+      selected: Set(pending.ids)
+    )
+    appLogger.info("resume picker shown: \(pending.count) pending")
   }
 
   // MARK: - Recent terminals.

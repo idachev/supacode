@@ -500,6 +500,10 @@ extension SidebarItemFeature.Action {
       .dragSessionChanged,
       .focusTerminalRequested, .focusTerminalConsumed:
       return []
+    // The marker is read off the row store, like `allTabsDormant`; no cache
+    // carries it, so a flip recomputes nothing.
+    case .pendingAgentResumeChanged:
+      return []
     }
   }
 }

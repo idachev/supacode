@@ -124,6 +124,9 @@ nonisolated struct TerminalClient: Sendable {
     case setTerminalHibernationEnabled(Bool)
     /// Converts every worktree layout to the new global layout mode, live.
     case setTerminalLayoutMode(TerminalLayoutMode)
+    /// Provisions a tab's content without changing selection or focus, so a
+    /// restored agent pane spawns and runs its one-shot resume in the background.
+    case wakeTabInBackground(Worktree, tabID: TabID)
   }
 
   enum Event: Equatable {

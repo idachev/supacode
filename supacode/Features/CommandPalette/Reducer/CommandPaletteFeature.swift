@@ -69,6 +69,8 @@ struct CommandPaletteFeature {
     case customizeWorktreeAppearance(Worktree.ID, Repository.ID)
     case viewArchivedWorktrees
     case refreshWorktrees
+    /// Reopen the agent resume picker (AppFeature maps it to `.agentResumePickerRequested`).
+    case resumeAgentSessions
     case ghosttyCommand(String)
     case toggleWindowMode
     case layoutCommand(LayoutPaletteCommand)
@@ -285,9 +287,21 @@ struct CommandPaletteFeature {
     from repositories: RepositoriesFeature.State,
     ghosttyCommands: [GhosttyCommand] = [],
     scripts: [ScriptDefinition] = [],
-    runningScriptIDs: Set<UUID> = []
+    runningScriptIDs: Set<UUID> = [],
+    hasPendingAgentResumes: Bool = false
   ) -> [CommandPaletteItem] {
     var items = globalActionItems()
+    // Listed only while something waits for a resume; otherwise it would do nothing.
+    if hasPendingAgentResumes {
+      items.append(
+        CommandPaletteItem(
+          id: CommandPaletteItemID.globalResumeAgentSessions,
+          title: "Resume Agent Sessions",
+          subtitle: nil,
+          kind: .resumeAgentSessions
+        )
+      )
+    }
     if repositories.selectedWorktreeID != nil {
       items.append(contentsOf: ghosttyCommandItems(ghosttyCommands))
       items.append(contentsOf: scriptItems(scripts: scripts, runningScriptIDs: runningScriptIDs))
@@ -463,7 +477,8 @@ struct CommandPaletteFeature {
     from repositories: RepositoriesFeature.State,
     ghosttyCommands: [GhosttyCommand] = [],
     scripts: [ScriptDefinition] = [],
-    runningScriptIDs: Set<UUID> = []
+    runningScriptIDs: Set<UUID> = [],
+    hasPendingAgentResumes: Bool = false
   ) -> [CommandPaletteItem] {
     switch mode {
     case .commands:
@@ -471,7 +486,8 @@ struct CommandPaletteFeature {
         from: repositories,
         ghosttyCommands: ghosttyCommands,
         scripts: scripts,
-        runningScriptIDs: runningScriptIDs
+        runningScriptIDs: runningScriptIDs,
+        hasPendingAgentResumes: hasPendingAgentResumes
       )
     case .worktreeSwitcher:
       return worktreeSwitcherItems(from: repositories)
@@ -766,6 +782,7 @@ private enum CommandPaletteItemID {
   static let globalNewWorktree = "global.new-worktree"
   static let globalRefreshWorktrees = "global.refresh-worktrees"
   static let globalViewArchivedWorktrees = "global.view-archived-worktrees"
+  static let globalResumeAgentSessions = "global.resume-agent-sessions"
   static let toggleWindowMode = "worktree.toggle-window-mode"
 
   static func layoutCommand(_ command: LayoutPaletteCommand) -> CommandPaletteItem.ID {
@@ -781,6 +798,7 @@ private enum CommandPaletteItemID {
       globalNewWorktree,
       globalRefreshWorktrees,
       globalViewArchivedWorktrees,
+      globalResumeAgentSessions,
     ]
   }
 
@@ -911,10 +929,8 @@ private func delegateAction(for kind: CommandPaletteItem.Kind) -> CommandPalette
   case .renameBranch, .customizeRepositoryAppearance, .customizeWorktreeAppearance, .toggleWindowMode,
     .layoutCommand:
     return selectedEntryDelegateAction(for: kind)!
-  case .viewArchivedWorktrees:
-    return .viewArchivedWorktrees
-  case .refreshWorktrees:
-    return .refreshWorktrees
+  case .viewArchivedWorktrees, .refreshWorktrees, .resumeAgentSessions:
+    return CommandPaletteFeature.worktreeListDelegateAction(for: kind)!
   case .ghosttyCommand(let action):
     return .ghosttyCommand(action)
   case .openPullRequest,
@@ -950,6 +966,23 @@ extension CommandPaletteFeature {
       return nil
     }
   }
+
+  /// Delegates for the worktree-list actions of the global section, grouped so
+  /// the main dispatch stays under the cyclomatic-complexity limit.
+  fileprivate static func worktreeListDelegateAction(
+    for kind: CommandPaletteItem.Kind
+  ) -> Delegate? {
+    switch kind {
+    case .viewArchivedWorktrees:
+      return .viewArchivedWorktrees
+    case .refreshWorktrees:
+      return .refreshWorktrees
+    case .resumeAgentSessions:
+      return .resumeAgentSessions
+    default:
+      return nil
+    }
+  }
 }
 
 /// Delegates for actions that mutate the selected sidebar entry (rename or
@@ -971,7 +1004,7 @@ private func selectedEntryDelegateAction(
     return .layoutCommand(command)
   case .checkForUpdates, .openRepository, .addRemoteRepository, .worktreeSelect, .terminalTab, .openSettings,
     .newWorktree, .removeWorktree, .archiveWorktree, .viewArchivedWorktrees, .refreshWorktrees,
-    .ghosttyCommand, .openPullRequest, .markPullRequestReady, .mergePullRequest,
+    .resumeAgentSessions, .ghosttyCommand, .openPullRequest, .markPullRequestReady, .mergePullRequest,
     .closePullRequest, .copyFailingJobURL, .copyCiFailureLogs, .rerunFailedJobs,
     .openFailingCheckDetails, .runScript, .stopScript:
     return nil
@@ -1030,6 +1063,7 @@ private func pullRequestDelegateAction(
     .customizeWorktreeAppearance,
     .viewArchivedWorktrees,
     .refreshWorktrees,
+    .resumeAgentSessions,
     .ghosttyCommand,
     .toggleWindowMode,
     .runScript,
