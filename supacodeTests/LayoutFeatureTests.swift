@@ -1330,6 +1330,58 @@ struct LayoutFeatureTests {
     #expect(harness.store.state.layout.isConsistent)
   }
 
+  @Test func landContentSnapshotCopiesTheLiveSnapshotWithoutHibernating() async throws {
+    let harness = await makeHarness()
+    let mock = try #require(harness.mock)
+    let record = AgentSessionRecord(agent: "claude", sessionID: "0b7c2f4e-6a1d-4c39-9e57-2d8f1a3b5c60")
+    let live = TerminalContentState(workingDirectory: "/live", agentSession: record)
+    mock.snapshotState = live
+    await harness.store.send(.landContentSnapshot(tabID: harness.tabID)) {
+      $0.layout.panes[id: harness.paneID]?.tabs[id: harness.tabID]?.content =
+        ContentSnapshot(id: harness.contentID, state: .terminal(live))
+    }
+    #expect(mock.hibernateCalls == 0)
+    #expect(mock.renderer != nil)
+    #expect(harness.store.state.layout.isConsistent)
+  }
+
+  @Test func landContentSnapshotWithoutRuntimeContentIsANoOp() async {
+    let harness = await makeHarness()
+    harness.runtime.remove(harness.contentID, tombstone: false)
+    await harness.store.send(.landContentSnapshot(tabID: harness.tabID))
+    await harness.store.send(.landContentSnapshot(tabID: TabID()))
+  }
+
+  /// F2: the unexpected-zmx-close rebuild (land, remove, wake) starts from the
+  /// live snapshot, so an agent session that started after the last wake survives.
+  @Test func rebuildAfterLandingKeepsTheAgentSessionThatStartedAfterTheLastWake() async throws {
+    let harness = await makeHarness()
+    let original = try #require(harness.mock)
+    let record = AgentSessionRecord(agent: "codex", sessionID: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b")
+    // The SessionStart landed on the content only; the layout snapshot is older.
+    let live = TerminalContentState(workingDirectory: "/tmp/layout-feature", agentSession: record)
+    original.snapshotState = live
+    let stored = try #require(harness.store.state.layout.panes[id: harness.paneID]?.tabs[id: harness.tabID]?.content)
+    #expect(ContentRecorder.terminalState(of: stored.state).agentSession == nil)
+
+    // The order of `WorktreeTerminalManager.handleUnexpectedZmxClose`.
+    await harness.store.send(.landContentSnapshot(tabID: harness.tabID)) {
+      $0.layout.panes[id: harness.paneID]?.tabs[id: harness.tabID]?.content =
+        ContentSnapshot(id: harness.contentID, state: .terminal(live))
+    }
+    harness.runtime.remove(harness.contentID, tombstone: false)
+    // The rebuilt content snapshots the live state it was made from, so the
+    // stored snapshot stays as landed.
+    await harness.store.send(.wakeTab(id: harness.tabID)) {
+      $0.renderEpoch = 1
+    }
+
+    let revived = try #require(harness.recorder.contents[harness.contentID])
+    #expect(revived !== original)
+    #expect(harness.recorder.requests.last?.origin == .restored)
+    #expect(harness.recorder.madeStates.last?.agentSession == record)
+  }
+
   @Test func wakeTabWithoutRuntimeContentProvisionsViaFactory() async throws {
     let harness = await makeHarness()
     let grid = try #require(

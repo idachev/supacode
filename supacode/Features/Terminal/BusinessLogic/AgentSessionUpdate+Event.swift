@@ -1,7 +1,7 @@
 import Foundation
 import SupacodeSettingsShared
 
-extension AgentSessionUpdate {
+nonisolated extension AgentSessionUpdate {
   /// SessionEnd reasons that mean the user left claude on purpose. `other`
   /// (HUP / TERM, a dying pty) keeps the record, so the pane resumes after a reboot.
   private static let claudeExplicitExitReasons: Set<String> = ["prompt_input_exit", "clear", "logout"]
