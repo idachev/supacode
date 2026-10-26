@@ -278,7 +278,7 @@ characters of the session id.
 | `App` | `resume wake sent: worktree=<id> tab=<uuid>` | info | one background wake |
 | `App` | `resume wake skipped: no longer pending content=<uuid>` | debug | a queued pane was claimed or closed meanwhile |
 | `App` | `resume picker closed: nothing pending` | debug | the sheet closes itself |
-| `App` | `resume picker not shown: <n> pending, open=<bool>` | debug | ⌃⌘R while nothing is pending or the sheet is open |
+| `App` | `resume picker not shown: <n> pending, open=<bool>` | debug | a reopen request is refused: nothing is pending, or the sheet is already open |
 
 A re-wake of a hibernated pane logs nothing. In a release build `SupaLogger` writes to the
 unified log with the subsystem `app.supabit.supacode` and the category from the table (debug and
