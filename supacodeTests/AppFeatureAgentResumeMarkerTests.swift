@@ -22,7 +22,7 @@ struct AppFeatureAgentResumeMarkerTests {
     #expect(marker(store, fixture.worktrees[0]) == false)
 
     await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
-    await store.finish()
+    await settle(store)
 
     #expect(marker(store, fixture.worktrees[0]) == true)
     #expect(marker(store, fixture.worktrees[1]) == true)
@@ -33,11 +33,11 @@ struct AppFeatureAgentResumeMarkerTests {
     let fixture = Fixture()
     let store = makeStore(fixture: fixture)
     await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
-    await store.finish()
+    await settle(store)
 
     // Worktree "b" has one pending pane.
     await store.send(.terminalEvent(.agentResumeClaimed(fixture.tabs[1][0].content.id)))
-    await store.finish()
+    await settle(store)
 
     #expect(marker(store, fixture.worktrees[1]) == false)
     #expect(marker(store, fixture.worktrees[0]) == true)
@@ -51,11 +51,11 @@ struct AppFeatureAgentResumeMarkerTests {
     let store = makeStore(fixture: fixture)
     let shown = fixture.tabs[1][0].content.id
     await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
-    await store.finish()
+    await settle(store)
     #expect(store.state.agentResume.wakeQueue.isEmpty)
 
     await store.send(.terminalEvent(.agentResumeClaimed(shown)))
-    await store.finish()
+    await settle(store)
 
     #expect(store.state.agentResume.pending[id: shown] == nil)
     #expect(!store.state.agentResume.pending.map(\.worktreeID).contains(fixture.worktrees[1].id))
@@ -67,14 +67,14 @@ struct AppFeatureAgentResumeMarkerTests {
     let fixture = Fixture()
     let store = makeStore(fixture: fixture)
     await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
-    await store.finish()
+    await settle(store)
 
     await store.send(.terminalEvent(.agentResumeClaimed(fixture.tabs[0][0].content.id)))
-    await store.finish()
+    await settle(store)
     #expect(marker(store, fixture.worktrees[0]) == true)
 
     await store.send(.terminalEvent(.agentResumeClaimed(fixture.tabs[0][1].content.id)))
-    await store.finish()
+    await settle(store)
     #expect(marker(store, fixture.worktrees[0]) == false)
   }
 
@@ -86,16 +86,15 @@ struct AppFeatureAgentResumeMarkerTests {
     let store = makeStore(fixture: fixture)
     let renamed = fixture.tabs[1][0]
     await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
-    await store.finish()
+    await settle(store)
 
     await store.send(
       .terminals(.layouts(.element(id: fixture.worktrees[1].id, action: .renameTab(id: renamed.id, title: "Renamed"))))
     )
-    await store.skipReceivedActions(strict: false)
+    await settle(store)
 
     #expect(store.state.agentResume.pending[id: renamed.content.id]?.tabTitle == "Renamed")
     #expect(marker(store, fixture.worktrees[1]) == true)
-    await store.skipInFlightEffects()
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
@@ -106,12 +105,12 @@ struct AppFeatureAgentResumeMarkerTests {
     let fixture = Fixture()
     let store = makeStore(fixture: fixture)
     await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
-    await store.finish()
+    await settle(store)
 
     $settingsFile.withLock { $0.global.resumeAgentSessionsAfterRestart = false }
     var settings = settingsFile.global
     await store.send(.settings(.delegate(.settingsChanged(settings))))
-    await store.finish()
+    await settle(store)
 
     #expect(store.state.agentResume.pending.isEmpty)
     #expect(marker(store, fixture.worktrees[0]) == false)
@@ -120,7 +119,7 @@ struct AppFeatureAgentResumeMarkerTests {
     $settingsFile.withLock { $0.global.resumeAgentSessionsAfterRestart = true }
     settings = settingsFile.global
     await store.send(.settings(.delegate(.settingsChanged(settings))))
-    await store.finish()
+    await settle(store)
 
     #expect(marker(store, fixture.worktrees[0]) == true)
     #expect(marker(store, fixture.worktrees[1]) == true)
@@ -174,6 +173,17 @@ struct AppFeatureAgentResumeMarkerTests {
   }
 
   // MARK: - Support.
+
+  /// Waits for the marker flips and folds them into `store.state`. A flip
+  /// lands as a received `.pendingAgentResumeChanged`; a non-exhaustive store
+  /// shows received state only after a `receive`, `skipReceivedActions` or the
+  /// next `send`, never after `finish()`, which also times out silently. The
+  /// long timeout only matters under a loaded parallel run; nothing here waits
+  /// on a clock.
+  private func settle(_ store: TestStoreOf<AppFeature>) async {
+    await store.finish(timeout: .seconds(30))
+    await store.skipReceivedActions(strict: false)
+  }
 
   private func marker(_ store: TestStoreOf<AppFeature>, _ worktree: Worktree) -> Bool? {
     store.state.repositories.sidebarItems[id: worktree.id]?.hasPendingAgentResume
