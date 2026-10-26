@@ -335,4 +335,173 @@ struct LayoutPersistenceTests {
     }
     #expect(state.workingDirectory == "/stored")
   }
+
+  // MARK: - Agent session record
+
+  private static let agentSession = AgentSessionRecord(
+    agent: "claude", sessionID: "0b6d3f0e-6a2f-4c55-9b0e-3f5e2a1c7d10")
+
+  private func terminalState(of record: LayoutRecord, paneID: PaneID, tabID: TabID) -> TerminalContentState? {
+    guard case .terminal(let state) = record.layout.panes[id: paneID]?.tabs[id: tabID]?.content.state else {
+      return nil
+    }
+    return state
+  }
+
+  @Test func keepsTheLiveAgentSessionThroughTheAgentsOverlay() throws {
+    let paneID = PaneID()
+    let tabID = TabID()
+    let contentID = ContentID()
+    let runtime = ContentRuntime()
+    let live = StubContent(
+      id: contentID,
+      snapshotState: TerminalContentState(workingDirectory: "/live", agentSession: Self.agentSession)
+    )
+    _ = runtime.provision(live, at: .fallback)
+    let agent = TerminalLayoutSnapshot.SurfaceAgentRecord(agent: "claude", pids: [123], activity: "busy")
+
+    // The presence overlay rebuilds the state; it must carry the session along.
+    let result = LayoutPersistence.record(
+      for: layout(paneID: paneID, tabID: tabID, contentID: contentID),
+      runtime: runtime,
+      agentsBySurface: [contentID.rawValue: [agent]]
+    )
+    let state = try #require(terminalState(of: result, paneID: paneID, tabID: tabID))
+    #expect(state.agents == [agent])
+    #expect(state.agentSession == Self.agentSession)
+  }
+
+  @Test func keepsTheStoredAgentSessionThroughTheDormantAgentsOverlay() throws {
+    let paneID = PaneID()
+    let tabID = TabID()
+    let contentID = ContentID()
+    var stored = layout(paneID: paneID, tabID: tabID, contentID: contentID)
+    stored.panes[id: paneID]?.tabs[id: tabID]?.content = ContentSnapshot(
+      id: contentID,
+      state: .terminal(TerminalContentState(workingDirectory: "/stored", agentSession: Self.agentSession))
+    )
+    let agent = TerminalLayoutSnapshot.SurfaceAgentRecord(agent: "claude", pids: [123], activity: "idle")
+
+    let result = LayoutPersistence.record(
+      for: stored,
+      runtime: ContentRuntime(),
+      agentsBySurface: [contentID.rawValue: [agent]]
+    )
+    let state = try #require(terminalState(of: result, paneID: paneID, tabID: tabID))
+    #expect(state.agents == [agent])
+    #expect(state.agentSession == Self.agentSession)
+  }
+
+  @Test func keepsTheAgentSessionWhileStrippingTheLaunch() throws {
+    let paneID = PaneID()
+    let tabID = TabID()
+    let contentID = ContentID()
+    var stored = layout(paneID: paneID, tabID: tabID, contentID: contentID)
+    stored.panes[id: paneID]?.tabs[id: tabID]?.content = ContentSnapshot(
+      id: contentID,
+      state: .terminal(
+        TerminalContentState(
+          workingDirectory: "/stored",
+          launch: LaunchOverride(initialInput: "claude --resume 'x'\n"),
+          agentSession: Self.agentSession
+        )
+      )
+    )
+
+    let result = LayoutPersistence.record(for: stored, runtime: ContentRuntime())
+    let state = try #require(terminalState(of: result, paneID: paneID, tabID: tabID))
+    #expect(state.launch == nil)
+    #expect(state.agentSession == Self.agentSession)
+  }
+
+  @Test func agentSessionRoundTripsEqual() throws {
+    let state = TerminalContentState(workingDirectory: "/w", agentSession: Self.agentSession)
+    let data = try JSONEncoder().encode(state)
+    let json = try #require(String(data: data, encoding: .utf8))
+    #expect(json.contains("\"agentSession\""))
+    let decoded = try JSONDecoder().decode(TerminalContentState.self, from: data)
+    #expect(decoded == state)
+
+    // A state without a session encodes no key, so older blobs stay byte-stable.
+    let bare = try JSONEncoder().encode(TerminalContentState(workingDirectory: "/w"))
+    #expect(!(String(data: bare, encoding: .utf8) ?? "").contains("agentSession"))
+  }
+
+  /// The encoded v2 file of one terminal tab that carries `agentSession`.
+  private static func encodedFileWithAgentSession() throws -> String {
+    let contentID = ContentID()
+    let paneID = PaneID()
+    let tab = TabItem(
+      id: TabID(),
+      title: "shell",
+      content: ContentSnapshot(
+        id: contentID,
+        state: .terminal(TerminalContentState(workingDirectory: nil, agentSession: agentSession))
+      )
+    )
+    let layout = PaneLayout(
+      tree: SplitTree(view: paneID),
+      panes: [Pane(id: paneID, tabs: [tab], selectedTabID: tab.id)],
+      focusedPaneID: paneID
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    let data = try encoder.encode(LayoutsFile(worktrees: ["wt": LayoutRecord(layout: layout)]))
+    return try #require(String(data: data, encoding: .utf8))
+  }
+
+  private static let encodedAgentSession =
+    #""agentSession":{"agent":"claude","sessionID":"0b6d3f0e-6a2f-4c55-9b0e-3f5e2a1c7d10"}"#
+
+  /// Reads `json` through `LayoutsFile.readPersisted` from a private store.
+  private static func readPersisted(_ json: String) throws -> LayoutsFile.DiskState {
+    let suite = "LayoutPersistenceTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(Data(json.utf8), forKey: LayoutsFile.userDefaultsKey)
+    return LayoutsFile.readPersisted(from: defaults)
+  }
+
+  private static func onlyTerminalState(of file: LayoutsFile) -> TerminalContentState? {
+    guard case .terminal(let state) = file.worktrees["wt"]?.layout.panes.first?.tabs.first?.content.state else {
+      return nil
+    }
+    return state
+  }
+
+  @Test func unknownTerminalKeyIsNotALossyDecode() throws {
+    // An older build sees `agentSession` as an unknown key; a newer build may
+    // add more. Neither may mark the blob lossy, or the reaper stands down.
+    let encoded = try Self.encodedFileWithAgentSession()
+    #expect(encoded.contains(Self.encodedAgentSession))
+    let json = encoded.replacing(
+      Self.encodedAgentSession, with: #""aFutureKey":{"x":1},"# + Self.encodedAgentSession)
+
+    let decoder = JSONDecoder()
+    decoder.userInfo[.layoutDecodeLoss] = LayoutDecodeLoss()
+    let decoded = try decoder.decode(LayoutsFile.self, from: Data(json.utf8))
+    #expect(decoded.undecodedEntryCount == 0)
+
+    guard case .file(let file) = try Self.readPersisted(json) else {
+      Issue.record("Expected .file for an unknown terminal key.")
+      return
+    }
+    #expect(Self.onlyTerminalState(of: file)?.agentSession == Self.agentSession)
+  }
+
+  @Test func malformedAgentSessionDropsOnlyThatField() throws {
+    let encoded = try Self.encodedFileWithAgentSession()
+    #expect(encoded.contains(Self.encodedAgentSession))
+    let json = encoded.replacing(
+      Self.encodedAgentSession, with: #""agentSession":{"agent":42},"workingDirectory":"kept""#)
+
+    guard case .file(let file) = try Self.readPersisted(json) else {
+      Issue.record("Expected .file for a malformed agentSession.")
+      return
+    }
+    #expect(file.undecodedEntryCount == 0)
+    let state = try #require(Self.onlyTerminalState(of: file))
+    #expect(state.agentSession == nil)
+    #expect(state.workingDirectory == "kept")
+  }
 }
