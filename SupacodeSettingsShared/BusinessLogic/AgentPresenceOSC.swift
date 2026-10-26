@@ -8,7 +8,7 @@ import Foundation
 /// Emit shape:
 /// `OSC 3008 ; <action>=<agent> ; event=<event>[ ; pid=<pid>][ ; session=<uuid>][ ; reason=<token>] ST`.
 /// libghostty splits that into `id = <agent>` (the context id, up to the first
-/// `;`) and `metadata = "event=<event>[;pid=<pid>]"`, which is what `parse`
+/// `;`) and `metadata = "event=<event>[;pid=<pid>][;session=...][;reason=...]"`, which is what `parse`
 /// receives. `parse` derives the event solely from the `event=` field and ignores
 /// the start/end action byte.
 /// - attribution is by the receiving surface, so no surface id is carried;
@@ -149,8 +149,8 @@ public nonisolated enum AgentPresenceOSC {
   /// Duplicate `event` / `kind` / `session` / `reason` keys are rejected: a repeated
   /// key would otherwise pin perceived state to the last occurrence, which a splice
   /// into the wire could exploit to flip `event=`, inject `kind=notify`, or swap the
-  /// recorded session. All other duplicate
-  /// keys keep the historical last-write-wins behavior.
+  /// recorded session. All other duplicate keys keep the historical last-write-wins
+  /// behavior.
   public static func parseFields(_ metadata: String) -> [Substring: Substring]? {
     var fields: [Substring: Substring] = [:]
     for pair in metadata.split(separator: ";", omittingEmptySubsequences: true) {
