@@ -243,7 +243,8 @@ final class TerminalContent: TabContent {
       workingDirectory: surfaceView.bridge.state.pwd ?? state.workingDirectory,
       agents: state.agents,
       frozenGrid: surfaceView.captureFrozenGrid() ?? state.frozenGrid,
-      launch: state.launch
+      launch: state.launch,
+      agentSession: state.agentSession
     )
   }
 }

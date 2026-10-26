@@ -266,6 +266,7 @@ Targets come from the `Project.swift` globs (memory `test-and-lint-traps`).
 - Д9. No clear on agent pid death. The liveness sweep runs every 2 s (`AgentPresenceFeature.swift:115, 145`). At logout or reboot, nothing in the code orders zmx daemon death before app termination. A sweep could therefore see the agent dead and clear the record before the app quits, which is exactly the failure the clear rule avoids. Probe ПР5 is rejected for this reason.
 - Д10. Supacode does not write codex `hooks.state` trust hashes. Writing them would bypass codex's review gate for the user. A one-time review prompt is the accepted cost.
 - Д11. `reason` travels as its own allowlisted OSC field, not packed into `event`. That keeps `HookEvent` unchanged for every other agent.
+- ОВ1/ОВ2 (3amigos panel, 2026-10-26): lazy resume when a pane is first shown (A, 3 of 3); one record per pane, last start wins (A, 2 of 3).
 
 ## Split Into Tasks
 

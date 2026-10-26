@@ -136,6 +136,120 @@ The main pieces:
   `LayoutsSplitPerTabPersistenceTests` and `WorktreeGroupStripTests` fail if a merge breaks the
   mode.
 
+## Agent Session Resume After Reboot
+
+zmx sessions do not survive a reboot, so after a restart Supacode restores each pane with its
+cwd and frozen grid, and `zmx attach` starts a fresh shell. The fork types and runs the coding
+agent's resume command in such a pane, so the conversation comes back. Upstream does nothing here.
+
+| Setting | Where | Default | Effect |
+| --- | --- | --- | --- |
+| Resume agents after restart | Settings → Developer; `resumeAgentSessionsAfterRestart` in `~/.config/supacode/config.json` | on | off: nothing is typed after a restart |
+
+The command is typed and run with Enter. Its first word is bare, so your shell aliases apply,
+and the session id is shell-quoted:
+
+| Agent | Typed command |
+| --- | --- |
+| claude | `claude --resume '<id>'` |
+| codex | `codex resume '<id>'` |
+| grok | `grok --resume '<id>'` |
+| agy (best effort) | `agy --conversation '<id>'` |
+
+A pane gets its command only when all of these hold:
+
+- The setting is on.
+- The pane's zmx session is gone at launch. Supacode probes the live zmx sessions once per
+  launch, before any restored pane can attach. If the probe fails, nothing is typed and a
+  `resume skipped: liveness probe failed` warning is logged.
+- The worktree is local (never SSH) and zmx is available.
+- The agent did not exit explicitly while the app ran (the clear rule below).
+- The SessionStart hook captured a record for the pane. The hook adds `session=<uuid>` to the
+  OSC 3008 presence metadata, read once from the hook's stdin, and the id is stored per pane as
+  `TerminalContentState.agentSession` (JSON key `agentSession` in the layouts file).
+
+How it behaves:
+
+- Resume is lazy. Each pane runs its resume when it is first shown after the relaunch, not for
+  all panes at launch (panel decision ОВ1).
+- There is one record per pane, and the last valid local SessionStart wins (panel decision
+  ОВ2). A start is stored only when it carries a session id and the pid of a hook that ran on
+  this machine. The id must be a UUID of exactly 36 characters, and the typed command checks
+  that again. Claude `/clear` gives a new id, and `--resume` keeps the same one.
+- Every first spawn of a pane, whatever its origin, spends that pane's one resume slot for the
+  process, and the claim runs before the checks for `.restored`, the setting and the record. So
+  a pane that already ran in this process, such as a rebuild after an unexpected zmx close, never
+  gets the command typed into its live session. A re-wake is not a first spawn and never claims.
+- Typing the command does not clear the record. The resumed session is alive at the next
+  launch, so nothing is typed again. The command is typed again at any later launch where the
+  pane's zmx session is gone and the record is still there, such as another reboot or a zmx
+  session killed while the app was closed.
+- Codex and agy fire SessionStart at the first prompt, so a pane that never got a prompt has
+  nothing to resume.
+
+**Clear rule.** Resuming an ended session is harmless, while losing the resume after a reboot is
+the failure. So the record is cleared only on an unambiguous explicit exit seen while the app
+runs:
+
+- A SessionEnd clears only the record of the same agent, and only when it carries no session id
+  or the stored one. A late end of an old session or an end from another agent keeps the record.
+- claude: SessionEnd `reason` is `prompt_input_exit`, `clear` or `logout`.
+- codex: any SessionEnd (it sends none on HUP or TERM).
+- grok and agy: never by SessionEnd. A grok pane closed with `/exit` is resumed, which is
+  harmless.
+- An agent pid death never clears the record: at logout or reboot a liveness sweep could see the
+  agent dead before the app quits.
+
+**Codex asks for one review after the update.** The update changes the codex hook commands
+(SessionStart captures the id, and a new SessionEnd entry is added). Codex keeps a trust hash per
+hook and shows its own "Hooks need review" prompt on the next codex start. Approve it once.
+Supacode never writes the codex trust hashes, because that would bypass codex's review gate.
+Until you approve, codex panes most likely get no record and no resume, and nothing errors (not
+confirmed). Agents that are already running keep their old hooks until they restart, so those
+panes get no resume either.
+
+**How to verify** (design Section 10):
+
+1. Run `make install-dev-build` and restart the app. In Settings → Developer, check that the
+   Claude and Codex integrations are installed and up to date: only an `.outdated` integration
+   is reinstalled automatically, and a missing one stays missing, so no record is captured.
+   Start `claude` in one pane and `codex` in another. Send one prompt to each, and approve the
+   codex hook review once. Note `echo $SUPACODE_SURFACE_ID $ZMX_DIR` in each pane.
+2. Quit Supacode. With that `ZMX_DIR`, run the bundled `zmx`
+   (`<app>/Contents/Resources/zmx/zmx`) as `kill supa-<surface id>` for each pane, with the
+   surface id in lower case (`SUPACODE_SURFACE_ID` is upper case, the session name is lower
+   case; `zmx list` shows the exact names). This simulates the reboot: with the app down,
+   nothing receives a SessionEnd.
+3. Relaunch. Expected: each pane types and runs its resume command, and the conversation is back.
+4. Relaunch again without killing anything: nothing is typed. Nothing is typed after step 2 either
+   when claude or codex was closed with `/exit`, when the setting is off, or in a remote
+   worktree.
+
+A real reboot has not been tested, only killed zmx sessions. The design is in
+[plans/2026-10-26-agent-session-resume-design.md](plans/2026-10-26-agent-session-resume-design.md).
+
+### Keeping It On Upstream Merges
+
+- Keep `capturesSession: true` on the hook commands that pass it: claude SessionStart and
+  SessionEnd, codex SessionStart and SessionEnd, grok SessionStart, agy SessionStart (in the
+  `*HookSettings.swift` files; `AgentHookSettingsCommand.compositeCommand` takes the flag). Other
+  agents' hook bytes must stay unchanged.
+- Keep the codex `SessionEnd` entry in `CodexHookSettings.swift`.
+- Keep `agentSession` at every copy site of `TerminalContentState` (`recordedState(from:)`, the
+  restored strip in `TerminalSurfaceRecipe`, `LayoutPersistence`) and in
+  `LayoutPersistence.record(for:)`, which keeps the record and strips only `launch`. A copy that
+  drops it loses the resume on the next save.
+- Keep the `.appLaunched` concatenate in `AppFeature`: the launch liveness probe must finish
+  before `.repositories(.task)` starts, or an attach makes every session look alive.
+- Keep the claim on every first spawn: `TerminalContentBuilder` calls
+  `TerminalSurfaceRecipe.agentResumeSeed`, which claims before it checks `.restored`, the setting
+  and the record. The claim goes through the `claimAgentResume` closure wired in `supacodeApp` to
+  `WorktreeTerminalManager.claimAgentResume` and `AgentResumeGate.claim`. Claiming only on a real
+  inject would let a rebuilt content type the command into its live session.
+- Keep the `landContentSnapshot(tabID:)` call in `handleUnexpectedZmxClose`
+  (`WorktreeTerminalManager`), before `ContentRuntime.liveValue.remove`, so the rebuilt content
+  starts from the live snapshot.
+
 ## Machine-Local Makefile Overrides (`Local.mk`)
 
 The `Makefile` includes an optional, gitignored `Local.mk` from the repository root

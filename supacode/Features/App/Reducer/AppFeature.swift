@@ -402,53 +402,59 @@ struct AppFeature {
       case .appLaunched:
         // A chord restored from disk fires no settingsChanged delta, so register it once here.
         let startupHotkey = state.settings.globalToggleVisibilityHotkey
-        return .merge(
-          refreshInstalledOpenActionsEffect(current: state.installedOpenActions),
-          .send(.repositories(.task)),
-          .send(.settings(.task)),
-          licenseClient.isEnforced ? .send(.license(.task)) : .none,
-          .send(.terminals(.task)),
-          .run { @MainActor send in
-            guard startupHotkey != nil else { return }
-            if !appLifecycleClient.updateGlobalHotkey(startupHotkey) {
-              await send(.settings(.setGlobalHotkeyRegistrationFailed(true)))
+        // Agent resume liveness is captured first: worktrees, and so any restored
+        // pane that could attach and upsert its zmx session, load only from
+        // `.repositories(.task)`, which therefore starts after the probe returns.
+        return .concatenate(
+          .run { _ in await terminalClient.captureLaunchSessionLiveness() },
+          .merge(
+            refreshInstalledOpenActionsEffect(current: state.installedOpenActions),
+            .send(.repositories(.task)),
+            .send(.settings(.task)),
+            licenseClient.isEnforced ? .send(.license(.task)) : .none,
+            .send(.terminals(.task)),
+            .run { @MainActor send in
+              guard startupHotkey != nil else { return }
+              if !appLifecycleClient.updateGlobalHotkey(startupHotkey) {
+                await send(.settings(.setGlobalHotkeyRegistrationFailed(true)))
+              }
+            },
+            .run { _ in
+              await MainActor.run {
+                NSApplication.shared.dockTile.badgeLabel = nil
+              }
+            },
+            .run { send in
+              for await event in await terminalClient.events() {
+                await send(.terminalEvent(event))
+              }
+            },
+            .run { send in
+              for await event in await worktreeInfoWatcher.events() {
+                await send(.repositories(.worktreeInfoEvent(event)))
+              }
+            },
+            .run { send in
+              // Reap crash / force-quit orphans, then resurrect agent badges
+              // from embedded records. Races with `.task` under `.merge`; the
+              // `repositoriesChanged` handler drains layout-seeded surfaces if restore wins.
+              @Dependency(\.defaultAppStorage) var defaults
+              switch LayoutsFile.readPersisted(from: defaults) {
+              case .file(let layouts):
+                let staged = AgentPresenceFeature.stageRestore(from: layouts)
+                await terminalClient.reapOrphanSessions(layouts.allKnownSurfaceIDs)
+                await send(.agentPresence(.restoreFromSnapshot(staged: staged)))
+              case .absent:
+                // A fresh start owns nothing; stray supa-* sessions are orphans.
+                await terminalClient.reapOrphanSessions([])
+              case .unreadable:
+                // Never destroy on no signal: an unreadable store must not
+                // masquerade as empty, or the sweep would kill every detached
+                // session. Skip this launch; the next successful read reaps.
+                break
+              }
             }
-          },
-          .run { _ in
-            await MainActor.run {
-              NSApplication.shared.dockTile.badgeLabel = nil
-            }
-          },
-          .run { send in
-            for await event in await terminalClient.events() {
-              await send(.terminalEvent(event))
-            }
-          },
-          .run { send in
-            for await event in await worktreeInfoWatcher.events() {
-              await send(.repositories(.worktreeInfoEvent(event)))
-            }
-          },
-          .run { send in
-            // Reap crash / force-quit orphans, then resurrect agent badges
-            // from embedded records. Races with `.task` under `.merge`; the
-            // `repositoriesChanged` handler drains layout-seeded surfaces if restore wins.
-            @Dependency(\.defaultAppStorage) var defaults
-            switch LayoutsFile.readPersisted(from: defaults) {
-            case .file(let layouts):
-              let staged = AgentPresenceFeature.stageRestore(from: layouts)
-              await terminalClient.reapOrphanSessions(layouts.allKnownSurfaceIDs)
-              await send(.agentPresence(.restoreFromSnapshot(staged: staged)))
-            case .absent:
-              // A fresh start owns nothing; stray supa-* sessions are orphans.
-              await terminalClient.reapOrphanSessions([])
-            case .unreadable:
-              // Never destroy on no signal: an unreadable store must not
-              // masquerade as empty, or the sweep would kill every detached
-              // session. Skip this launch; the next successful read reaps.
-              break
-            }
-          }
+          )
         )
 
       case .agentPresence(.delegate(.surfacesChanged(let surfaces))):
