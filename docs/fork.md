@@ -172,11 +172,18 @@ How it behaves:
 
 - Resume is lazy. Each pane runs its resume when it is first shown after the relaunch, not for
   all panes at launch (panel decision ОВ1).
-- There is one record per pane, and the last SessionStart wins (panel decision ОВ2). Claude
-  `/clear` gives a new id, and `--resume` keeps the same one.
-- The command is typed at most once per pane per process. Typing it does not clear the record:
-  the resumed session is alive at the next launch, so nothing is typed again. Only another
-  reboot types it again.
+- There is one record per pane, and the last valid local SessionStart wins (panel decision
+  ОВ2). A start is stored only when it carries a session id and the pid of a hook that ran on
+  this machine. The id must be a UUID of exactly 36 characters, and the typed command checks
+  that again. Claude `/clear` gives a new id, and `--resume` keeps the same one.
+- Every first spawn of a pane, whatever its origin, spends that pane's one resume slot for the
+  process, and the claim runs before the checks for `.restored`, the setting and the record. So
+  a pane that already ran in this process, such as a rebuild after an unexpected zmx close, never
+  gets the command typed into its live session. A re-wake is not a first spawn and never claims.
+- Typing the command does not clear the record. The resumed session is alive at the next
+  launch, so nothing is typed again. The command is typed again at any later launch where the
+  pane's zmx session is gone and the record is still there, such as another reboot or a zmx
+  session killed while the app was closed.
 - Codex and agy fire SessionStart at the first prompt, so a pane that never got a prompt has
   nothing to resume.
 
@@ -184,6 +191,8 @@ How it behaves:
 the failure. So the record is cleared only on an unambiguous explicit exit seen while the app
 runs:
 
+- A SessionEnd clears only the record of the same agent, and only when it carries no session id
+  or the stored one. A late end of an old session or an end from another agent keeps the record.
 - claude: SessionEnd `reason` is `prompt_input_exit`, `clear` or `logout`.
 - codex: any SessionEnd (it sends none on HUP or TERM).
 - grok and agy: never by SessionEnd. A grok pane closed with `/exit` is resumed, which is
@@ -201,12 +210,16 @@ panes get no resume either.
 
 **How to verify** (design Section 10):
 
-1. Run `make install-dev-build`, restart the app, and start `claude` in one pane and `codex` in
-   another. Send one prompt to each, and approve the codex hook review once. Note
-   `echo $SUPACODE_SURFACE_ID $ZMX_DIR` in each pane.
+1. Run `make install-dev-build` and restart the app. In Settings → Developer, check that the
+   Claude and Codex integrations are installed and up to date: only an `.outdated` integration
+   is reinstalled automatically, and a missing one stays missing, so no record is captured.
+   Start `claude` in one pane and `codex` in another. Send one prompt to each, and approve the
+   codex hook review once. Note `echo $SUPACODE_SURFACE_ID $ZMX_DIR` in each pane.
 2. Quit Supacode. With that `ZMX_DIR`, run the bundled `zmx`
-   (`<app>/Contents/Resources/zmx/zmx`) as `kill supa-<surface id>` for each pane. This simulates
-   the reboot: with the app down, nothing receives a SessionEnd.
+   (`<app>/Contents/Resources/zmx/zmx`) as `kill supa-<surface id>` for each pane, with the
+   surface id in lower case (`SUPACODE_SURFACE_ID` is upper case, the session name is lower
+   case; `zmx list` shows the exact names). This simulates the reboot: with the app down,
+   nothing receives a SessionEnd.
 3. Relaunch. Expected: each pane types and runs its resume command, and the conversation is back.
 4. Relaunch again without killing anything: nothing is typed. Nothing is typed after step 2 either
    when claude or codex was closed with `/exit`, when the setting is off, or in a remote
@@ -228,6 +241,11 @@ A real reboot has not been tested, only killed zmx sessions. The design is in
   drops it loses the resume on the next save.
 - Keep the `.appLaunched` concatenate in `AppFeature`: the launch liveness probe must finish
   before `.repositories(.task)` starts, or an attach makes every session look alive.
+- Keep the claim on every first spawn: `TerminalContentBuilder` calls
+  `TerminalSurfaceRecipe.agentResumeSeed`, which claims before it checks `.restored`, the setting
+  and the record. The claim goes through the `claimAgentResume` closure wired in `supacodeApp` to
+  `WorktreeTerminalManager.claimAgentResume` and `AgentResumeGate.claim`. Claiming only on a real
+  inject would let a rebuilt content type the command into its live session.
 - Keep the `landContentSnapshot(tabID:)` call in `handleUnexpectedZmxClose`
   (`WorktreeTerminalManager`), before `ContentRuntime.liveValue.remove`, so the rebuilt content
   starts from the live snapshot.
