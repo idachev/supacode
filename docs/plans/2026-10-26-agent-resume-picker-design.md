@@ -77,7 +77,7 @@ is the only `.wakeTab` sender). After a real reboot only the opened worktree res
 | The gate: `liveSessionNames` (`let`), `claimed` (`private(set)`), mutating `claim` | `AgentResumeGate.swift:9-23` |
 | The capture runs once; a nil probe leaves no gate | `WorktreeTerminalManager.swift:2006-2018` |
 | `claimAgentResume` returns false without a gate | `WorktreeTerminalManager.swift:2023-2033` |
-| A missing zmx binary makes the probe nil (`runZmx` returns nil), so no gate | `ZmxClient.swift:204-211, 241-246` |
+| A missing zmx binary makes the probe nil (`runZmx` returns nil), so no gate; the probe skips the socket-budget check that `executableURL` applies | `ZmxClient.swift:72-91, 204-211, 241-246` |
 | `.appLaunched` concatenates the capture before `.repositories(.task)`; the terminal event subscription is inside the later `.merge` | `AppFeature.swift:402-430` |
 | Events emitted before the subscription are buffered | `WorktreeTerminalManager.swift:2223-2227` |
 | `AppFeature.body` runs `core` BEFORE the child scopes; a later `Reduce` sees the children's new state | `AppFeature.swift:2184-2222` |
@@ -112,20 +112,25 @@ the reducer runs, as `splitPane` does.
 | Reducer state | `@ObservableState struct AgentResumeState: Equatable { var liveness: AgentResumeLiveness = .notCaptured; var claimed: Set<ContentID> = []; var pending: IdentifiedArrayOf<PendingAgentResume> = []; var didEvaluateAutoPresent = false; var wakeQueue: [ContentID] = [] }` | same file |
 | Predicate | `nonisolated enum AgentResumePending { static func compute(layouts: IdentifiedArrayOf<LayoutFeature.State>, liveness: AgentResumeLiveness, claimed: Set<ContentID>, enabled: Bool, worktree: (Worktree.ID) -> Worktree?, repositoryName: (Worktree.ID) -> String?) -> IdentifiedArrayOf<PendingAgentResume>; static let wakeStagger: Duration = .seconds(1) }` | new `supacode/Features/AgentResume/BusinessLogic/AgentResumePending.swift` |
 | App state | `AppFeature.State.agentResume: AgentResumeState`; `@Presents var agentResumePicker: AgentResumePickerFeature.State?` | `AppFeature.swift` (State, near `:180`) |
-| App actions | `AppFeature.Action.agentResumePicker(PresentationAction<AgentResumePickerFeature.Action>)`, `.agentResumePickerRequested`, `.agentResumeWakeTick` | `AppFeature.swift` (Action, near `:360`) |
+| App actions | `AppFeature.Action.agentResumePicker(PresentationAction<AgentResumePickerFeature.Action>)`, `.agentResumePickerRequested`, `.agentResumeWakeRequested([ContentID])`, `.agentResumeWakeTick`; `enum AgentResumeCancelID: Hashable { case wake }` | `AppFeature.swift` (Action, near `:360`) |
 | Picker feature | `@Reducer struct AgentResumePickerFeature`; `@ObservableState struct State: Equatable, Identifiable { let id: UUID; var rows: IdentifiedArrayOf<PendingAgentResume>; var selected: Set<ContentID> }`; `enum Action { case toggleRow(ContentID); case resumeSelectedTapped; case notNowTapped; case delegate(Delegate) }`; `enum Delegate { case resumeRequested([ContentID]) }` | new `supacode/Features/AgentResume/Reducer/AgentResumePickerFeature.swift` |
 | Picker view | `struct AgentResumePickerView: View` | new `supacode/Features/AgentResume/Views/AgentResumePickerView.swift` |
 | Sidebar | `SidebarItemFeature.State.hasPendingAgentResume: Bool = false`; `SidebarItemFeature.Action.pendingAgentResumeChanged(Bool)` | `SidebarItemFeature.swift` (`:127`, `:141-148`) |
 | Sidebar view | `private struct SidebarPendingResumeIndicator: View, Equatable` | `SidebarItemView.swift` (next to `:576`) |
 | Shortcut | `AppShortcutID.resumeAgentSessions`, `AppShortcuts.resumeAgentSessions = AppShortcut(id: .resumeAgentSessions, key: "r", modifiers: [.command, .control])` | `SupacodeSettingsShared/App/AppShortcuts.swift` |
-| Palette | `CommandPaletteItem.Kind.resumeAgentSessions`, `CommandPaletteFeature.Delegate.resumeAgentSessions`, `CommandPaletteItemID.globalResumeAgentSessions = "global.resume-agent-sessions"` | `CommandPaletteItem.swift:74+`, `CommandPaletteFeature.swift:56+, 760+` |
+| Palette | `CommandPaletteItem.Kind.resumeAgentSessions` (`isGlobal` true, `isRootAction` true, shortcut `AppShortcuts.resumeAgentSessions`), `CommandPaletteFeature.Delegate.resumeAgentSessions`, `CommandPaletteItemID.globalResumeAgentSessions = "global.resume-agent-sessions"` | `CommandPaletteItem.swift:74+, 108-175`, `CommandPaletteFeature.swift:56+, 760+, 914-915, 973, 1031` |
 | Seed outcome | `nonisolated enum TerminalSurfaceRecipe.AgentResumeSkip: String, Equatable { case settingOff, remote, zmxMissing, noRecord, unsupportedRecord }` + `static func agentResumeSkip(record:worktree:zmxAvailable:enabled:) -> AgentResumeSkip?` | `TerminalSurfaceRecipe.swift:269-282` |
 
 ## 1. Gate Events (Manager to Reducer)
 
 1. `captureLaunchSessionLiveness()` (`WorktreeTerminalManager.swift:2006-2018`) emits
    `.agentResumeLivenessCaptured(liveSessionNames:)` after it sets the gate: the filtered live set,
-   or nil when the probe failed. It emits once, because the capture runs once. The event is
+   or nil when the probe failed. It also emits nil when `zmxClient.executableURL()` is nil (ЗДС r1
+   F1): the probe runs the bundled zmx without the socket-budget check (`ZmxClient.swift:89-91,
+   204-211`), but the seed reads the budget-gated `executableURL` (`ZmxClient.swift:72-87`,
+   `supacodeApp.swift:399-402`). A long custom `ZMX_DIR` can pass the probe and still make the
+   seed skip with `.zmxMissing`. So the event says "no resume" whenever zmx is not usable for a
+   spawn. The gate itself does not change; the seed keeps its own zmx check. It emits once, because the capture runs once. The event is
    emitted before the `AppFeature` subscription starts, so `emit` buffers it
    (`WorktreeTerminalManager.swift:2223-2227`). It is a one-shot event: `coalesceKey` returns nil
    through `default:`.
@@ -157,8 +162,9 @@ the reducer runs, as `splitPane` does.
 - `ZmxSessionID.make(surfaceID: tab.content.id.rawValue)` is not in the live set;
 - `tab.content.id` is not in `claimed`.
 
-zmx availability needs no own check: without the bundled zmx the probe is nil
-(`ZmxClient.swift:208-211`), so `liveness` is `.probeFailed`.
+zmx availability needs no own check in `compute`: without the bundled zmx the probe is nil
+(`ZmxClient.swift:208-211`), and without a usable zmx (`executableURL() == nil`) the capture emits
+nil (Section 1, step 1). Both give `liveness == .probeFailed`.
 
 Row fields: `repositoryName` from `repositoryID(for:)` (`RepositoriesFeature.swift:6126`) and the
 repository's name; `worktreeName` = `Worktree.name`; `tabTitle` = `tab.customTitle ?? tab.title`
@@ -175,10 +181,12 @@ scopes and would not yet see `isInitialLoadComplete` or a removed tab. It calls
   `.repositories(.delegate(.repositoriesChanged))`;
 - `.terminals(.layoutsHydrated)`, `.terminals(.detachLayout)`;
 - `.terminals(.layouts(.element(_, a)))` where `RecentTerminals.canRemoveTabs(a)`
-  (`RecentTerminals.swift:51-61`);
+  (`RecentTerminals.swift:51-61`), or `a` is `.renameTab`, `.endTabRename`, `.moveTab`,
+  `.moveTabToSplit` or `.moveTabToSpanningSplit` (`LayoutFeature.swift:180-193`): these change a
+  row's title or order without a claim (ЗДС r1 F4);
 - `.settings(.delegate(.settingsChanged))` (`AppFeature.swift:775`), for the setting flip.
 
-A record in an unspawned tab cannot change, so no other action can change pending.
+A record in an unspawned tab cannot change, so no other action can change pending or its rows.
 `refreshAgentResume` reads the setting with `@Shared(.settingsFile)`, as the recipe does. It then
 updates the sheet (Section 4), the marker (Section 5) and the auto-present (Section 3).
 
@@ -229,6 +237,12 @@ nothing. Two senders:
   `ContentView.paletteItems` (`ContentView.swift:197-205`) fills from `store.agentResume.pending`.
   `globalActionItems()` stays unchanged; `commandPaletteItems` appends the item. `AppFeature`
   maps `.commandPalette(.delegate(.resumeAgentSessions))` to `.agentResumePickerRequested`.
+  The new `Kind` also goes into every exhaustive switch (ЗДС r1 F6), with the same values as
+  `.viewArchivedWorktrees`: `CommandPaletteItem.isGlobal` (`CommandPaletteItem.swift:108`) true,
+  `isRootAction` (`:137`) true, so it shows on an empty query, and the shortcut switch (`:170-175`)
+  returns `AppShortcuts.resumeAgentSessions`. In `CommandPaletteFeature`, the kind-to-delegate
+  mapping (`:914-915` pattern) returns `.resumeAgentSessions`, and the two kind lists at `:973` and
+  `:1031` get the case next to `.viewArchivedWorktrees`.
 
 **Hotkey.** ⌃⌘R (`"r"`, `[.command, .control]`). `AppShortcuts.swift:503-650` has no other ⌃⌘R;
 the R combos in use are ⌘R, ⌥⌘R, ⇧⌘R and ⌃⇧R. A grep of `supacode` for a hard-coded
@@ -291,23 +305,39 @@ When pending becomes empty while the sheet is open, the reducer sets `agentResum
 
 ## 6. Background Wake
 
-**Effect.** `.agentResumePicker(.presented(.delegate(.resumeRequested(ids))))` sets
+**Effect.** The picker delegate `.agentResumePicker(.presented(.delegate(.resumeRequested(ids))))`
+maps to `.send(.agentResumeWakeRequested(ids))`. `.agentResumeWakeRequested` is the entry point
+of task (b), so (b) builds and tests without the picker (ЗДС r1 F7). It sets
 `state.agentResume.wakeQueue = ids`, logs "resume requested", and returns
-`.send(.agentResumeWakeTick)`.
+`.concatenate(.cancel(id: AgentResumeCancelID.wake), .send(.agentResumeWakeTick))`. The explicit
+cancel stops the timer of an earlier queue on every new request, also when the new queue never
+arms a timer (one id, or every id already claimed) (ЗДС r1 F8).
 
 `.agentResumeWakeTick`:
-1. Pop the first id from `wakeQueue`. If the queue is empty, return `.none`.
-2. If the id is not in `pending` any more (claimed meanwhile, tab closed, setting off), log at
-   debug and return `.send(.agentResumeWakeTick)` (skip without delay).
-3. Otherwise resolve the worktree with `state.repositories.worktree(for:)` and send
-   `terminalClient.send(.wakeTabInBackground(worktree, tabID: row.tabID))`. Log "resume wake sent".
-4. If the queue is not empty, return
-   `.run { send in try await clock.sleep(for: AgentResumePending.wakeStagger); await send(.agentResumeWakeTick) }`
-   with `.cancellable(id: AgentResumeCancelID.wake, cancelInFlight: true)`.
+1. Pop the first id from `wakeQueue`. If there is none, return `.none`.
+2. If the id is not in `pending` any more (claimed meanwhile, tab closed, setting off), or its
+   worktree does not resolve, log at debug and return `.send(.agentResumeWakeTick)` (skip without
+   delay).
+3. Otherwise resolve the worktree with `state.repositories.worktree(for:)`, log "resume wake
+   sent", and return ONE effect that does the dispatch and, only when ids remain, the wait
+   (ЗДС r1 F3; `TerminalClient.send` is `@MainActor`, `TerminalClient.swift:6`, so it runs in the
+   effect, as the existing handlers call it):
+
+   ```swift
+   let hasMore = !state.agentResume.wakeQueue.isEmpty
+   return .run { send in
+     await terminalClient.send(.wakeTabInBackground(worktree, tabID: row.tabID))
+     guard hasMore else { return }
+     try await clock.sleep(for: AgentResumePending.wakeStagger)
+     await send(.agentResumeWakeTick)
+   }
+   .cancellable(id: AgentResumeCancelID.wake, cancelInFlight: true)
+   ```
+
+   The last id gets its dispatch too; it only skips the wait.
 
 The queue is reducer state, so every step re-checks pending live (S5), and a `TestClock` drives
-the stagger. A second "Resume selected" while a queue runs replaces the queue and cancels the old
-timer.
+the stagger.
 
 **Stagger: 1 s.** Each wake starts a Ghostty surface, a `zmx attach`, a new zmx session, a shell
 and an agent. Claude and codex take about 1-2 s of CPU to start and each hits its API at startup.
@@ -422,9 +452,23 @@ and a nil command text is the `.unsupportedRecord` case. The decision order of
   - `AppFeature`: `.resumeRequested([a, b, c])` with a `TestClock`: `a` is sent at once; nothing more
     before 1 s; `b` after `clock.advance(by: .seconds(1))`; a `b` claimed before its tick is skipped
     without waiting; the queue ends. Record the sends with a `LockIsolated` `terminalClient.send`.
+  - The last id of a queue is dispatched (one id: one send, no timer left) (ЗДС r1 F3).
+  - Replacement queue: `[a, b]`, then `[c]` before 1 s: `c` is sent at once; after
+    `clock.advance(by: .seconds(1))` nothing more is sent and no effect is left in flight
+    (ЗДС r1 F8).
+  - The tests send `.agentResumeWakeRequested` directly, without the picker (ЗДС r1 F7).
   - Manager: `.wakeTabInBackground` for a worktree without a host creates the host and routes
     `.wakeTab` to that layout; a gone tab sends nothing. (`WorktreeTerminalManager` test with a
     stub `appStore`, as the existing manager tests do.)
+  - Wake without selection (ЗДС r1 F5): with the `TerminalsFeatureTests` harness (fake
+    `HibernatableContent`, `TestClock` and `ContentRuntime()`, `TerminalsFeatureTests.swift:14,
+    72-136`), plus a recording `LayoutContentFactory` override (the dependency at
+    `LayoutFeature.swift:50-57`; tests that override it: `LayoutFeatureTests.swift`), a hydrated layout of a non-selected worktree gets
+    `.layouts(.element(id:, action: .wakeTab(id:)))`. Expected: the factory gets one request with
+    `origin == .restored` and the tab's content id; the content is provisioned; `selectedWorktreeID`,
+    the layout's focused pane and each pane's selected tab do not change. A real Ghostty spawn
+    with the typed command stays in Dev Verification; the claim and input decision is covered by
+    `TerminalSurfaceRecipeAgentResumeTests`.
 - (c) Picker:
   - `AgentResumePickerFeature`: toggle; "Resume selected" sends the delegate with the ticked ids in
     row order and dismisses; "Not now" dismisses with no delegate.
@@ -432,12 +476,16 @@ and a nil command text is the `.unsupportedRecord` case. The decision order of
     arrived, in either order; it does not open with empty pending, with `.probeFailed`, or a second
     time; `.agentResumePickerRequested` opens it again; a claim while open drops the row; the last
     claim closes it; the palette delegate maps to `.agentResumePickerRequested`.
-  - `CommandPaletteFeature.items`: the item is present only with `hasPendingAgentResumes: true`.
+  - `CommandPaletteFeature.items`: the item is present only with `hasPendingAgentResumes: true`,
+    and it shows on an empty query (`isRootAction`).
+  - Selecting the palette item sends `.delegate(.resumeAgentSessions)` (ЗДС r1 F6).
   - The `AppShortcuts` tests that enumerate ids, if any, gain the new id.
 - (d) Marker:
   - `SidebarItemFeatureTests`: `.pendingAgentResumeChanged` sets the field and is a no-op for the same value.
   - `AppFeature`: a pending row marks its worktree; the claim of its last pending pane clears the
-    marker; a worktree with two pending panes keeps the marker after one claim; the setting off
+    marker; a claimed event that comes from a lazy show (no picker involved) clears the row and the
+    marker the same way (ЗДС r1 F5); a `.renameTab` of a pending tab updates the row title on the
+    next refresh (ЗДС r1 F4); a worktree with two pending panes keeps the marker after one claim; the setting off
     clears all markers; no action is sent for an unchanged row.
 - (e) Logging: `agentResumeSkip` table tests (each reason, nil when the inject proceeds). The log
   lines themselves are not asserted.
@@ -503,22 +551,30 @@ and a nil command text is the `.unsupportedRecord` case. The decision order of
 Each task is reviewed alone against the Shared Contract. Later tasks may stub earlier types.
 
 - (a) Gate events and pending. Touches: `AgentResumeGate.swift` (`ClaimOutcome`, `claimOutcome`);
-  `TerminalClient.swift` (the two events); `WorktreeTerminalManager.captureLaunchSessionLiveness`,
+  `TerminalClient.swift` (the two events); `WorktreeTerminalManager.captureLaunchSessionLiveness`
+  (emits nil also when `zmxClient.executableURL()` is nil),
   `.claimAgentResume` (emit; the claim-refusal debug logs of Section 8); new
   `Features/AgentResume/Models/AgentResumeState.swift` (`AgentResumeLiveness`,
   `PendingAgentResume`, `AgentResumeState`); new `Features/AgentResume/BusinessLogic/AgentResumePending.swift`
   (`compute`, `wakeStagger`); `AppFeature` (`State.agentResume`, event handling, the post-scope
-  `Reduce` with `refreshAgentResume` limited to the recompute). Tests (a). After: nothing.
+  `Reduce` with `refreshAgentResume` limited to the recompute; its action gate includes the
+  rename and move actions of Section 2). Tests (a), plus a capture test: probe `[]` with
+  `executableURL = { nil }` emits nil. After: nothing.
 - (b) Background wake. Touches: `TerminalClient.Command.wakeTabInBackground`;
   `WorktreeTerminalManager.handleManagementCommand` and the lists at `:524-533`, `:570-576`;
-  `AppFeature` (`.agentResumeWakeTick`, the `wakeQueue` handling, `AgentResumeCancelID`, a
-  `.resumeRequested` entry point the picker delegate calls). Tests (b). After: (a).
+  `AppFeature` (`.agentResumeWakeRequested([ContentID])`, `.agentResumeWakeTick`, the `wakeQueue`
+  handling, `AgentResumeCancelID.wake` with the explicit cancel on every request, the one-effect
+  dispatch of Section 6); `TerminalsFeatureTests` (the wake-without-selection test). Tests (b).
+  After: (a).
 - (c) Picker sheet, palette, menu, hotkey. Touches: new `AgentResumePickerFeature.swift`,
   `AgentResumePickerView.swift`; `AppFeature` (`@Presents agentResumePicker`, `.ifLet`,
   `.agentResumePickerRequested`, `@Dependency(\.uuid)`, the auto-present in `refreshAgentResume`, the live row sync and
-  auto-close, the palette delegate); `ContentView` (sheet, `paletteItems` argument);
+  auto-close, the palette delegate, the picker delegate mapped to `.agentResumeWakeRequested`);
+  `ContentView` (sheet, `paletteItems` argument);
   `CommandPaletteFeature` (`Delegate.resumeAgentSessions`, `items`/`commandPaletteItems`
-  parameter, `CommandPaletteItemID.globalResumeAgentSessions`); `CommandPaletteItem.Kind`;
+  parameter, `CommandPaletteItemID.globalResumeAgentSessions`, the kind-to-delegate mapping and
+  the kind lists at `:914-915`, `:973`, `:1031`); `CommandPaletteItem` (`Kind`, `isGlobal`,
+  `isRootAction`, the shortcut switch at `:108-175`);
   `AppShortcuts.swift` (id, lists, names, `resumeAgentSessions`); `WorktreeCommands.swift` (menu
   item). Tests (c). After: (a), (b).
 - (d) Sidebar marker. Touches: `SidebarItemFeature` (`hasPendingAgentResume`,
@@ -553,3 +609,9 @@ Each task is reviewed alone against the Shared Contract. Later tasks may stub ea
 - That the terminal event buffer never sheds the one `.agentResumeLivenessCaptured` event. It is
   emitted before the subscription and well under `pendingEventCap = 1024`. If it were shed, no
   sheet and no marker would appear, and the lazy resume would still work.
+- (ЗДС r1 F2, accepted) A shed `.agentResumeClaimed` event. The live stream uses
+  `.bufferingNewest(eventBufferCap)` (`WorktreeTerminalManager.swift:697-700`, cap 2048 at `:58`),
+  and only projections are replayed after a shed (`:2248-2260`). A shed claim would leave a stale
+  pending row and marker until the next launch. It needs a backlog of more than 2048 events, and
+  a stale row is harmless by S5 (its wake finds live content: no first spawn, no claim, no typing).
+  No replay is added.
