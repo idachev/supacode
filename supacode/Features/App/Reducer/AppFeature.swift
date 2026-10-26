@@ -375,7 +375,7 @@ struct AppFeature {
     case agentResumeWakeTick
   }
 
-  enum AgentResumeCancelID: Hashable {
+  nonisolated enum AgentResumeCancelID: Hashable, Sendable {
     /// The stagger timer of the background wake queue.
     case wake
   }
