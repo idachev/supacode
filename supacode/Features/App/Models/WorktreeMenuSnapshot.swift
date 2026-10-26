@@ -143,7 +143,8 @@ extension AppFeature.Action {
       .systemNotificationsPermissionFailed, .deeplinkReceived,
       .deeplink, .commandAckTimedOut, .deeplinkConfirmationTimedOut,
       .deeplinkReferenceOpened, .settingsWindowOpened, .settingsRelocationDidNotFinish, .settingsStoreUnreadable,
-      .alert, .deeplinkInputConfirmation:
+      .alert, .deeplinkInputConfirmation,
+      .agentResumePicker, .agentResumePickerRequested, .agentResumeWakeRequested:
       return false
     }
   }
