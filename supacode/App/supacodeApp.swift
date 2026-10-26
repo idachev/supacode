@@ -345,6 +345,9 @@ struct SupacodeApp: App {
         reapOrphanSessions: { knownSurfaceIDs in
           await terminalManager.reapOrphanSessions(knownSurfaceIDs: knownSurfaceIDs)
         },
+        captureLaunchSessionLiveness: {
+          await terminalManager.captureLaunchSessionLiveness()
+        },
         saveLayoutsWithAgents: { agentsBySurface in
           terminalManager.saveAllLayoutSnapshots(agentsBySurface: agentsBySurface)
         }
@@ -418,6 +421,9 @@ struct SupacodeApp: App {
       environmentExtras: { [weak terminalManager] request in
         terminalManager?.hostIfExists(for: request.worktreeID)?
           .blockingScriptEnvironment(for: request.tabID) ?? [:]
+      },
+      claimAgentResume: { [weak terminalManager] in
+        terminalManager?.claimAgentResume($0) ?? false
       }
     ).factory()
   }
