@@ -71,6 +71,12 @@ final class WorktreeTerminalManager {
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored @Dependency(\.zmxClient) private var zmxClient
   @ObservationIgnored @Dependency(\.analyticsClient) private var analyticsClient
+  /// Launch-time zmx liveness for the one-shot agent resume; nil until
+  /// `captureLaunchSessionLiveness()` ran, and stays nil when its probe failed.
+  @ObservationIgnored private(set) var agentResumeGate: AgentResumeGate?
+  /// Set on the first `captureLaunchSessionLiveness()` call, success or not,
+  /// so a later call never re-probes after restored panes may have attached.
+  @ObservationIgnored private var didCaptureLaunchSessionLiveness = false
   /// Serialized off-main writer that merges per-worktree layout changes into
   /// `layouts.json` without clobbering keys it isn't carrying. Built from the
   /// dependency context at init so async flushes use the same storage the test
@@ -1964,6 +1970,31 @@ final class WorktreeTerminalManager {
         group.addTask { await client.killSession(id) }
       }
     }
+  }
+
+  /// Captures which `supa-*` sessions are alive before any restored pane can
+  /// attach (an attach upserts its session). Runs once per process; a failed
+  /// probe leaves no gate, so nothing is resumed this launch.
+  func captureLaunchSessionLiveness() async {
+    guard !didCaptureLaunchSessionLiveness else { return }
+    didCaptureLaunchSessionLiveness = true
+    let probe = await zmxClient.listSessionsWithClients()
+    agentResumeGate = probe.map { AgentResumeGate(liveSessionNames: Set($0.map(\.name))) }
+    if agentResumeGate == nil {
+      terminalLogger.warning("resume skipped: liveness probe failed")
+    }
+  }
+
+  /// Spends the content's one resume slot for this process. Called by the
+  /// content builder only once a restored pane holds a resumable record.
+  func claimAgentResume(_ id: ContentID) -> Bool {
+    guard agentResumeGate != nil else {
+      if !didCaptureLaunchSessionLiveness {
+        terminalLogger.warning("resume skipped: liveness not captured")
+      }
+      return false
+    }
+    return agentResumeGate?.claim(id) ?? false
   }
 
   func setNotificationsEnabled(_ enabled: Bool) {

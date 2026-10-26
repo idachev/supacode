@@ -267,6 +267,20 @@ nonisolated enum TerminalSurfaceRecipe {
     return stored > 0 ? Float32(stored) : nil
   }
 
+  /// The resume command to type into a restored pane, or nil when the pane
+  /// must not resume: the setting is off, the worktree is remote, there is no
+  /// zmx (so no `supa-*` session whose death means a reboot), or there is no
+  /// record. The caller claims the gate only after this is non-nil.
+  static func agentResumeInput(
+    record: AgentSessionRecord?,
+    worktree: Worktree,
+    zmxAvailable: Bool,
+    enabled: Bool
+  ) -> String? {
+    guard enabled, worktree.host == nil, zmxAvailable, let record else { return nil }
+    return AgentResumeCommand.initialInput(for: record)
+  }
+
   private static func context(for origin: ContentOrigin) -> ghostty_surface_context_e {
     switch origin {
     case .first:
@@ -296,6 +310,10 @@ struct TerminalContentBuilder {
   var wireSurface: (GhosttySurfaceView, ContentRequest) -> Void
   /// Extra environment for a spawning surface (blocking-script markers).
   var environmentExtras: (ContentRequest) -> [String: String]
+  /// Spends a restored content's one agent-resume slot for this process;
+  /// false when its zmx session was alive at launch, it already resumed, or
+  /// launch liveness was never captured.
+  var claimAgentResume: (ContentID) -> Bool
 
   func factory() -> LayoutContentFactory {
     LayoutContentFactory { request in
@@ -342,13 +360,35 @@ struct TerminalContentBuilder {
             frozenGrid: currentState.frozenGrid
           )
         }
+        let zmxPath = zmxExecutablePath()
+        // One-shot agent resume on the first spawn of a restored pane: only the
+        // original request origin counts, so a re-wake never types it again.
+        // The record is not consumed; the gate's liveness and claim keep it to
+        // one inject per dead session.
+        @Shared(.settingsFile) var settingsFile
+        if phase == .first, request.origin == .restored,
+          let input = TerminalSurfaceRecipe.agentResumeInput(
+            record: currentState.agentSession,
+            worktree: worktree,
+            zmxAvailable: zmxPath != nil,
+            enabled: settingsFile.global.resumeAgentSessionsAfterRestart
+          ),
+          claimAgentResume(request.contentID)
+        {
+          seedState = TerminalContentState(
+            workingDirectory: seedState.workingDirectory,
+            agents: seedState.agents,
+            frozenGrid: seedState.frozenGrid,
+            launch: LaunchOverride(initialInput: input)
+          )
+        }
         let plan = TerminalSurfaceRecipe.plan(
           for: effective,
           seed: TerminalSurfaceRecipe.PlanSeed(
             terminalState: seedState,
             worktree: worktree,
             socketPath: socketPath(),
-            zmxExecutablePath: zmxExecutablePath(),
+            zmxExecutablePath: zmxPath,
             inheritedFrom: effective.inheritedFrom.flatMap(sourceSurface),
             fallbackFontSize: TerminalSurfaceRecipe.rememberedZoomFontSize(
               gatedBy: runtime.windowInheritsFontSize()
