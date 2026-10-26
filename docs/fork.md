@@ -278,6 +278,7 @@ characters of the session id.
 | `App` | `resume wake sent: worktree=<id> tab=<uuid>` | info | one background wake |
 | `App` | `resume wake skipped: no longer pending content=<uuid>` | debug | a queued pane was claimed or closed meanwhile |
 | `App` | `resume picker closed: nothing pending` | debug | the sheet closes itself |
+| `App` | `resume picker not shown: <n> pending, open=<bool>` | debug | ⌃⌘R while nothing is pending or the sheet is open |
 
 A re-wake of a hibernated pane logs nothing. In a release build `SupaLogger` writes to the
 unified log with the subsystem `app.supabit.supacode` and the category from the table (debug and
@@ -302,7 +303,7 @@ terminal:
    Claude and Codex integrations are installed and up to date: only an `.outdated` integration
    is reinstalled automatically, and a missing one stays missing, so no record is captured.
    Check that "Resume agents after restart" is on.
-2. Open at least two local worktrees, A and B (three is better: add C). Start `claude` in a pane
+2. Open three local worktrees, A, B and C. Start `claude` in a pane
    of A and of B, and `codex` in a pane of C. Send one prompt to each, and approve the codex hook
    review once. Note `echo $SUPACODE_SURFACE_ID $ZMX_DIR` in each pane. Select A last.
 3. Quit Supacode. With that `ZMX_DIR`, run the bundled `zmx`
@@ -346,7 +347,7 @@ and [plans/2026-10-26-agent-resume-picker-design.md](plans/2026-10-26-agent-resu
 - Keep the claim on every first spawn: `TerminalContentBuilder` calls
   `TerminalSurfaceRecipe.agentResumeSeed`, which claims before it checks `.restored`, the setting
   and the record. The claim goes through the `claimAgentResume` closure wired in `supacodeApp` to
-  `WorktreeTerminalManager.claimAgentResume` and `AgentResumeGate.claim`. Claiming only on a real
+  `WorktreeTerminalManager.claimAgentResume` and `AgentResumeGate.claimOutcome`. Claiming only on a real
   inject would let a rebuilt content type the command into its live session.
 - Keep the `landContentSnapshot(tabID:)` call in `handleUnexpectedZmxClose`
   (`WorktreeTerminalManager`), before `ContentRuntime.liveValue.remove`, so the rebuilt content
@@ -368,7 +369,7 @@ and [plans/2026-10-26-agent-resume-picker-design.md](plans/2026-10-26-agent-resu
 - The new cases sit in exhaustive switches. A merge that adds or reorders cases there must keep
   them:
   - `TerminalClient.Event` (two events) and `AppFeature.Action` (picker and wake actions) in
-    `WorktreeMenuSnapshot.affectsWorktreeMenuSnapshot` (all return false);
+    `AppFeature.Action.affectsWorktreeMenuSnapshot` in `WorktreeMenuSnapshot.swift` (all return false);
   - `.wakeTabInBackground` in the "not mine" lists of `handleSearchCommand` and
     `handleBindingActionCommand` (`WorktreeTerminalManager`);
   - `SidebarItemFeature.Action.pendingAgentResumeChanged` in `SidebarStructure`
