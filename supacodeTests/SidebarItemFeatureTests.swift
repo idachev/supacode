@@ -82,6 +82,22 @@ struct SidebarItemFeatureTests {
     }
   }
 
+  @Test func pendingAgentResumeChangeSetsOnceThenNoOps() async {
+    let store = TestStore(initialState: makeState(name: "feature")) {
+      SidebarItemFeature()
+    }
+    await store.send(.pendingAgentResumeChanged(true)) {
+      $0.hasPendingAgentResume = true
+    }
+    // Same value: no-op.
+    await store.send(.pendingAgentResumeChanged(true))
+    await store.send(.pendingAgentResumeChanged(false)) {
+      $0.hasPendingAgentResume = false
+    }
+    await store.send(.pendingAgentResumeChanged(false))
+    #expect(SidebarItemFeature.Action.pendingAgentResumeChanged(true).cacheInvalidations.isEmpty)
+  }
+
   @Test func agentErrorFlagTracksSnapshot() async {
     let store = TestStore(initialState: makeState(name: "feature")) {
       SidebarItemFeature()

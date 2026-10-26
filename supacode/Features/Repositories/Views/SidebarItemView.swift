@@ -515,6 +515,7 @@ private struct TrailingView: View {
     let agents = store.agents
     let scriptColors = store.runningScripts.map(\.tint)
     let showsNotificationIndicator = store.hasUnseenNotifications
+    let showsPendingResumeIndicator = store.hasPendingAgentResume
     let showsDormantIndicator = store.allTabsDormant
     let notifications = Array(store.notifications)
     let added = store.addedLines ?? 0
@@ -532,6 +533,10 @@ private struct TrailingView: View {
             .foregroundStyle(.secondary)
             .help(host.displayAuthority)
             .accessibilityLabel("Remote host \(host.displayAuthority)")
+        }
+        // Both may show: a pending pane is also dormant. Pending first.
+        if showsPendingResumeIndicator {
+          SidebarPendingResumeIndicator()
         }
         if showsDormantIndicator {
           SidebarDormantIndicator()
@@ -584,6 +589,33 @@ private struct SidebarDormantIndicator: View, Equatable {
       .foregroundStyle(.secondary)
       .help("Hibernated to save resources. Select to reconnect.")
       .accessibilityLabel("Hibernated")
+  }
+}
+
+/// Marker shown while an agent session in the worktree waits for a resume
+/// after a restart. Clears when its last pending pane is claimed (opened or
+/// woken in the background) or the resume setting is turned off.
+private struct SidebarPendingResumeIndicator: View, Equatable {
+  // Read here, not in the row, so a settings change re-renders only the few
+  // rows that show this marker. The help text follows the user's shortcut override.
+  @Shared(.settingsFile) private var settingsFile
+
+  // No stored inputs; `==` ignores the shared settings, which SwiftUI tracks itself.
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+
+  var body: some View {
+    let shortcut = AppShortcuts.resumeAgentSessions.effective(from: settingsFile.global.shortcutOverrides)
+    Image(systemName: "arrow.clockwise.circle")
+      .imageScale(.small)
+      .appFont(.subheadline)
+      .foregroundStyle(.secondary)
+      .help(
+        AppShortcut.helpText(
+          "An agent session waits for a resume. Open the worktree, or use Resume Agent Sessions",
+          shortcut: shortcut
+        ) + "."
+      )
+      .accessibilityLabel("Agent resume pending")
   }
 }
 
