@@ -213,9 +213,8 @@ panes get no resume either.
 example `cat` of an untrusted file, or remote output) can plant, replace or clear the pane's
 resume record. The typed command has a fixed form with a strict, shell-quoted UUID, so no
 arbitrary command can run. But after a reboot the pane may resume a wrong or non-existent
-session, or lose its real resume. Hardening (a capture-time check that the OSC pid is a live
-agent process under this pane's zmx session) is tracked as TODO ИН2 in `TODO.md`. Turn the
-setting off to opt out.
+session, or lose its real resume. The owner accepted this risk on 2026-10-26 (a single-user
+work machine), so no hardening is planned. Turn the setting off to opt out.
 
 If your Ghostty config sets `command` (a program other than a shell), the restored pane runs that
 program, and the typed resume would reach it as input. Turn "Resume agents after restart" off
