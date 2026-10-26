@@ -85,6 +85,28 @@ struct WorktreeTerminalManagerAgentResumeTests {
     #expect(manager.claimAgentResume(dead))
   }
 
+  /// Branch r1 F3: a stale socket from an unclean shutdown is listed by
+  /// `zmx ls` (`err=ConnectionRefused`) but its session is dead, so its pane
+  /// still resumes; an `unreachable` one counts as live.
+  @Test func staleListedSessionCountsAsDead() async {
+    let stale = ContentID()
+    let busy = ContentID()
+    let probeCount = LockIsolated(0)
+    let manager = makeManager(
+      listing: [
+        .init(name: session(for: stale), clients: nil, isStale: true),
+        .init(name: session(for: busy), clients: nil, isStale: false),
+      ],
+      probeCount: probeCount
+    )
+
+    await manager.captureLaunchSessionLiveness()
+
+    #expect(manager.agentResumeGate?.liveSessionNames == [session(for: busy)])
+    #expect(manager.claimAgentResume(stale))
+    #expect(!manager.claimAgentResume(busy))
+  }
+
   @Test func failedProbeLeavesNoGateAndNeverResumes() async {
     let probeCount = LockIsolated(0)
     let manager = makeManager(listing: nil, probeCount: probeCount)
