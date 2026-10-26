@@ -240,7 +240,7 @@ no value for it.
    worktree.
 
 A real reboot has not been tested, only killed zmx sessions. The design is in
-[plans/2026-10-26-agent-session-resume-design.md](plans/2026-10-26-agent-session-resume-design.md).
+[plans/done/2026-10-26-agent-session-resume-design.md](plans/done/2026-10-26-agent-session-resume-design.md).
 
 ### Keeping It On Upstream Merges
 
