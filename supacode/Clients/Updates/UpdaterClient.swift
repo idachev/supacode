@@ -14,6 +14,18 @@ class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
 
   nonisolated deinit {}
 
+  /// Fork: the feed serves upstream builds, which would replace this fork, so every check is refused.
+  nonisolated func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+    throw NSError(
+      domain: "app.supabit.supacode.fork", code: 1,
+      userInfo: [
+        NSLocalizedDescriptionKey: "Updates are off in this fork build.",
+        NSLocalizedRecoverySuggestionErrorKey:
+          "Pull the fork and run make install-dev-build to update.",
+      ]
+    )
+  }
+
   nonisolated func allowedChannels(for updater: SPUUpdater) -> Set<String> {
     MainActor.assumeIsolated {
       switch updateChannel {

@@ -55,6 +55,22 @@ xcodebuild -workspace supacode.xcworkspace -scheme supacode -configuration Relea
 - If upstream adds a new licensing gate, make sure it reads `LicenseBuild.isEnforced` or
   `LicenseClient.isEnforced`, so the setting still switches it off.
 
+## Sparkle Updates Are Off
+
+The appcast at `SUFeedURL` serves upstream builds. Installing one would replace the fork, so
+the fork never checks for updates. Update by pulling the fork and running
+`make install-dev-build`.
+
+- `SparkleUpdateDelegate.updater(_:mayPerform:)` (`supacode/Clients/Updates/UpdaterClient.swift`)
+  throws for every check: scheduled, background and the manual **Check for Updates**, which
+  shows the error "Updates are off in this fork build."
+- `supacode/Info.plist` sets `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate` to `false`,
+  so Sparkle's own defaults do not schedule checks either.
+- Settings → Updates stays visible; its switches no longer reach the network.
+
+On upstream merges keep both. If upstream adds another way to start a check, make sure it
+still goes through `mayPerform`.
+
 ## Sidebar: Active Above Pinned
 
 Upstream shows the global **Pinned** section first and keeps a pinned row in **Pinned** even
