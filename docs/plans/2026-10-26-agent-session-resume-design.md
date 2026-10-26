@@ -4,7 +4,7 @@ Task ЗДС, 2026-10-26. Fork-only feature. Inputs: recon `tmp/captain/20261026-
 
 ## Goal
 
-After a reboot, each restored pane whose zmx session is gone and whose coding agent did not exit normally gets the agent's resume command typed and run (with Enter), exactly once. This sits behind a setting that is on by default. v1 covers claude, codex, grok and agy.
+After a reboot, each restored pane whose zmx session is gone and whose coding agent did not exit normally gets the agent's resume command typed and run (with Enter), once per dead session. This sits behind a setting that is on by default. v1 covers claude, codex, grok and agy.
 
 Today Supacode restores the panes (`supacodeApp.swift:254-259`, `LayoutFeature.swift:780-790`) with their cwd and frozen grid. zmx does not survive a reboot (inferred, recon НП8), so `zmx attach` creates a fresh shell (`ZmxClient.swift:13-17`). No session id is stored (recon ДА5).
 
@@ -48,7 +48,7 @@ When the terminal dies, the hook's OSC write to `$__tty` fails silently (`|| tru
 | Text | `nonisolated enum AgentResumeCommand { static func initialInput(for: AgentSessionRecord) -> String? }` | new `.../BusinessLogic/AgentResumeCommand.swift` |
 | Setting | `GlobalSettings.resumeAgentSessionsAfterRestart: Bool` = `true`, `config.json` key of the same name, read via `@Shared(.settingsFile)` `.global` | `SupacodeSettingsShared/Models/GlobalSettings.swift` |
 | Builder | `TerminalContentBuilder.claimAgentResume: (ContentID) -> Bool` | `TerminalSurfaceRecipe.swift:285-298` |
-| Spawn | `TerminalContent.SpawnedSurface.consumedAgentSession: Bool` (default false) | `supacode/Features/Terminal/Content/TabContent.swift:144-147` |
+| Snapshot landing | `LayoutFeature.Action.landContentSnapshot(tabID: TabID)` (generic; copies `content.snapshot()` into the tab, like `hibernateTab`) | `supacode/Features/Terminal/Reducer/LayoutFeature.swift` |
 
 ## 1. Capture: Hook Command and OSC Parse
 
@@ -113,13 +113,15 @@ There is no NSNotification. The path mirrors the image-paste fan-out (`AppFeatur
    - `.sessionEnd` gives `.ended(agent, sessionID)` only for claude with `endReason` in {`prompt_input_exit`, `clear`, `logout`} or for codex with any reason. It gives nil for grok, agy, claude `other` or a missing reason.
    - Any other event gives nil.
 4. The manager handles `.updateAgentSession`. For the host that accepts it, it calls `markLayoutDirty(worktreeID:)` (`:1587-1595`), so the record reaches disk within the debounce. Add the case to the exhaustive lists at `WorktreeTerminalManager.swift:521-525`, `:563-568` and `:617`.
-5. `WorktreeContentHost.updateAgentSession(_:onSurfaceID:) -> Bool` resolves `ContentRuntime.liveValue.content(for: ContentID(rawValue:)) as? TerminalContent`. It does not use `liveSurface`, so hibernated content also updates. It then calls `TerminalContent.applyAgentSession(_:) -> Bool` with `AgentSessionRecord.applying(update, to:)`. Content that is not in the runtime is ignored, with a debug log.
+5. `WorktreeContentHost.updateAgentSession(_:onSurfaceID:) -> Bool` first checks `guard isKnownSurface(surfaceID) else { return false }` (`WorktreeContentHost.swift:169-171`). All hosts share one runtime (`WorktreeTerminalManager.swift:749-751`), so without this guard a host that does not own the content would accept it and the wrong worktree would get `markLayoutDirty`. It then resolves `ContentRuntime.liveValue.content(for: ContentID(rawValue:)) as? TerminalContent`. It does not use `liveSurface`, so hibernated content also updates. It then calls `TerminalContent.applyAgentSession(_:) -> Bool` with `AgentSessionRecord.applying(update, to:)`. Content that is not in the runtime is ignored, with a debug log.
 
 ## 4. Update Rules
 
 - There is one record per pane. `.started` always replaces it: the last SessionStart wins (claude `/clear` gives a new id, `--resume` keeps the same id).
 - `applying(.ended(agent, id), to: current)` clears only when `current.agent == agent` and the id is nil or equal to `current.sessionID`. For claude `/clear`, the `clear` end arrives first and the new start follows at once (probe КЛ1). A late end with the old id cannot clear the new record.
 - An exit while the app is closed, or a dying pty, sends nothing, so the record survives. That case is ОП5.
+- Injecting the resume does not clear the record (see Section 6). It stays until an explicit exit or a replacing SessionStart.
+- Unexpected zmx close (`WorktreeTerminalManager.swift:935-939`): before `ContentRuntime.liveValue.remove`, the manager sends `.landContentSnapshot(tabID:)` so that the `.wakeTab` rebuild (`LayoutFeature.swift:780-797`) starts from the live snapshot, `agentSession` included. Today the layout snapshot is refreshed only at wake and hibernate (`LayoutFeature.swift:763, 803-806`), so a SessionStart that arrived after the last wake would be lost. The action is generic: it carries no terminal state of its own.
 - Codex and agy produce no record until the first prompt (probe Q1). Such a pane has nothing to resume, which is acceptable.
 
 ## 5. Launch Liveness (Dead Set)
@@ -127,7 +129,7 @@ There is no NSNotification. The path mirrors the image-paste fan-out (`AppFeatur
 The probe runs once per process, before any restored pane can attach. An attach upserts the session, and after that every session looks alive.
 
 - `.appLaunched` (`AppFeature.swift:402-412`) becomes `.concatenate(.run { await terminalClient.captureLaunchSessionLiveness() }, .merge(<existing effects>))`. The existing effects include `.repositories(.task)`.
-- `captureLaunchSessionLiveness()` runs once; a second call is a no-op. It stores `agentResumeGate = probe.map { AgentResumeGate(liveSessionNames: Set($0.map(\.name))) }`. A nil probe (failed or timed out) leaves the gate nil, and nothing is injected.
+- `captureLaunchSessionLiveness()` runs once; a second call is a no-op. It stores `agentResumeGate = probe.map { AgentResumeGate(liveSessionNames: Set($0.map(\.name))) }`. A nil probe (failed or timed out) leaves the gate nil and logs a `SupaLogger` warning `resume skipped: liveness probe failed`; nothing is injected.
 - The reaper (`AppFeature.swift:431-452`, `WorktreeTerminalManager.swift:1942-1967`) is unchanged upstream code and keeps its own probe.
 - `claim(id)` returns true only when `ZmxSessionID.make(surfaceID: id.rawValue)` is not live and `id` is not yet claimed; then it inserts `id` into the claimed set.
 - `claimAgentResume` is wired in `supacodeApp.swift:388-420` as `{ [weak terminalManager] in terminalManager?.claimAgentResume($0) ?? false }`.
@@ -146,12 +148,11 @@ If either fails, part (d) escalates. The alternatives touch layout wake mechanic
 
 When a `.first`/`.restored` spawn finds a record but no gate, it logs a `SupaLogger` warning `resume skipped: liveness not captured`, separate from the probe-failure log.
 
-## 6. Injection and One-Shot Consume
+## 6. Injection (One Inject per Process)
 
 A new branch goes in `TerminalContentBuilder.terminalContent`'s `makeSurface`, right after the unchanged `.restored` strip (`TerminalSurfaceRecipe.swift:335-344`):
 
 ```swift
-var consumedAgentSession = false
 if phase == .first, request.origin == .restored,
   let input = TerminalSurfaceRecipe.agentResumeInput(
     record: currentState.agentSession, worktree: worktree,
@@ -159,9 +160,8 @@ if phase == .first, request.origin == .restored,
   claimAgentResume(request.contentID)
 {
   seedState = TerminalContentState(/* seedState fields */, launch: LaunchOverride(initialInput: input))
-  consumedAgentSession = true
 }
-// plan + view as today; return SpawnedSurface(view:, usesZmx:, consumedAgentSession:)
+// plan + view and SpawnedSurface as today
 ```
 
 - `agentResumeInput(record:worktree:zmxAvailable:enabled:)` is pure. It returns nil unless all hold: `enabled`; `worktree.host == nil` (never for SSH worktrees); `zmxAvailable` (without zmx there is no `supa-*` session); a non-nil record. `claim` runs last, so a gate slot is spent only on a real inject.
@@ -169,7 +169,7 @@ if phase == .first, request.origin == .restored,
 - A content rebuilt after an unexpected close (`WorktreeTerminalManager.swift:935-938`) is a new `.first`/`.restored` content. `claimed` blocks a second inject in the same process.
 - If the spawn fails after a claim (`view.surface == nil`, `:374-376`), the slot is spent and the record stays, so the next launch retries. This is intended.
 - The override lives only in the plan seed. Persistence strips `launch` (`LayoutPersistence.swift:58-74`).
-- Consume: `TerminalContent.startSession` (`TabContent.swift:189-200`) clears `state.agentSession` when `consumedAgentSession` is set. The resumed agent's SessionStart re-arms it: claude and grok at start, codex and agy at the first prompt, same id (probe КЛ2-КЛ4).
+- There is no consume: injecting does not clear the record. Codex and agy fire SessionStart only at the first prompt (probe КЛ3, Q1), so clearing would lose the resume on a second reboot when the user only read the resumed conversation. Nothing replays it. In this process `claimed` blocks a second inject. At the next launch the session created by the inject is alive, so `claim` is false. Only a dead session at a later launch, meaning another reboot, injects again, and that is wanted. A resumed agent's SessionStart writes the same id (probe КЛ2-КЛ4).
 
 **Command text.** `AgentResumeCommand.initialInput(for:)` re-checks `UUID(uuidString:)` and quotes the id with `SSHCommand.shellQuote` (`SSHCommand.swift:64-66`). The first word is bare, so shell aliases apply. The probe confirmed `codex --approve-for-me resume <id>` works (probe РЗ3). The text ends with `\n`, as in `BlockingScriptRunner.makeCommandInput` (`BlockingScriptRunner.swift:15-20`).
 
@@ -226,12 +226,12 @@ Targets come from the `Project.swift` globs (memory `test-and-lint-traps`).
   - the encode/decode round trip is equal;
   - an extra unknown key under `terminal` gives `undecodedEntryCount == 0` and `.file`;
   - a malformed `agentSession` drops only that field.
-- (c) Table tests for `AgentSessionUpdate.from`, covering every row of Section 3 step 3 (each claude reason, codex end, grok `shutdown`, pid nil, unsupported agent), and for `applying`. An `AppFeature` test with a recorded `terminalClient.send` checks that the command is sent and presence is still forwarded.
+- (c) Host ownership: with hosts A and B, an update for B's surface sent through A returns false and marks only B dirty. Unexpected close: after a SessionStart the rebuilt content carries the new `agentSession`. Table tests for `AgentSessionUpdate.from`, covering every row of Section 3 step 3 (each claude reason, codex end, grok `shutdown`, pid nil, unsupported agent), and for `applying`. An `AppFeature` test with a recorded `terminalClient.send` checks that the command is sent and presence is still forwarded.
 - (d) First the two order tests of Section 5. Then:
   - `AgentResumeGate`: a live name never claims; a dead one claims once;
   - `captureLaunchSessionLiveness`: once only, and a nil probe gives no gate (`WorktreeTerminalManagerReaperTests` style);
   - `TerminalSurfaceRecipeTests`: `agentResumeInput` nil cases, and the text and quoting per agent;
-  - `TerminalContent` consumes the record.
+  - the record stays after an inject; a second `claim` in the same process is false.
 
   Existing `.appLaunched` tests stub the new endpoint.
 - (e) `GlobalSettings`: a missing key decodes as `true`. The `SettingsFeature` binding round-trips. Reset `@Shared` with `defer`.
@@ -258,7 +258,7 @@ Targets come from the `Project.swift` globs (memory `test-and-lint-traps`).
 - Д1. The update goes through `AppFeature` and a `TerminalClient.Command`, as image paste does. Rejected: a direct hop in `dispatchHookEvent`, which bypasses the TestStore, and a new `AgentPresenceFeature` delegate, which adds an unneeded duty.
 - Д2. Capture is opt-in per command (`capturesSession`). The hooks of other agents stay byte-identical and are not flagged `.outdated`.
 - Д3. A dedicated probe is concatenated before the rest of `.appLaunched`. Rejected: reusing the reaper's probe (it races under `.merge`, `AppFeature.swift:432-434`), and deferring restored spawns.
-- Д4. The gate holds live names and a `claimed` set, which makes the inject one-shot within a process. Clearing the record makes it one-shot across launches.
+- Д4. The gate holds live names and a `claimed` set, which makes the inject one-shot within a process. Across launches, liveness does the same job: the injected session is alive at the next launch. The record is never consumed (review r1 F1).
 - Д5. Only SessionStarts that carry a pid (local hooks) are stored. Remote host and zmx are checked again at inject time.
 - Д6. No `cd` in the typed text: the restored cwd is the shell's pwd, which is the agent's start directory.
 - Д7. Rejected: gating on the stored `agents` record. The shutdown save races SessionEnd and the liveness sweep.
@@ -273,8 +273,8 @@ Each part is reviewed alone against the Shared Contract. Later parts may stub ea
 
 - (a) Hook and OSC. Touches `AgentPresenceOSC` (fields, `dedupedFields`, `Signal`, parsers, `sessionCaptureShell`, `emitShell(...includesSession:)`), `compositeCommand(...capturesSession:)`, the commands in the Section 1 table (including the new codex `SessionEnd`), `AgentSignal.presenceEvent` and `AgentHookEvent.sessionID`/`.endReason`. Tests (a).
 - (b) Record and persistence. Adds `AgentSessionRecord.swift` (record, update, `applying`) and `TerminalContentState.agentSession`, and updates every copy site in Section 2. Tests (b).
-- (c) Presence to content. Covers `AgentSessionUpdate.from`, `AppFeature.agentSessionEffect`, the command, the manager handler with its three exhaustive lists and `markLayoutDirty`, the host and content setters. Tests (c). Depends on the types from (a) and (b).
-- (d) Liveness, inject and consume. Starts with the Section 5 order tests. Covers `AgentResumeGate`, `AgentResumeCommand`, the client endpoint (`supacodeApp.swift:335-350`), the `.appLaunched` concatenate, the gate methods, the builder closure (`supacodeApp.swift:388`), the `makeSurface` branch, `agentResumeInput`, `consumedAgentSession` and the consume. Tests (d). Depends on (b) and the setting name from (e).
+- (c) Presence to content. Covers `AgentSessionUpdate.from`, `AppFeature.agentSessionEffect`, the command, the manager handler with its three exhaustive lists and `markLayoutDirty`, the host and content setters with the `isKnownSurface` guard (F4), and `LayoutFeature.landContentSnapshot` with its send in `handleUnexpectedZmxClose` (F2). Tests (c). Depends on the types from (a) and (b).
+- (d) Liveness and inject. Starts with the Section 5 order tests. Covers `AgentResumeGate`, `AgentResumeCommand`, the client endpoint (`supacodeApp.swift:335-350`), the `.appLaunched` concatenate, the gate methods, the builder closure (`supacodeApp.swift:388`), the `makeSurface` branch, `agentResumeInput` and the probe-failed warning. Tests (d). Depends on (b) and the setting name from (e).
 - (e) Setting and UI. Touches `GlobalSettings`, `SettingsFeature` and `DeveloperSettingsView`. Tests (e).
 - (f) `docs/fork.md`: a section "Agent Session Resume After Reboot" with:
   - a setting table;
@@ -291,3 +291,5 @@ Each part is reviewed alone against the Shared Contract. Later parts may stub ea
 - Grok `/clear` (docs say it gives a new id with `source:new`) and agy `/clear` were not tested.
 - Whether codex runs the other trusted hooks while one hook is pending review.
 - The bundled zmx path in the dev build.
+- Two app instances on the same layouts (review r1 F6). This is not a supported setup. If it happens, the second instance can create `supa-<id>` and then type the resume into it after the first instance's launch probe.
+- Nested agents in one pane (review r1 F7), e.g. codex started by Claude. Unproven: a codex started from Claude's Bash tool likely has no tty for its OSC. If it is reached, codex's start replaces claude's record and codex's end clears it. Options: (A) one record, last start wins (current); (B) a per-pane stack keyed by agent, where `.ended` removes only that agent's entry and the resume uses the top entry; (C) store the hook pid and ignore starts from a descendant of the recorded agent. Recommendation: A, switch to B if a dev check shows the nesting.
