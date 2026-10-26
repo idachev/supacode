@@ -97,6 +97,9 @@ struct AppFeature {
     /// tab-bar views scope through `\.terminals` (narrow) instead of the full
     /// app store. Mirrors sidebar's `RepositoriesFeature` ownership pattern.
     var terminals = TerminalsFeature.State()
+    /// Agent sessions that wait for a resume after a restart: the mirror of the
+    /// manager's launch gate and the pending list derived from it.
+    var agentResume = AgentResumeState()
     /// The selected worktree's repository's open action, read from the map the reducer
     /// resolves off the main actor. Derived, never stored: a stored copy refreshes a disk
     /// read after the selection moves, and opens the previous repository's editor until it
@@ -2177,6 +2180,16 @@ struct AppFeature {
       case .terminalEvent(.focusChanged(_, let surfaceID)):
         return .send(.agentPresence(.clearAttention(surfaces: [surfaceID])))
 
+      // Mirror the manager's resume gate; the post-scope `Reduce` recomputes pending.
+      case .terminalEvent(.agentResumeLivenessCaptured(let liveSessionNames)):
+        state.agentResume.liveness =
+          liveSessionNames.map { AgentResumeLiveness.captured(liveSessionNames: $0) } ?? .probeFailed
+        return .none
+
+      case .terminalEvent(.agentResumeClaimed(let contentID)):
+        state.agentResume.claimed.insert(contentID)
+        return .none
+
       case .terminalEvent:
         return .none
       }
@@ -2211,6 +2224,12 @@ struct AppFeature {
       trackRecentTerminalAccess(state: state, action: action)
       return .none
     }
+    // After the scopes, so pending sees the children's new state (loaded
+    // repositories, removed tabs). The gate keeps it off the hot paths.
+    Reduce { state, action in
+      guard Self.affectsAgentResume(action) else { return .none }
+      return refreshAgentResume(&state)
+    }
     Reduce { state, action in
       // Cold-path gate. Without this, an agent storm fires
       // `recomputeWorktreeMenuSnapshotIfChanged` hundreds of times per second
@@ -2221,6 +2240,58 @@ struct AppFeature {
       state.recomputeWorktreeMenuSnapshotIfChanged()
       return .none
     }
+  }
+
+  // MARK: - Agent resume.
+
+  /// The actions that can change the pending agent resume list: the two gate
+  /// events, the repositories (worktree lookup, names), the layouts coming and
+  /// going, a removed tab, a renamed or moved tab (row title and order), and the
+  /// setting. A record in an unspawned tab cannot change, so nothing else can.
+  static func affectsAgentResume(_ action: Action) -> Bool {
+    switch action {
+    case .terminalEvent(.agentResumeLivenessCaptured), .terminalEvent(.agentResumeClaimed):
+      return true
+    case .repositories(.repositoriesLoaded), .repositories(.openRepositoriesFinished),
+      .repositories(.delegate(.repositoriesChanged)):
+      return true
+    case .terminals(.layoutsHydrated), .terminals(.detachLayout):
+      return true
+    case .terminals(.layouts(.element(id: _, action: let layoutAction))):
+      if RecentTerminals.canRemoveTabs(layoutAction) { return true }
+      switch layoutAction {
+      case .renameTab, .endTabRename, .moveTab, .moveTabToSplit, .moveTabToSpanningSplit:
+        return true
+      default:
+        return false
+      }
+    case .settings(.delegate(.settingsChanged)):
+      return true
+    default:
+      return false
+    }
+  }
+
+  /// The single place that re-derives agent resume state after a gated action.
+  /// Today it recomputes `pending`; the picker sync, the auto-present and the
+  /// sidebar marker fan-out extend it here and return their effects.
+  private func refreshAgentResume(_ state: inout State) -> Effect<Action> {
+    @Shared(.settingsFile) var settingsFile: SettingsFile
+    let repositories = state.repositories
+    let pending = AgentResumePending.compute(
+      layouts: state.terminals.layouts,
+      liveness: state.agentResume.liveness,
+      claimed: state.agentResume.claimed,
+      enabled: settingsFile.global.resumeAgentSessionsAfterRestart,
+      worktree: { repositories.worktree(for: $0) },
+      repositoryName: { worktreeID in
+        repositories.repositoryID(containing: worktreeID).flatMap { repositories.repositories[id: $0]?.name }
+      }
+    )
+    if pending != state.agentResume.pending {
+      state.agentResume.pending = pending
+    }
+    return .none
   }
 
   // MARK: - Recent terminals.

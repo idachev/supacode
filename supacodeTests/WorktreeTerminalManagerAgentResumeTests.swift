@@ -10,11 +10,12 @@ struct WorktreeTerminalManagerAgentResumeTests {
   /// counts how many times it was asked.
   private func makeManager(
     listing: [ZmxSessionListParser.Entry]?,
-    probeCount: LockIsolated<Int>
+    probeCount: LockIsolated<Int>,
+    executableURL: URL? = nil
   ) -> WorktreeTerminalManager {
     withDependencies {
       $0.zmxClient = ZmxClient(
-        executableURL: { nil },
+        executableURL: { executableURL },
         isBundled: { true },
         killSession: { _ in },
         killRemoteSession: { _, _ in },
@@ -30,6 +31,26 @@ struct WorktreeTerminalManagerAgentResumeTests {
 
   private func session(for id: ContentID) -> String {
     ZmxSessionID.make(surfaceID: id.rawValue)
+  }
+
+  private static let zmxURL = URL(fileURLWithPath: "/tmp/zmx")
+
+  /// The agent resume events emitted so far. Everything before a subscriber is
+  /// buffered and replays synchronously into the first stream; a second
+  /// `eventStream()` finishes that stream, so draining it never waits.
+  private func agentResumeEvents(_ manager: WorktreeTerminalManager) async -> [TerminalClient.Event] {
+    let stream = manager.eventStream()
+    _ = manager.eventStream()
+    var events: [TerminalClient.Event] = []
+    for await event in stream {
+      switch event {
+      case .agentResumeLivenessCaptured, .agentResumeClaimed:
+        events.append(event)
+      default:
+        continue
+      }
+    }
+    return events
   }
 
   // MARK: - AgentResumeGate.
@@ -54,7 +75,105 @@ struct WorktreeTerminalManagerAgentResumeTests {
     #expect(gate.claimed == [dead])
   }
 
+  @Test func claimOutcomeReportsWhyAClaimIsRefused() {
+    let live = ContentID()
+    let dead = ContentID()
+    var gate = AgentResumeGate(liveSessionNames: [session(for: live)])
+    let liveOutcome = gate.claimOutcome(live)
+    let firstDead = gate.claimOutcome(dead)
+    let secondDead = gate.claimOutcome(dead)
+    #expect(liveOutcome == .live)
+    #expect(firstDead == .granted)
+    #expect(secondDead == .alreadyClaimed)
+    #expect(gate.claimed == [dead])
+
+    // `claim` agrees with `claimOutcome == .granted`.
+    var agreeing = AgentResumeGate(liveSessionNames: [session(for: live)])
+    let claimLive = agreeing.claim(live)
+    let claimDead = agreeing.claim(dead)
+    let claimDeadAgain = agreeing.claim(dead)
+    #expect(!claimLive)
+    #expect(claimDead)
+    #expect(!claimDeadAgain)
+  }
+
   // MARK: - captureLaunchSessionLiveness.
+
+  @Test func captureEmitsTheNonStaleLiveNames() async {
+    let stale = ContentID()
+    let busy = ContentID()
+    let probeCount = LockIsolated(0)
+    let manager = makeManager(
+      listing: [
+        .init(name: session(for: stale), clients: nil, isStale: true),
+        .init(name: session(for: busy), clients: 1),
+      ],
+      probeCount: probeCount,
+      executableURL: Self.zmxURL
+    )
+
+    await manager.captureLaunchSessionLiveness()
+    await manager.captureLaunchSessionLiveness()
+
+    #expect(await agentResumeEvents(manager) == [.agentResumeLivenessCaptured(liveSessionNames: [session(for: busy)])])
+  }
+
+  @Test func captureEmitsNilWhenTheProbeFails() async {
+    let probeCount = LockIsolated(0)
+    let manager = makeManager(listing: nil, probeCount: probeCount, executableURL: Self.zmxURL)
+
+    await manager.captureLaunchSessionLiveness()
+
+    #expect(await agentResumeEvents(manager) == [.agentResumeLivenessCaptured(liveSessionNames: nil)])
+  }
+
+  /// ЗДС r1 F1: the probe passes, but the seed's budget-gated zmx is missing,
+  /// so nothing can resume; the event says so while the gate stays built.
+  @Test func captureEmitsNilWhenZmxCannotSpawn() async {
+    let probeCount = LockIsolated(0)
+    let manager = makeManager(listing: [], probeCount: probeCount, executableURL: nil)
+
+    await manager.captureLaunchSessionLiveness()
+
+    #expect(await agentResumeEvents(manager) == [.agentResumeLivenessCaptured(liveSessionNames: nil)])
+    #expect(manager.agentResumeGate?.liveSessionNames.isEmpty == true)
+  }
+
+  @Test func onlyAGrantedClaimEmitsTheClaimedEvent() async {
+    let live = ContentID()
+    let dead = ContentID()
+    let sentinel = ContentID()
+    let probeCount = LockIsolated(0)
+    let manager = makeManager(
+      listing: [.init(name: session(for: live), clients: 1)],
+      probeCount: probeCount,
+      executableURL: Self.zmxURL
+    )
+    await manager.captureLaunchSessionLiveness()
+
+    #expect(manager.claimAgentResume(dead))
+    #expect(!manager.claimAgentResume(dead))
+    #expect(!manager.claimAgentResume(live))
+    #expect(manager.claimAgentResume(sentinel))
+
+    #expect(
+      await agentResumeEvents(manager) == [
+        .agentResumeLivenessCaptured(liveSessionNames: [session(for: live)]),
+        .agentResumeClaimed(dead),
+        .agentResumeClaimed(sentinel),
+      ]
+    )
+  }
+
+  @Test func claimWithoutAGateEmitsNothing() async {
+    let probeCount = LockIsolated(0)
+    let manager = makeManager(listing: nil, probeCount: probeCount, executableURL: Self.zmxURL)
+    await manager.captureLaunchSessionLiveness()
+
+    #expect(!manager.claimAgentResume(ContentID()))
+
+    #expect(await agentResumeEvents(manager) == [.agentResumeLivenessCaptured(liveSessionNames: nil)])
+  }
 
   @Test func captureRunsTheProbeOnceAndBuildsTheGate() async {
     let live = ContentID()

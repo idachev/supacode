@@ -112,7 +112,8 @@ extension AppFeature.Action {
         .setupScriptConsumed, .worktreeProjectionChanged, .surfaceCreated,
         .tabRemoved, .tabRenamed, .worktreeStateTornDown,
         .surfacesClosed, .agentHookEventReceived, .terminalHasAnySurfaceChanged,
-        .surfaceCreationFailed, .initialTabCreationFailed:
+        .surfaceCreationFailed, .initialTabCreationFailed,
+        .agentResumeLivenessCaptured, .agentResumeClaimed:
         return false
       }
     // Hot agent-storm paths: per-tab churn never mutates snapshot inputs.
