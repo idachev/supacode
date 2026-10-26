@@ -27,10 +27,12 @@ paths:
   rerun: `RepositoriesFeatureTests.requestArchiveWorktreeShowsConfirmation`,
   `RepositoriesFeatureTests.requestArchiveWorktreesShowsBatchConfirmation`,
   `AppFeatureCommandPaletteTests.archiveWorktreeDispatchesRequest` (it comes with a
-  "`@Dependency(\.date)` has no test implementation" issue) and
-  `RemotePathClassificationTests.resolveRemotePathTimesOutOnAHangingProbe`. Rerun the suite
-  once before you look into them. A failure that repeats is real.
-  **Why:** on 2026-10-22 they failed in 3 of 6 runs with no related code change.
+  "`@Dependency(\.date)` has no test implementation" issue),
+  `RemotePathClassificationTests.resolveRemotePathTimesOutOnAHangingProbe` and
+  `WorktreeEnvironmentTests.blockingScriptRunnerEmitsCommandFinishedUnderRealPTYBeforeExecTail`
+  (real PTY). Rerun the suite once before you look into them. A failure that repeats is real.
+  **Why:** on 2026-10-22 the first four failed in 3 of 6 runs with no related code change; on
+  2026-10-26 the PTY test failed once at 13 s in the full run and passed 3 of 3 alone.
 - **`check-isolated-deinits.sh` also scans the test bundles** and runs only after every test
   passes, as the last step of `make test`. A main-actor class declared in a test file (even a
   `private` stub such as an `NSView` subclass) needs `nonisolated deinit {}` too, or `make test`
@@ -61,6 +63,18 @@ paths:
 - **swift-format needs the project config.** A plain `swift-format lint` prints many old
   warnings (line length, indentation) that are not real. Use
   `mise exec -- swift-format --in-place --configuration ./.swift-format.json <files>`, as `make format` does.
+- **Test fixture files load from the source tree.** `testBundle(name:sources:)` in `Project.swift`
+  has no `resources:`, so a non-Swift file under `supacodeTests/` is never in a test bundle.
+  Load it with `URL(filePath: #filePath).deletingLastPathComponent().appending(path: "Fixtures/<dir>")`,
+  as `AgentHookCommandTests` does (`supacodeTests/Fixtures/AgentHookSessions/`).
+- **`#expect` cannot call a mutating method.** `#expect(gate.claim(id))` on a `var` fails to
+  compile ("cannot use mutating member on immutable value: '$0' is immutable"): bind the result
+  first (`let first = gate.claim(id)`, then `#expect(first)`). **Why:** on 2026-10-26 this stopped
+  `make test` after the app built and lint passed.
+- **`store.skipReceivedActions()` is strict by default.** After a `receive` that leaves no further
+  action in flight it records "There were no received actions to skip.". When an event may or may
+  not produce follow-up actions (e.g. presence `session_end` on empty state), use
+  `skipReceivedActions(strict: false)`.
 - **Exhaustive TestStore tests see new row state.** If a reducer starts to change a new
   `SidebarItemFeature.State` field on `agentSnapshotChanged` or `terminalProjectionChanged`,
   exhaustive tests in `AppFeatureRunScriptTests`, `AppFeatureSettingsChangedTests` and
