@@ -529,7 +529,8 @@ final class WorktreeTerminalManager {
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
       .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane,
       .splitFocusedPane, .focusSplit, .toggleSplitZoom, .equalizeSplits,
-      .splitPane, .focusPane, .closePane, .toggleZoomPane, .toggleWindowModeForPane, .moveTabToSplit:
+      .splitPane, .focusPane, .closePane, .toggleZoomPane, .toggleWindowModeForPane, .moveTabToSplit,
+      .wakeTabInBackground:
       return false
     }
     return true
@@ -572,7 +573,8 @@ final class WorktreeTerminalManager {
       .navigateSearchNext, .navigateSearchPrevious, .selectTab, .selectTabAtIndex, .selectRelativeTab,
       .focusSurface, .splitSurface, .destroyTab, .destroySurface, .renameTab, .prune, .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
-      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane, .updateAgentSession:
+      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane, .updateAgentSession,
+      .wakeTabInBackground:
       return false
     }
     return true
@@ -623,6 +625,8 @@ final class WorktreeTerminalManager {
       toggleWindowModeForFocusedPane(of: worktree)
     case .updateAgentSession(let surfaceID, let update):
       updateAgentSession(update, onSurfaceID: surfaceID)
+    case .wakeTabInBackground(let worktree, let tabID):
+      wakeTabInBackground(tabID, in: worktree)
     case .setSelectedWorktreeID(let id):
       guard id != selectedWorktreeID else { return }
       if let previousID = selectedWorktreeID, let previousHost = hosts[previousID] {
@@ -651,6 +655,20 @@ final class WorktreeTerminalManager {
       .splitPane, .focusPane, .closePane, .toggleZoomPane, .toggleWindowModeForPane, .moveTabToSplit:
       assertionFailure("Unhandled terminal command reached management handler: \(command)")
     }
+  }
+
+  /// Provisions a tab's content without selecting or focusing it, so a restored
+  /// agent pane spawns (and its one-shot resume claims) in the background. The
+  /// `host(for:)` pre-step creates the host and sends `.attachLayout` before the
+  /// `.wakeTab` reduce runs, so `wireSurface` never creates a host re-entrantly
+  /// (as `splitPane` does).
+  private func wakeTabInBackground(_ tabID: TabID, in worktree: Worktree) {
+    _ = host(for: worktree)
+    guard presentTab(tabID, in: worktree.id) != nil else {
+      terminalLogger.debug("background wake skipped: tab \(tabID.rawValue) gone")
+      return
+    }
+    sendLayout(worktree.id, .wakeTab(id: tabID))
   }
 
   /// Toggles window mode for the worktree's focused pane. A key pane window

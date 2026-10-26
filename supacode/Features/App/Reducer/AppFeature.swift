@@ -362,6 +362,16 @@ struct AppFeature {
     case alert(PresentationAction<Alert>)
     case deeplinkInputConfirmation(PresentationAction<DeeplinkInputConfirmationFeature.Action>)
     case terminalEvent(TerminalClient.Event)
+    /// Wake these pending agent resume panes in the background, staggered. The
+    /// entry point of the background wake; the picker's "Resume selected" sends it.
+    case agentResumeWakeRequested([ContentID])
+    /// Wakes the next queued pane that is still pending.
+    case agentResumeWakeTick
+  }
+
+  enum AgentResumeCancelID: Hashable {
+    /// The stagger timer of the background wake queue.
+    case wake
   }
 
   enum Alert: Equatable {
@@ -2190,6 +2200,12 @@ struct AppFeature {
         state.agentResume.claimed.insert(contentID)
         return .none
 
+      case .agentResumeWakeRequested(let ids):
+        return agentResumeWakeRequested(ids, state: &state)
+
+      case .agentResumeWakeTick:
+        return agentResumeWakeTick(state: &state)
+
       case .terminalEvent:
         return .none
       }
@@ -2292,6 +2308,43 @@ struct AppFeature {
       state.agentResume.pending = pending
     }
     return .none
+  }
+
+  /// Replaces the wake queue and starts it. The explicit cancel stops the timer
+  /// of an earlier queue even when the new one never arms a timer (one id, or
+  /// every id already claimed).
+  private func agentResumeWakeRequested(_ ids: [ContentID], state: inout State) -> Effect<Action> {
+    state.agentResume.wakeQueue = ids
+    appLogger.info("resume requested: \(ids.count) of \(state.agentResume.pending.count) selected")
+    return .concatenate(
+      .cancel(id: AgentResumeCancelID.wake),
+      .send(.agentResumeWakeTick)
+    )
+  }
+
+  /// Pops the next queued id. A pane that is no longer pending (claimed by a
+  /// lazy show meanwhile, closed, setting off) is skipped without a wait. A
+  /// pending one gets one effect that dispatches its wake and, only when more
+  /// ids remain, waits the stagger before the next tick.
+  private func agentResumeWakeTick(state: inout State) -> Effect<Action> {
+    guard !state.agentResume.wakeQueue.isEmpty else { return .none }
+    let id = state.agentResume.wakeQueue.removeFirst()
+    guard let row = state.agentResume.pending[id: id],
+      let worktree = state.repositories.worktree(for: row.worktreeID)
+    else {
+      appLogger.debug("resume wake skipped: no longer pending content=\(id.rawValue)")
+      return .send(.agentResumeWakeTick)
+    }
+    appLogger.info("resume wake sent: worktree=\(worktree.id.rawValue) tab=\(row.tabID.rawValue)")
+    let hasMore = !state.agentResume.wakeQueue.isEmpty
+    let tabID = row.tabID
+    return .run { [clock] send in
+      await terminalClient.send(.wakeTabInBackground(worktree, tabID: tabID))
+      guard hasMore else { return }
+      try await clock.sleep(for: AgentResumePending.wakeStagger)
+      await send(.agentResumeWakeTick)
+    }
+    .cancellable(id: AgentResumeCancelID.wake, cancelInFlight: true)
   }
 
   // MARK: - Recent terminals.

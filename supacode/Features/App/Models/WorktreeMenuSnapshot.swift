@@ -145,6 +145,9 @@ extension AppFeature.Action {
       .deeplinkReferenceOpened, .settingsWindowOpened, .settingsRelocationDidNotFinish, .settingsStoreUnreadable,
       .alert, .deeplinkInputConfirmation:
       return false
+    // The background wake queue touches only `agentResume`, never a snapshot input.
+    case .agentResumeWakeRequested, .agentResumeWakeTick:
+      return false
     }
   }
 }
