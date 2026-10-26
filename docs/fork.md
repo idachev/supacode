@@ -144,7 +144,7 @@ agent's resume command in such a pane, so the conversation comes back. Upstream 
 
 | Setting | Where | Default | Effect |
 | --- | --- | --- | --- |
-| Resume agents after restart | Settings → Developer; `resumeAgentSessionsAfterRestart` in `~/.config/supacode/config.json` | on | off: nothing is typed after a restart |
+| Resume agents after restart | Settings → Developer; `resumeAgentSessionsAfterRestart` in `~/.config/supacode/config.json` | on | off: nothing is typed after a restart, no resume sheet, no sidebar marker |
 
 The command is typed and run with Enter. Its first word is bare, so your shell aliases apply,
 and the session id is shell-quoted:
@@ -169,10 +169,46 @@ A pane gets its command only when all of these hold:
   `TerminalContentState.agentSession` (JSON key `agentSession` in the `layoutsFile` JSON blob in
   UserDefaults).
 
+**Pending.** A pane is pending when all of these hold (one rule for the sheet, the palette entry,
+the menu item and the sidebar marker):
+
+- The pane has a stored record (`TerminalContentState.agentSession` is not nil).
+- The setting is on.
+- The worktree is local (no SSH host) and is known to the app.
+- The launch liveness probe is done, and the pane's `supa-*` zmx session is not in its live set.
+  If the probe failed, or zmx cannot spawn a session, nothing is pending.
+- The pane did not spend its resume slot in this process (no first spawn yet).
+
+**The resume sheet.** After launch, when the probe is done, the repositories are loaded and
+something is pending, the "Resume agent sessions" sheet opens:
+
+- One row per pending pane: `repository / worktree`, the stored tab title, the agent and the
+  first 8 characters of the session id (the tooltip shows the full id). Every row is ticked.
+- "Resume selected" (Return) wakes the ticked panes in the background, one per second, in row
+  order. A woken pane is not shown and the selection and focus do not change. The pane types
+  and runs its resume command as above. To see the result, open the worktree.
+- "Not now" (Esc) closes the sheet. An unticked or dismissed pane stays lazy: it runs its resume
+  when it is first shown, and its worktree keeps the sidebar marker.
+- The sheet decides once per launch. It does not open again by itself, also when the setting is
+  turned on later. It follows pending live: a pane that you open meanwhile drops off, and the
+  sheet closes itself when nothing is pending.
+- Reopen it with ⌃⌘R, the menu item Worktrees → "Resume Agent Sessions…", or the command palette
+  entry "Resume Agent Sessions". The menu item is disabled and the palette entry is absent while
+  nothing is pending. The palette entry is visible on an empty palette query.
+- Each wake spawns a surface, a `zmx attach` and an agent; the 1 s stagger keeps that load low.
+  A woken pane is hidden, so it hibernates after the usual 5-minute grace. Hibernation only
+  detaches; the agent keeps running in zmx. A memory-pressure detach in the first moments after
+  a wake can lose the typed command (accepted risk); the next launch retries.
+
+**The sidebar marker.** A worktree with at least one pending pane shows `arrow.clockwise.circle`
+(secondary color) in the sidebar row, before the hibernation "zzz" marker; both can show. The
+tooltip says an agent session waits for a resume and names ⌃⌘R. The marker goes away when the
+last pending pane of the worktree is claimed (a background wake or a lazy show), when the setting
+is turned off, and it is absent after a relaunch where the zmx sessions are still alive. Turning
+the setting on again brings back the markers of the panes that are still unclaimed.
+
 How it behaves:
 
-- Resume is lazy. Each pane runs its resume when it is first shown after the relaunch, not for
-  all panes at launch (panel decision ОВ1).
 - There is one record per pane, and the last valid local SessionStart wins (panel decision
   ОВ2). A start is stored only when it carries a session id and the pid of a hook that ran on
   this machine. The id must be a UUID of exactly 36 characters, and the typed command checks
@@ -221,25 +257,79 @@ program, and the typed resume would reach it as input. Turn "Resume agents after
 in that case. Supacode cannot read Ghostty's `command` value, because the Ghostty C API exposes
 no value for it.
 
-**How to verify** (design Section 10):
+**Logging.** Each resume decision writes one `SupaLogger` line. `<short>` is the first 8
+characters of the session id.
+
+| Category | Line | Level | When |
+| --- | --- | --- | --- |
+| `TerminalContentBuilder` | `resume typed: agent=<a> session=<short> content=<uuid>` | info | the command is typed |
+| `TerminalContentBuilder` | `resume skipped: <reason> agent=<a> session=<short> content=<uuid>` | info | a pane with a record is skipped; reason `settingOff`, `remote` or `zmxMissing` |
+| `TerminalContentBuilder` | `resume skipped: unsupported record agent=<a> content=<uuid>` | warning | the record gives no command |
+| `TerminalContentBuilder` | `resume skipped: no record content=<uuid>` | debug | a first spawn without a record |
+| `TerminalContentBuilder` | `resume skipped: not restored content=<uuid>` | debug | a first spawn that is not a restore |
+| `Terminal` | `resume claim refused: live content=<uuid>` | debug | the pane's zmx session was alive at launch |
+| `Terminal` | `resume claim refused: already claimed content=<uuid>` | debug | the slot is already spent |
+| `Terminal` | `resume claim refused: no gate content=<uuid>` | debug | the liveness probe failed |
+| `Terminal` | `resume skipped: liveness not captured` | warning | a spawn before the probe ended |
+| `Terminal` | `resume skipped: liveness probe failed` | warning | the probe failed |
+| `Terminal` | `background wake skipped: tab <uuid> gone` | debug | the woken tab no longer exists |
+| `App` | `resume picker shown: <n> pending` | info | the sheet opens |
+| `App` | `resume requested: <k> of <n> selected` | info | "Resume selected" |
+| `App` | `resume wake sent: worktree=<id> tab=<uuid>` | info | one background wake |
+| `App` | `resume wake skipped: no longer pending content=<uuid>` | debug | a queued pane was claimed or closed meanwhile |
+| `App` | `resume picker closed: nothing pending` | debug | the sheet closes itself |
+| `App` | `resume picker not shown: <n> pending, open=<bool>` | debug | a reopen request is refused: nothing is pending, or the sheet is already open |
+
+A re-wake of a hibernated pane logs nothing. In a release build `SupaLogger` writes to the
+unified log with the subsystem `app.supabit.supacode` and the category from the table (debug and
+info go out as `notice`, so they show without extra flags). Watch them live:
+
+```bash
+log stream --style compact --predicate 'subsystem == "app.supabit.supacode" AND eventMessage CONTAINS "resume"'
+```
+
+Or filter Console.app on subsystem `app.supabit.supacode` and the text `resume`. A DEBUG build,
+such as the one from `make install-dev-build`, only prints `[<category>] <message>` to stdout and
+writes nothing to the unified log. To see those lines, quit the app and start its binary from a
+terminal:
+
+```bash
+/Applications/supacode.app/Contents/MacOS/supacode 2>&1 | grep -i resume
+```
+
+**How to verify** (design Section 10 of the picker spec):
 
 1. Run `make install-dev-build` and restart the app. In Settings → Developer, check that the
    Claude and Codex integrations are installed and up to date: only an `.outdated` integration
    is reinstalled automatically, and a missing one stays missing, so no record is captured.
-   Start `claude` in one pane and `codex` in another. Send one prompt to each, and approve the
-   codex hook review once. Note `echo $SUPACODE_SURFACE_ID $ZMX_DIR` in each pane.
-2. Quit Supacode. With that `ZMX_DIR`, run the bundled `zmx`
+   Check that "Resume agents after restart" is on.
+2. Open three local worktrees, A, B and C. Start `claude` in a pane
+   of A and of B, and `codex` in a pane of C. Send one prompt to each, and approve the codex hook
+   review once. Note `echo $SUPACODE_SURFACE_ID $ZMX_DIR` in each pane. Select A last.
+3. Quit Supacode. With that `ZMX_DIR`, run the bundled `zmx`
    (`<app>/Contents/Resources/zmx/zmx`) as `kill supa-<surface id>` for each pane, with the
    surface id in lower case (`SUPACODE_SURFACE_ID` is upper case, the session name is lower
    case; `zmx list` shows the exact names). This simulates the reboot: with the app down,
    nothing receives a SessionEnd.
-3. Relaunch. Expected: each pane types and runs its resume command, and the conversation is back.
-4. Relaunch again without killing anything: nothing is typed. Nothing is typed after step 2 either
-   when claude or codex was closed with `/exit`, when the setting is off, or in a remote
-   worktree.
+4. Relaunch (from a terminal, as in **Logging**, to see the lines). Expected: the "Resume agent
+   sessions" sheet lists the pending panes, every row ticked. A's row can show and drop at once,
+   because A is selected and resumes lazily. B and C show the sidebar marker.
+5. Untick C and press "Resume selected". Expected: without selecting B, B's marker goes away
+   within a second. Open B: the pane ran `claude --resume '<id>'` and the conversation is back.
+   Log: `resume picker shown`, `resume requested: 1 of 2 selected`, `resume wake sent`,
+   `resume typed`.
+6. Expected: C keeps its marker. Press ⌃⌘R: the sheet shows only C. Press Esc. Open C: it resumes
+   lazily, and its marker goes away. ⌃⌘R now does nothing, and the palette has no "Resume Agent
+   Sessions" entry.
+7. Relaunch without killing anything: no sheet, no marker, nothing is typed.
+8. Turn the setting off, repeat steps 3 and 4: no sheet, no marker, nothing is typed. Nothing is
+   typed either when claude or codex was closed with `/exit`, or in a remote worktree.
+9. Do one real reboot with agents in panes of several worktrees, and check the sheet and the
+   resume after it.
 
-A real reboot has not been tested, only killed zmx sessions. The design is in
-[plans/done/2026-10-26-agent-session-resume-design.md](plans/done/2026-10-26-agent-session-resume-design.md).
+A real reboot has not been tested yet, only killed zmx sessions. The designs are in
+[plans/done/2026-10-26-agent-session-resume-design.md](plans/done/2026-10-26-agent-session-resume-design.md)
+and [plans/2026-10-26-agent-resume-picker-design.md](plans/2026-10-26-agent-resume-picker-design.md).
 
 ### Keeping It On Upstream Merges
 
@@ -257,11 +347,45 @@ A real reboot has not been tested, only killed zmx sessions. The design is in
 - Keep the claim on every first spawn: `TerminalContentBuilder` calls
   `TerminalSurfaceRecipe.agentResumeSeed`, which claims before it checks `.restored`, the setting
   and the record. The claim goes through the `claimAgentResume` closure wired in `supacodeApp` to
-  `WorktreeTerminalManager.claimAgentResume` and `AgentResumeGate.claim`. Claiming only on a real
+  `WorktreeTerminalManager.claimAgentResume` and `AgentResumeGate.claimOutcome`. Claiming only on a real
   inject would let a rebuilt content type the command into its live session.
 - Keep the `landContentSnapshot(tabID:)` call in `handleUnexpectedZmxClose`
   (`WorktreeTerminalManager`), before `ContentRuntime.liveValue.remove`, so the rebuilt content
   starts from the live snapshot.
+- Keep the two gate events in `WorktreeTerminalManager`: `captureLaunchSessionLiveness` emits
+  `.agentResumeLivenessCaptured(liveSessionNames:)` once (nil when the probe failed or
+  `zmxClient.executableURL()` is nil), and `claimAgentResume` emits `.agentResumeClaimed` only
+  on a `.granted` `AgentResumeGate.claimOutcome`. Without them the reducer sees no pending pane,
+  or keeps a stale row and marker.
+- Keep the post-scope `Reduce` in `AppFeature.body` after the child scopes (next to
+  `trackRecentTerminalAccess`). It calls `refreshAgentResume`, gated by
+  `AppFeature.affectsAgentResume`. In `core` it would see a stale `isInitialLoadComplete` and
+  stale layouts. A new `LayoutFeature.Action` that removes, renames or moves a tab, or re-mints
+  the panes like `.convertMode`, needs a row in `affectsAgentResume` (it has a `default`, so the compiler does not catch a miss).
+- Keep the `host(for:)` pre-step for `.wakeTabInBackground` (`handleManagementCommand` calls the
+  private `WorktreeTerminalManager.wakeTabInBackground(_:in:)`), before `sendLayout(.wakeTab(id:))`, as
+  `splitPane` does. It makes the host of a never-opened worktree exist before the `wakeTab`
+  reducer runs.
+- The new cases sit in exhaustive switches. A merge that adds or reorders cases there must keep
+  them:
+  - `TerminalClient.Event` (two events) and `AppFeature.Action` (picker and wake actions) in
+    `AppFeature.Action.affectsWorktreeMenuSnapshot` in `WorktreeMenuSnapshot.swift` (all return false);
+  - `.wakeTabInBackground` in the "not mine" lists of `handleSearchCommand` and
+    `handleBindingActionCommand` (`WorktreeTerminalManager`);
+  - `SidebarItemFeature.Action.pendingAgentResumeChanged` in `SidebarStructure`
+    `cacheInvalidations` (returns `[]`);
+  - `CommandPaletteItem.Kind.resumeAgentSessions` in `CommandPaletteItem` (`isGlobal`,
+    `isRootAction`, shortcut), the kind lists and the delegate mapping of
+    `CommandPaletteFeature`, and `CommandPaletteOverlayView` (badge, icon, help text);
+  - `AppShortcutID.resumeAgentSessions` in the id lists, raw names, display name and
+    `isReachableFromTerminal` list of `AppShortcuts.swift`.
+- Keep ⌃⌘R free: if upstream takes it, move the resume shortcut.
+- The suites `AgentResumePendingTests`, `AppFeatureAgentResumeTests`,
+  `WorktreeTerminalManagerAgentResumeTests`, `AppFeatureAgentResumeWakeTests`,
+  `WorktreeTerminalManagerWakeTests`, `TerminalsFeatureBackgroundWakeTests`,
+  `AgentResumePickerFeatureTests`, `AppFeatureAgentResumePickerTests`,
+  `AppFeatureAgentResumeMarkerTests`, `SidebarItemFeatureTests` and
+  `TerminalSurfaceRecipeAgentResumeTests` fail if a merge breaks the resume picker.
 
 ## Machine-Local Makefile Overrides (`Local.mk`)
 

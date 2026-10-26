@@ -87,6 +87,8 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case customizeWorktreeAppearance(Worktree.ID, Repository.ID)
     case viewArchivedWorktrees
     case refreshWorktrees
+    /// Reopen the agent resume picker; listed only while a resume is pending.
+    case resumeAgentSessions
     case ghosttyCommand(String)
     case toggleWindowMode
     case layoutCommand(LayoutPaletteCommand)
@@ -108,7 +110,7 @@ struct CommandPaletteItem: Identifiable, Equatable {
   var isGlobal: Bool {
     switch kind {
     case .checkForUpdates, .openRepository, .addRemoteRepository, .openSettings, .newWorktree,
-      .viewArchivedWorktrees, .refreshWorktrees:
+      .viewArchivedWorktrees, .refreshWorktrees, .resumeAgentSessions:
       true
     case .ghosttyCommand, .toggleWindowMode, .layoutCommand:
       false
@@ -139,6 +141,9 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case .checkForUpdates, .openRepository, .addRemoteRepository, .openSettings, .newWorktree,
       .viewArchivedWorktrees, .refreshWorktrees:
       true
+    // Shown on an empty query while a resume is pending (it is listed only then).
+    case .resumeAgentSessions:
+      false
     case .ghosttyCommand, .toggleWindowMode, .layoutCommand:
       false
     case .openPullRequest,
@@ -174,6 +179,7 @@ struct CommandPaletteItem: Identifiable, Equatable {
     case .newWorktree: AppShortcuts.newWorktree
     case .viewArchivedWorktrees: AppShortcuts.archivedWorktrees
     case .refreshWorktrees: AppShortcuts.refreshWorktrees
+    case .resumeAgentSessions: AppShortcuts.resumeAgentSessions
     case .ghosttyCommand: nil
     case .toggleWindowMode: AppShortcuts.toggleWindowMode
     case .layoutCommand(let command): command.appShortcut

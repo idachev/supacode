@@ -125,6 +125,9 @@ struct SidebarItemFeature {
     var hasUnseenNotifications: Bool = false
     /// True when every tab in the worktree is hibernated. Drives the sleep marker.
     var allTabsDormant: Bool = false
+    /// True when an agent session in this worktree waits for a resume after a
+    /// restart. Set by `AppFeature` only on a flip. Drives the pending resume marker.
+    var hasPendingAgentResume: Bool = false
     var notifications: IdentifiedArrayOf<WorktreeTerminalNotification> = []
     /// Per-surface outstanding unread counts. Survives cap trimming of
     /// `notifications`; the inspector synthesizes a row for a surface here whose
@@ -145,6 +148,7 @@ struct SidebarItemFeature {
     case pullRequestChanged(ForgePullRequest?, branchAtQueryTime: String)
     case pullRequestDetailApplied(pullRequestNumber: Int, ForgePullRequestDetail)
     case agentSnapshotChanged(AgentPresenceFeature.RowSnapshot)
+    case pendingAgentResumeChanged(Bool)
     case terminalProjectionChanged(WorktreeRowProjection)
     case dragSessionChanged(isDragging: Bool)
     case focusTerminalRequested
@@ -199,6 +203,11 @@ struct SidebarItemFeature {
       case .agentSnapshotChanged(let snapshot):
         guard state.agentSnapshot != snapshot else { return .none }
         state.agentSnapshot = snapshot
+        return .none
+
+      case .pendingAgentResumeChanged(let isPending):
+        guard state.hasPendingAgentResume != isPending else { return .none }
+        state.hasPendingAgentResume = isPending
         return .none
 
       case .terminalProjectionChanged(let projection):

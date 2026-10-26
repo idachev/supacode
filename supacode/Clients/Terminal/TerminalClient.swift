@@ -124,6 +124,9 @@ nonisolated struct TerminalClient: Sendable {
     case setTerminalHibernationEnabled(Bool)
     /// Converts every worktree layout to the new global layout mode, live.
     case setTerminalLayoutMode(TerminalLayoutMode)
+    /// Provisions a tab's content without changing selection or focus, so a
+    /// restored agent pane spawns and runs its one-shot resume in the background.
+    case wakeTabInBackground(Worktree, tabID: TabID)
   }
 
   enum Event: Equatable {
@@ -170,6 +173,13 @@ nonisolated struct TerminalClient: Sendable {
     /// `surfaceCreationFailed` so only this resolves the worktree-new ack and
     /// settles creation progress; the worktree then rests with no tabs.
     case initialTabCreationFailed(worktreeID: Worktree.ID, message: String)
+    /// The once-per-launch zmx liveness capture finished: the `supa-*` session
+    /// names alive at launch, or nil when the probe failed or zmx cannot spawn
+    /// (then nothing resumes this launch). Emitted once, before the subscription.
+    case agentResumeLivenessCaptured(liveSessionNames: Set<String>?)
+    /// A content spent its one resume slot (any first spawn). Emitted only for
+    /// a granted claim; a refused one adds nothing to the pending rule.
+    case agentResumeClaimed(ContentID)
   }
 }
 

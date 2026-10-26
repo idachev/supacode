@@ -113,6 +113,53 @@ struct TerminalSurfaceRecipeAgentResumeTests {
         record: nil, worktree: Self.makeWorktree(), zmxAvailable: true, enabled: true) == nil)
   }
 
+  // MARK: - agentResumeSkip (the logged reason).
+
+  @Test func agentResumeSkipIsNilWhenTheResumeIsTyped() {
+    #expect(
+      TerminalSurfaceRecipe.agentResumeSkip(
+        record: Self.record("claude"), worktree: Self.makeWorktree(), zmxAvailable: true, enabled: true) == nil)
+  }
+
+  private struct SkipCase {
+    var record: AgentSessionRecord?
+    var worktree: Worktree
+    var zmxAvailable = true
+    var enabled = true
+    var expected: TerminalSurfaceRecipe.AgentResumeSkip
+  }
+
+  @Test func agentResumeSkipGivesEachReason() {
+    let local = Self.makeWorktree()
+    let claude = Self.record("claude")
+    let cases = [
+      SkipCase(record: nil, worktree: local, expected: .noRecord),
+      SkipCase(record: claude, worktree: local, enabled: false, expected: .settingOff),
+      SkipCase(record: claude, worktree: Self.makeRemoteWorktree(), expected: .remote),
+      SkipCase(record: claude, worktree: local, zmxAvailable: false, expected: .zmxMissing),
+      SkipCase(record: Self.record("copilot"), worktree: local, expected: .unsupportedRecord),
+      SkipCase(record: Self.record("claude", id: "not-a-uuid"), worktree: local, expected: .unsupportedRecord),
+    ]
+    for item in cases {
+      let skip = TerminalSurfaceRecipe.agentResumeSkip(
+        record: item.record, worktree: item.worktree, zmxAvailable: item.zmxAvailable, enabled: item.enabled)
+      #expect(skip == item.expected)
+      // The input agrees with the skip: no command whenever there is a reason.
+      #expect(
+        TerminalSurfaceRecipe.agentResumeInput(
+          record: item.record, worktree: item.worktree, zmxAvailable: item.zmxAvailable, enabled: item.enabled)
+          == nil)
+    }
+  }
+
+  /// A pane without a record skips as `.noRecord` (logged at debug) even when
+  /// another reason also holds, so every info-level skip carries a record.
+  @Test func agentResumeSkipReportsAMissingRecordFirst() {
+    #expect(
+      TerminalSurfaceRecipe.agentResumeSkip(
+        record: nil, worktree: Self.makeRemoteWorktree(), zmxAvailable: false, enabled: false) == .noRecord)
+  }
+
   // MARK: - AgentResumeCommand.
 
   @Test func resumeCommandTextPerAgent() {

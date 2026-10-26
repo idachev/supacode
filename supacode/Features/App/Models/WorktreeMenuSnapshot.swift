@@ -112,7 +112,8 @@ extension AppFeature.Action {
         .setupScriptConsumed, .worktreeProjectionChanged, .surfaceCreated,
         .tabRemoved, .tabRenamed, .worktreeStateTornDown,
         .surfacesClosed, .agentHookEventReceived, .terminalHasAnySurfaceChanged,
-        .surfaceCreationFailed, .initialTabCreationFailed:
+        .surfaceCreationFailed, .initialTabCreationFailed,
+        .agentResumeLivenessCaptured, .agentResumeClaimed:
         return false
       }
     // Hot agent-storm paths: per-tab churn never mutates snapshot inputs.
@@ -142,7 +143,11 @@ extension AppFeature.Action {
       .systemNotificationsPermissionFailed, .deeplinkReceived,
       .deeplink, .commandAckTimedOut, .deeplinkConfirmationTimedOut,
       .deeplinkReferenceOpened, .settingsWindowOpened, .settingsRelocationDidNotFinish, .settingsStoreUnreadable,
-      .alert, .deeplinkInputConfirmation:
+      .alert, .deeplinkInputConfirmation,
+      .agentResumePicker, .agentResumePickerRequested:
+      return false
+    // The background wake queue touches only `agentResume`, never a snapshot input.
+    case .agentResumeWakeRequested, .agentResumeWakeTick:
       return false
     }
   }

@@ -273,6 +273,7 @@ private struct CommandPaletteRowView: View {
     case .checkForUpdates, .openRepository, .addRemoteRepository, .openSettings, .newWorktree,
       .viewArchivedWorktrees,
       .refreshWorktrees,
+      .resumeAgentSessions,
       .ghosttyCommand,
       .toggleWindowMode,
       .layoutCommand,
@@ -314,6 +315,8 @@ private struct CommandPaletteRowView: View {
       return "archivebox"
     case .refreshWorktrees:
       return "arrow.clockwise"
+    case .resumeAgentSessions:
+      return "arrow.clockwise.circle"
     case .ghosttyCommand:
       return "terminal"
     case .toggleWindowMode:
@@ -364,6 +367,7 @@ private struct CommandPaletteRowView: View {
     case .checkForUpdates, .openRepository, .addRemoteRepository, .openSettings, .newWorktree,
       .viewArchivedWorktrees,
       .refreshWorktrees,
+      .resumeAgentSessions,
       .ghosttyCommand,
       .toggleWindowMode,
       .layoutCommand,
@@ -505,6 +509,8 @@ private struct CommandPaletteRowView: View {
       base = "View Archived Worktrees"
     case .refreshWorktrees:
       base = "Refresh Worktrees"
+    case .resumeAgentSessions:
+      base = "Resume agent sessions that wait after a restart"
     case .ghosttyCommand:
       base = row.title
     case .toggleWindowMode:

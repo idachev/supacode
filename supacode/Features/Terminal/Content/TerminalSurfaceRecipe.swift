@@ -267,17 +267,43 @@ nonisolated enum TerminalSurfaceRecipe {
     return stored > 0 ? Float32(stored) : nil
   }
 
-  /// The resume command to type into a restored pane, or nil when the pane
-  /// must not resume: the setting is off, the worktree is remote, there is no
-  /// zmx (so no `supa-*` session whose death means a reboot), or there is no
-  /// record.
+  /// Why a restored, claimed pane does not get its agent's resume command.
+  nonisolated enum AgentResumeSkip: String, Equatable {
+    case settingOff, remote, zmxMissing, noRecord, unsupportedRecord
+  }
+
+  /// The reason a restored pane must not resume, or nil when the resume
+  /// command is typed. The record is checked first, so every other reason
+  /// belongs to a pane that has a record (the owner may ask why it did not
+  /// resume). Then: the setting is off, the worktree is remote, there is no
+  /// zmx (so no `supa-*` session whose death means a reboot), or
+  /// `AgentResumeCommand` has no command for the record.
+  static func agentResumeSkip(
+    record: AgentSessionRecord?,
+    worktree: Worktree,
+    zmxAvailable: Bool,
+    enabled: Bool
+  ) -> AgentResumeSkip? {
+    guard let record else { return .noRecord }
+    guard enabled else { return .settingOff }
+    guard worktree.host == nil else { return .remote }
+    guard zmxAvailable else { return .zmxMissing }
+    guard AgentResumeCommand.initialInput(for: record) != nil else { return .unsupportedRecord }
+    return nil
+  }
+
+  /// The resume command to type into a restored pane, or nil when
+  /// `agentResumeSkip` gives a reason not to.
   static func agentResumeInput(
     record: AgentSessionRecord?,
     worktree: Worktree,
     zmxAvailable: Bool,
     enabled: Bool
   ) -> String? {
-    guard enabled, worktree.host == nil, zmxAvailable, let record else { return nil }
+    guard
+      agentResumeSkip(record: record, worktree: worktree, zmxAvailable: zmxAvailable, enabled: enabled) == nil,
+      let record
+    else { return nil }
     return AgentResumeCommand.initialInput(for: record)
   }
 
@@ -304,15 +330,30 @@ nonisolated enum TerminalSurfaceRecipe {
     request: ContentRequest,
     resume: AgentResumeContext
   ) -> TerminalContentState {
+    // A re-wake is not a decision: it never claims, and it repeats on every
+    // wake of a hibernated tab, so it logs nothing.
     guard phase == .first else { return seedState }
-    guard resume.claim(request.contentID), request.origin == .restored,
-      let input = agentResumeInput(
-        record: currentState.agentSession,
-        worktree: resume.worktree,
-        zmxAvailable: resume.zmxAvailable,
-        enabled: resume.enabled
-      )
-    else { return seedState }
+    let contentID = request.contentID.rawValue
+    // The claim runs before every other check (see `docs/fork.md`); the
+    // manager logs a refused claim.
+    guard resume.claim(request.contentID) else { return seedState }
+    guard request.origin == .restored else {
+      builderLogger.debug("resume skipped: not restored content=\(contentID)")
+      return seedState
+    }
+    let record = currentState.agentSession
+    if let skip = agentResumeSkip(
+      record: record,
+      worktree: resume.worktree,
+      zmxAvailable: resume.zmxAvailable,
+      enabled: resume.enabled
+    ) {
+      logAgentResumeSkip(skip, record: record, contentID: contentID)
+      return seedState
+    }
+    guard let record, let input = AgentResumeCommand.initialInput(for: record) else { return seedState }
+    builderLogger.info(
+      "resume typed: agent=\(record.agent) session=\(record.sessionID.prefix(8)) content=\(contentID)")
     return TerminalContentState(
       workingDirectory: seedState.workingDirectory,
       agents: seedState.agents,
@@ -320,6 +361,23 @@ nonisolated enum TerminalSurfaceRecipe {
       launch: LaunchOverride(initialInput: input),
       agentSession: seedState.agentSession
     )
+  }
+
+  /// One line per skipped resume. A pane without a record skips on every
+  /// launch, so it is debug; a pane with a record logs at info (warning for an
+  /// unsupported record), with the reason.
+  private static func logAgentResumeSkip(_ skip: AgentResumeSkip, record: AgentSessionRecord?, contentID: UUID) {
+    switch skip {
+    case .noRecord:
+      builderLogger.debug("resume skipped: no record content=\(contentID)")
+    case .unsupportedRecord:
+      builderLogger.warning(
+        "resume skipped: unsupported record agent=\(record?.agent ?? "-") content=\(contentID)")
+    case .settingOff, .remote, .zmxMissing:
+      builderLogger.info(
+        "resume skipped: \(skip.rawValue) agent=\(record?.agent ?? "-") "
+          + "session=\(record.map { String($0.sessionID.prefix(8)) } ?? "-") content=\(contentID)")
+    }
   }
 
   private static func context(for origin: ContentOrigin) -> ghostty_surface_context_e {

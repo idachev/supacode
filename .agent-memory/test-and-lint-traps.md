@@ -75,6 +75,18 @@ paths:
   action in flight it records "There were no received actions to skip.". When an event may or may
   not produce follow-up actions (e.g. presence `session_end` on empty state), use
   `skipReceivedActions(strict: false)`.
+- **Non-exhaustive TestStore: `finish()` does not fold received state.** With
+  `exhaustivity = .off`, state set by an action an effect sends shows in `store.state` only after
+  `receive`, `skipReceivedActions(strict: false)` or the next `send`. Read state after
+  `await store.finish(timeout: .seconds(30)); await store.skipReceivedActions(strict: false)`.
+  A trailing strict `skipInFlightEffects()` fails ("There were no in-flight effects to skip.") when
+  the only effects were quick `.send`s that already landed, so it passes or fails by scheduling; use
+  it only when an effect really waits on a TestClock. **Why:** on 2026-10-26 eleven new tests passed
+  alone and failed in the parallel `make test`.
+- **TerminalsFeature reconciles hibernation after each layout action that can change visibility**
+  (`canAffectVisibility`, e.g. `.wakeTab`). A fixture whose selected worktree has an unprovisioned
+  visible tab gets an extra `.wakeTab` and an extra content factory request for that tab; count
+  requests per tab, not in total.
 - **Exhaustive TestStore tests see new row state.** If a reducer starts to change a new
   `SidebarItemFeature.State` field on `agentSnapshotChanged` or `terminalProjectionChanged`,
   exhaustive tests in `AppFeatureRunScriptTests`, `AppFeatureSettingsChangedTests` and
