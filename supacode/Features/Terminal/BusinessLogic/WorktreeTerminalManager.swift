@@ -2007,7 +2007,11 @@ final class WorktreeTerminalManager {
     guard !didCaptureLaunchSessionLiveness else { return }
     didCaptureLaunchSessionLiveness = true
     let probe = await zmxClient.listSessionsWithClients()
-    agentResumeGate = probe.map { AgentResumeGate(liveSessionNames: Set($0.map(\.name))) }
+    // A stale socket left by an unclean shutdown is listed but dead; it must
+    // count as dead or the pane that owned it never resumes.
+    agentResumeGate = probe.map { entries in
+      AgentResumeGate(liveSessionNames: Set(entries.filter { !$0.isStale }.map(\.name)))
+    }
     if agentResumeGate == nil {
       terminalLogger.warning("resume skipped: liveness probe failed")
     }

@@ -295,6 +295,10 @@ nonisolated enum ZmxSessionListParser {
     var name: String
     /// nil when the count is unknown (err/status line); the reaper spares these.
     var clients: Int?
+    /// True for an `err=ConnectionRefused` line: the daemon is definitively gone
+    /// and zmx deleted its stale socket during this `ls` (`status=cleaning up`).
+    /// `unreachable` (timeout) lines stay false: the daemon may just be busy.
+    var isStale = false
   }
 
   static func parse(_ stdout: String) -> [Entry] {
@@ -321,7 +325,7 @@ nonisolated enum ZmxSessionListParser {
         guard let name = values["name"], name.hasPrefix(ZmxSessionID.prefix) else { return nil }
         // Absent `clients=` (err/status line) maps to nil = unknown, not zero.
         let clients = values["clients"].flatMap { Int($0) }
-        return Entry(name: String(name), clients: clients)
+        return Entry(name: String(name), clients: clients, isStale: values["err"] == "ConnectionRefused")
       }
   }
 }
