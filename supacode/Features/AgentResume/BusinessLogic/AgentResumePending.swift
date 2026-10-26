@@ -15,7 +15,7 @@ nonisolated enum AgentResumePending {
   /// Main actor: it reads the `@ObservableState` layouts, whose accessors are
   /// main-actor isolated.
   @MainActor
-  static func compute(
+  static func compute(  // swiftlint:disable:this function_parameter_count
     layouts: IdentifiedArrayOf<LayoutFeature.State>,
     liveness: AgentResumeLiveness,
     claimed: Set<ContentID>,
