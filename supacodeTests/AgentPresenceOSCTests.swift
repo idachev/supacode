@@ -105,6 +105,100 @@ struct AgentPresenceOSCTests {
     }
   }
 
+  // MARK: - session / reason fields (agent session resume).
+
+  @Test func parsesLowerAndUppercaseSessionIDKeepingCase() {
+    for id in ["01a17693-8129-7c41-9dd3-c208ee9604ce", "A064B54A-E529-45C3-91CF-89CF1A424494"] {
+      let signal = AgentPresenceOSC.parse(id: "claude", metadata: "event=session_start;pid=7;session=\(id)")
+      #expect(signal?.eventRawValue == "session_start")
+      #expect(signal?.pid == 7)
+      #expect(signal?.sessionID == id)
+    }
+  }
+
+  @Test func malformedSessionIDDropsOnlyThatField() {
+    let valid = "a064b54a-e529-45c3-91cf-89cf1a424494"
+    let invalid = [
+      "zzzzzzzz-e529-45c3-91cf-89cf1a424494",  // 36 chars, not hex
+      String(valid.dropLast()),  // 35
+      valid + "0",  // 37
+      "{\(valid)}",  // braced form
+      "my-grok-session-title",  // a grok title `--resume` would accept
+      "",
+    ]
+    for raw in invalid {
+      let signal = AgentPresenceOSC.parse(
+        id: "claude", metadata: "event=session_start;pid=9;session=\(raw);reason=other")
+      #expect(signal?.eventRawValue == "session_start", "\(raw)")
+      #expect(signal?.pid == 9, "\(raw)")
+      #expect(signal?.sessionID == nil, "\(raw)")
+      #expect(signal?.endReason == "other", "\(raw)")
+    }
+  }
+
+  @Test func parsesEndReasonToken() {
+    for reason in ["prompt_input_exit", "clear", "logout", "other", "shutdown", String(repeating: "a", count: 32)] {
+      let signal = AgentPresenceOSC.parse(id: "claude", metadata: "event=session_end;reason=\(reason)")
+      #expect(signal?.endReason == reason)
+    }
+  }
+
+  @Test func malformedEndReasonDropsOnlyThatField() {
+    let id = "a064b54a-e529-45c3-91cf-89cf1a424494"
+    for raw in ["", "Other", "prompt-input-exit", "x1", "caf\u{e9}", "a\u{1b}b", String(repeating: "a", count: 33)] {
+      let signal = AgentPresenceOSC.parse(id: "claude", metadata: "event=session_end;session=\(id);reason=\(raw)")
+      #expect(signal?.eventRawValue == "session_end", "\(raw)")
+      #expect(signal?.sessionID == id, "\(raw)")
+      #expect(signal?.endReason == nil, "\(raw)")
+    }
+  }
+
+  @Test func duplicateSessionOrReasonRejectsTheSignal() {
+    let first = "a064b54a-e529-45c3-91cf-89cf1a424494"
+    let second = "5b1ba78a-3208-4d0e-a389-9030d6e8e892"
+    let twoSessions = "event=session_start;session=\(first);session=\(second)"
+    #expect(AgentPresenceOSC.parse(id: "claude", metadata: twoSessions) == nil)
+    #expect(AgentPresenceOSC.parse(id: "claude", metadata: "event=session_end;reason=other;reason=clear") == nil)
+  }
+
+  @Test func signalsWithoutSessionFieldsAreUnchanged() {
+    #expect(
+      AgentPresenceOSC.parse(id: "claude", metadata: "event=busy;pid=5")
+        == AgentPresenceOSC.Signal(agent: "claude", eventRawValue: "busy", pid: 5))
+    let signal = AgentPresenceOSC.parse(id: "codex", metadata: "event=session_start")
+    #expect(signal?.sessionID == nil)
+    #expect(signal?.endReason == nil)
+  }
+
+  @Test func presenceEventCopiesSessionIDAndEndReason() {
+    let id = "01a17693-8129-7c41-9dd3-c208ee9604ce"
+    let result = AgentSignal.presenceEvent(
+      id: "codex", metadata: "event=session_end;pid=42;session=\(id);reason=other",
+      surfaceID: UUID(), surfaceExists: true)
+    let event = try? result.get()
+    #expect(event?.event == "session_end")
+    #expect(event?.pid == 42)
+    #expect(event?.sessionID == id)
+    #expect(event?.endReason == "other")
+  }
+
+  @Test func presenceEventWithoutSessionFieldsLeavesThemNil() {
+    let result = AgentSignal.presenceEvent(
+      id: "claude", metadata: "event=busy", surfaceID: UUID(), surfaceExists: true)
+    let event = try? result.get()
+    #expect(event?.sessionID == nil)
+    #expect(event?.endReason == nil)
+  }
+
+  @Test func socketDecodedHookEventCarriesNoSession() throws {
+    let surfaceID = UUID()
+    let json = #"{"event":"session_start","v":1,"agent":"claude","surface_id":"\#(surfaceID.uuidString)","pid":5}"#
+    let event = try JSONDecoder().decode(AgentHookEvent.self, from: Data(json.utf8))
+    #expect(event.sessionID == nil)
+    #expect(event.endReason == nil)
+    #expect(event == AgentHookEvent(agent: "claude", event: "session_start", surfaceID: surfaceID, pid: 5))
+  }
+
   // MARK: - presenceEvent (attribution to receiving surface).
 
   @Test func presenceEventAttributesToReceivingSurface() {

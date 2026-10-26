@@ -92,6 +92,8 @@ nonisolated struct TerminalClient: Sendable {
     case performBindingAction(Worktree, action: String)
     case performBindingActionOnSurface(Worktree, surfaceID: UUID, action: String)
     case setImagePasteAgents(surfaceID: UUID, agents: Set<SkillAgent>)
+    /// Folds a presence-derived agent session change into the owning content's record.
+    case updateAgentSession(surfaceID: UUID, update: AgentSessionUpdate)
     case startSearch(Worktree)
     case searchSelection(Worktree)
     case navigateSearchNext(Worktree)

@@ -201,6 +201,10 @@ struct LayoutFeature {
     case toggleZoom(paneID: PaneID)
     case hibernateTab(id: TabID)
     case wakeTab(id: TabID)
+    /// Copies the tab's live content snapshot into the layout, like `hibernateTab`
+    /// does, without hibernating. Sent before a content is dropped and rebuilt from
+    /// the stored snapshot, so the rebuild starts from current state.
+    case landContentSnapshot(tabID: TabID)
     case runtime(RuntimeEvent)
     /// A content asked to close tabs in its pane; gated by the
     /// confirm-close-tab mode.
@@ -246,7 +250,7 @@ struct LayoutFeature {
       return true
     case .newTab, .splitPane, .closeTab, .closePane, .selectTab, .renameTab, .focusPane,
       .moveTab, .moveTabToSplit, .moveTabToSpanningSplit, .enterWindowMode, .exitWindowMode,
-      .equalizePanes, .toggleZoom, .hibernateTab, .wakeTab, .runtime(.killConfirmed),
+      .equalizePanes, .toggleZoom, .hibernateTab, .wakeTab, .landContentSnapshot, .runtime(.killConfirmed),
       .runtime(.titleCommitted), .contentRequestedClose, .contentRequestedNewTab,
       .contentRequestedSplit, .contentRequestedFocus, .contentRequestedFocusSplit,
       .contentRequestedToggleZoom, .contentRequestedResize, .contentRequestedGotoTab,
@@ -327,6 +331,8 @@ struct LayoutFeature {
         return reduceHibernateTab(&state, tabID: tabID)
       case .wakeTab(let tabID):
         return reduceWakeTab(&state, tabID: tabID)
+      case .landContentSnapshot(let tabID):
+        return reduceLandContentSnapshot(&state, tabID: tabID)
       case .runtime(let event):
         return reduceRuntimeEvent(&state, event: event)
       case .contentRequestedClose(let contentID, let scope):
@@ -795,6 +801,18 @@ extension LayoutFeature {
     }
     landWokenSnapshot(&state, tabID: tabID, content: content)
     state.renderEpoch &+= 1
+    return .none
+  }
+
+  private func reduceLandContentSnapshot(_ state: inout State, tabID: TabID) -> Effect<Action> {
+    guard let contentID = state.layout.pane(containingTab: tabID)?.tabs[id: tabID]?.content.id else {
+      return .none
+    }
+    guard let content = contentRuntime.content(for: contentID) else {
+      Self.logger.debug("landContentSnapshot found no runtime content for \(contentID.rawValue)")
+      return .none
+    }
+    landWokenSnapshot(&state, tabID: tabID, content: content)
     return .none
   }
 

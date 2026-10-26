@@ -215,6 +215,21 @@ final class TerminalContent: TabContent {
     searchToolbar.surfaceView = nil
   }
 
+  /// Folds an agent session change into the recorded state, so the next snapshot
+  /// (live or hibernated) persists it. Returns whether the record changed.
+  func applyAgentSession(_ update: AgentSessionUpdate) -> Bool {
+    let next = AgentSessionRecord.applying(update, to: state.agentSession)
+    guard next != state.agentSession else { return false }
+    state = TerminalContentState(
+      workingDirectory: state.workingDirectory,
+      agents: state.agents,
+      frozenGrid: state.frozenGrid,
+      launch: state.launch,
+      agentSession: next
+    )
+    return true
+  }
+
   func snapshot() -> ContentSnapshot {
     guard let surfaceView else {
       return ContentSnapshot(id: id, state: .terminal(state))
@@ -228,7 +243,8 @@ final class TerminalContent: TabContent {
       workingDirectory: surfaceView.bridge.state.pwd ?? state.workingDirectory,
       agents: state.agents,
       frozenGrid: surfaceView.captureFrozenGrid() ?? state.frozenGrid,
-      launch: state.launch
+      launch: state.launch,
+      agentSession: state.agentSession
     )
   }
 }

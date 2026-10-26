@@ -2166,7 +2166,10 @@ struct AppFeature {
         return .merge(presenceEffect, ackEffect)
 
       case .terminalEvent(.agentHookEventReceived(let event)):
-        return .send(.agentPresence(.hookEventReceived(event)))
+        return .merge(
+          .send(.agentPresence(.hookEventReceived(event))),
+          agentSessionEffect(event)
+        )
 
       // The user is looking at this surface, so whatever was parked on them there
       // is acknowledged. Scoped to the focused surface, so a broken session in
@@ -2286,6 +2289,16 @@ struct AppFeature {
       state: state,
       badgesEnabled: badgesEnabled
     )
+  }
+
+  /// Forwards a session start or explicit exit to the pane's content, which keeps
+  /// the record that resumes the agent after a reboot. Presence is forwarded apart.
+  private func agentSessionEffect(_ event: AgentHookEvent) -> Effect<Action> {
+    guard let update = AgentSessionUpdate.from(event) else { return .none }
+    let surfaceID = event.surfaceID
+    return .run { _ in
+      await terminalClient.send(.updateAgentSession(surfaceID: surfaceID, update: update))
+    }
   }
 
   // Per-surface fan-out, deliberately separate from `agentPresenceFanOutEffect`:

@@ -524,7 +524,8 @@ final class WorktreeTerminalManager {
     case .createTab, .createTabWithInput, .openFileWithScript, .ensureInitialTab, .stopRunScript, .stopScript,
       .runBlockingScript, .closeFocusedTab, .closeFocusedSurface, .performBindingAction,
       .performBindingActionOnSurface, .selectTab, .selectTabAtIndex, .selectRelativeTab, .focusSurface, .splitSurface,
-      .destroyTab, .destroySurface, .renameTab, .setImagePasteAgents, .prune, .removeWorktreeLayout,
+      .destroyTab, .destroySurface, .renameTab, .setImagePasteAgents, .updateAgentSession, .prune,
+      .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
       .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane,
       .splitFocusedPane, .focusSplit, .toggleSplitZoom, .equalizeSplits,
@@ -571,7 +572,7 @@ final class WorktreeTerminalManager {
       .navigateSearchNext, .navigateSearchPrevious, .selectTab, .selectTabAtIndex, .selectRelativeTab,
       .focusSurface, .splitSurface, .destroyTab, .destroySurface, .renameTab, .prune, .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
-      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane:
+      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane, .updateAgentSession:
       return false
     }
     return true
@@ -579,6 +580,27 @@ final class WorktreeTerminalManager {
 
   private func setImagePasteAgents(_ agents: Set<SkillAgent>, onSurfaceID surfaceID: UUID) {
     for host in hosts.values where host.setImagePasteAgents(agents, onSurfaceID: surfaceID) {
+      return
+    }
+  }
+
+  private func updateAgentSession(_ update: AgentSessionUpdate, onSurfaceID surfaceID: UUID) {
+    Self.routeAgentSessionUpdate(update, onSurfaceID: surfaceID, hosts: hosts) { [weak self] worktreeID in
+      self?.markLayoutDirty(worktreeID: worktreeID)
+    }
+  }
+
+  /// Hands the update to the one host that owns the surface and marks only that
+  /// worktree's layout dirty, so the record reaches disk within the debounce. All
+  /// hosts share one runtime, so ownership is the host's `isKnownSurface` guard.
+  static func routeAgentSessionUpdate(
+    _ update: AgentSessionUpdate,
+    onSurfaceID surfaceID: UUID,
+    hosts: [Worktree.ID: WorktreeContentHost],
+    markLayoutDirty: (Worktree.ID) -> Void
+  ) {
+    for (worktreeID, host) in hosts where host.updateAgentSession(update, onSurfaceID: surfaceID) {
+      markLayoutDirty(worktreeID)
       return
     }
   }
@@ -599,6 +621,8 @@ final class WorktreeTerminalManager {
       sendTerminals(.layoutModeChanged(mode))
     case .toggleWindowModeForFocusedPane(let worktree):
       toggleWindowModeForFocusedPane(of: worktree)
+    case .updateAgentSession(let surfaceID, let update):
+      updateAgentSession(update, onSurfaceID: surfaceID)
     case .setSelectedWorktreeID(let id):
       guard id != selectedWorktreeID else { return }
       if let previousID = selectedWorktreeID, let previousHost = hosts[previousID] {
@@ -941,6 +965,10 @@ final class WorktreeTerminalManager {
       if session.clients == 0 {
         // Reattachable: rebuild the same content at its persisted geometry.
         self.commitReportedTitle(of: ContentID(rawValue: surfaceID), worktreeID: worktreeID)
+        // Land the live snapshot first: the rebuild starts from the tab's stored
+        // one, which otherwise misses everything since the last wake (an agent
+        // session that started after it, for one).
+        self.sendLayout(worktreeID, .landContentSnapshot(tabID: tabID))
         ContentRuntime.liveValue.remove(ContentID(rawValue: surfaceID), tombstone: false)
         self.sendLayout(worktreeID, .wakeTab(id: tabID))
         return

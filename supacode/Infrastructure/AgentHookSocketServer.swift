@@ -491,6 +491,11 @@ nonisolated struct AgentHookEvent: Equatable, Sendable, Decodable {
   /// their own typed shape via `decodeData(_:)`, keeping this layer decoupled
   /// from per-event payload schemas.
   let data: JSONValue?
+  /// The agent's session id from the OSC `session=` field (already validated as a
+  /// UUID by the parser). The socket wire does not carry it, so it is nil there.
+  let sessionID: String?
+  /// The SessionEnd `reason` token from the OSC `reason=` field. nil on the socket wire.
+  let endReason: String?
 
   /// Convenience: the event name as a known case, or nil for an unrecognized event.
   var eventName: EventName? { EventName(rawValue: event) }
@@ -548,6 +553,9 @@ nonisolated struct AgentHookEvent: Equatable, Sendable, Decodable {
       self.timestamp = nil
     }
     self.data = try container.decodeIfPresent(JSONValue.self, forKey: .data)
+    // Session capture travels only over OSC 3008 (`AgentPresenceOSC`).
+    self.sessionID = nil
+    self.endReason = nil
   }
 
   /// Memberwise init for synthesizing events from sources other than the JSON
@@ -560,7 +568,9 @@ nonisolated struct AgentHookEvent: Equatable, Sendable, Decodable {
     surfaceID: UUID,
     pid: pid_t? = nil,
     timestamp: Date? = nil,
-    data: JSONValue? = nil
+    data: JSONValue? = nil,
+    sessionID: String? = nil,
+    endReason: String? = nil
   ) {
     self.version = version
     self.agent = agent
@@ -576,6 +586,8 @@ nonisolated struct AgentHookEvent: Equatable, Sendable, Decodable {
     }
     self.timestamp = timestamp
     self.data = data
+    self.sessionID = sessionID
+    self.endReason = endReason
   }
 
   private static func decodeUUID(

@@ -398,7 +398,8 @@ struct TerminalContentBuilder {
           seedState = TerminalContentState(
             workingDirectory: currentState.workingDirectory,
             agents: currentState.agents,
-            frozenGrid: currentState.frozenGrid
+            frozenGrid: currentState.frozenGrid,
+            agentSession: currentState.agentSession
           )
         }
         let zmxPath = zmxExecutablePath()

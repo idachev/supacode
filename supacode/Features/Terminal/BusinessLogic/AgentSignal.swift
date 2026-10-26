@@ -54,7 +54,8 @@ nonisolated enum AgentSignal {
     }
     return .success(
       AgentHookEvent(
-        agent: signal.agent, event: signal.eventRawValue, surfaceID: surfaceID, pid: signal.pid))
+        agent: signal.agent, event: signal.eventRawValue, surfaceID: surfaceID, pid: signal.pid,
+        sessionID: signal.sessionID, endReason: signal.endReason))
   }
 
   /// Splits a raw OSC 3008 payload (`<action>=<id>[;<metadata>]`) into context id
