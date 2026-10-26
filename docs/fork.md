@@ -217,6 +217,11 @@ session, or lose its real resume. Hardening (a capture-time check that the OSC p
 agent process under this pane's zmx session) is tracked as TODO ИН2 in `TODO.md`. Turn the
 setting off to opt out.
 
+If your Ghostty config sets `command` (a program other than a shell), the restored pane runs that
+program, and the typed resume would reach it as input. Turn "Resume agents after restart" off
+in that case. Supacode cannot read Ghostty's `command` value, because the Ghostty C API exposes
+no value for it.
+
 **How to verify** (design Section 10):
 
 1. Run `make install-dev-build` and restart the app. In Settings → Developer, check that the
