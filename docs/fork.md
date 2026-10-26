@@ -166,7 +166,8 @@ A pane gets its command only when all of these hold:
 - The agent did not exit explicitly while the app ran (the clear rule below).
 - The SessionStart hook captured a record for the pane. The hook adds `session=<uuid>` to the
   OSC 3008 presence metadata, read once from the hook's stdin, and the id is stored per pane as
-  `TerminalContentState.agentSession` (JSON key `agentSession` in the layouts file).
+  `TerminalContentState.agentSession` (JSON key `agentSession` in the `layoutsFile` JSON blob in
+  UserDefaults).
 
 How it behaves:
 
@@ -207,6 +208,19 @@ Supacode never writes the codex trust hashes, because that would bypass codex's 
 Until you approve, codex panes most likely get no record and no resume, and nothing errors (not
 confirmed). Agents that are already running keep their old hooks until they restart, so those
 panes get no resume either.
+
+**Known risk.** OSC 3008 signals are unauthenticated. Anything that writes to the pane (for
+example `cat` of an untrusted file, or remote output) can plant, replace or clear the pane's
+resume record. The typed command has a fixed form with a strict, shell-quoted UUID, so no
+arbitrary command can run. But after a reboot the pane may resume a wrong or non-existent
+session, or lose its real resume. Hardening (a capture-time check that the OSC pid is a live
+agent process under this pane's zmx session) is tracked as TODO ИН2 in `TODO.md`. Turn the
+setting off to opt out.
+
+If your Ghostty config sets `command` (a program other than a shell), the restored pane runs that
+program, and the typed resume would reach it as input. Turn "Resume agents after restart" off
+in that case. Supacode cannot read Ghostty's `command` value, because the Ghostty C API exposes
+no value for it.
 
 **How to verify** (design Section 10):
 
