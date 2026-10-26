@@ -1989,9 +1989,7 @@ final class WorktreeTerminalManager {
   /// content builder only once a restored pane holds a resumable record.
   func claimAgentResume(_ id: ContentID) -> Bool {
     guard agentResumeGate != nil else {
-      if !didCaptureLaunchSessionLiveness {
-        terminalLogger.warning("resume skipped: liveness not captured")
-      }
+      terminalLogger.warning("resume skipped: liveness not captured")
       return false
     }
     return agentResumeGate?.claim(id) ?? false
