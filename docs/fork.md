@@ -166,7 +166,8 @@ A pane gets its command only when all of these hold:
 - The agent did not exit explicitly while the app ran (the clear rule below).
 - The SessionStart hook captured a record for the pane. The hook adds `session=<uuid>` to the
   OSC 3008 presence metadata, read once from the hook's stdin, and the id is stored per pane as
-  `TerminalContentState.agentSession` (JSON key `agentSession` in the layouts file).
+  `TerminalContentState.agentSession` (JSON key `agentSession` in the `layoutsFile` JSON blob in
+  UserDefaults).
 
 How it behaves:
 
