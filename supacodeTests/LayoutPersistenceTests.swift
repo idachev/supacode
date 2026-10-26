@@ -1,6 +1,8 @@
 import AppKit
+import Dependencies
 import Foundation
 import IdentifiedCollections
+import Sharing
 import Testing
 
 @testable import supacode
@@ -453,11 +455,10 @@ struct LayoutPersistenceTests {
   private static let encodedAgentSession =
     #""agentSession":{"agent":"claude","sessionID":"0b6d3f0e-6a2f-4c55-9b0e-3f5e2a1c7d10"}"#
 
-  /// Reads `json` through `LayoutsFile.readPersisted` from a private store.
-  private static func readPersisted(_ json: String) throws -> LayoutsFile.DiskState {
-    let suite = "LayoutPersistenceTests.\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+  /// Reads `json` through `LayoutsFile.readPersisted` from an isolated
+  /// in-memory store, as `LayoutsIncrementalWriterTests` does.
+  private static func readPersisted(_ json: String) -> LayoutsFile.DiskState {
+    let defaults = UserDefaults.inMemory
     defaults.set(Data(json.utf8), forKey: LayoutsFile.userDefaultsKey)
     return LayoutsFile.readPersisted(from: defaults)
   }
@@ -482,7 +483,7 @@ struct LayoutPersistenceTests {
     let decoded = try decoder.decode(LayoutsFile.self, from: Data(json.utf8))
     #expect(decoded.undecodedEntryCount == 0)
 
-    guard case .file(let file) = try Self.readPersisted(json) else {
+    guard case .file(let file) = Self.readPersisted(json) else {
       Issue.record("Expected .file for an unknown terminal key.")
       return
     }
@@ -495,7 +496,7 @@ struct LayoutPersistenceTests {
     let json = encoded.replacing(
       Self.encodedAgentSession, with: #""agentSession":{"agent":42},"workingDirectory":"kept""#)
 
-    guard case .file(let file) = try Self.readPersisted(json) else {
+    guard case .file(let file) = Self.readPersisted(json) else {
       Issue.record("Expected .file for a malformed agentSession.")
       return
     }
