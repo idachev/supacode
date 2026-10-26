@@ -33,8 +33,9 @@ is the only `.wakeTab` sender). After a real reboot only the opened worktree res
   use this one rule.
 - S2. Pending is computed in reducer state at the `AppFeature` level, never in `LayoutFeature`.
   The manager's gate is not observable. So the capture emits a new `TerminalClient.Event` with the
-  live session names (or "probe failed"), and every granted claim emits a claimed event with the
-  `ContentID`. A claim comes from any first spawn: a lazy show, a background wake, or a rebuild
+  live session names (or "probe failed"), and every claim emits a claimed event with the
+  `ContentID`. (Refined in Section 1: only a granted claim emits; a refused claim adds nothing
+  to the pending rule.) A claim comes from any first spawn: a lazy show, a background wake, or a rebuild
   after an unexpected close.
 - S3. The sheet opens once per process, only when the gate is captured AND the repositories are
   loaded AND pending is non-empty. It can be reopened from the command palette and from a menu
@@ -80,7 +81,7 @@ is the only `.wakeTab` sender). After a real reboot only the opened worktree res
 | `.appLaunched` concatenates the capture before `.repositories(.task)`; the terminal event subscription is inside the later `.merge` | `AppFeature.swift:402-430` |
 | Events emitted before the subscription are buffered | `WorktreeTerminalManager.swift:2223-2227` |
 | `AppFeature.body` runs `core` BEFORE the child scopes; a later `Reduce` sees the children's new state | `AppFeature.swift:2184-2222` |
-| `isInitialLoadComplete` is set by the repositories child on `.repositoriesLoaded` | `RepositoriesFeature.swift:3809-3830` |
+| `isInitialLoadComplete` is set by the repositories child on `.repositoriesLoaded` and on `.openRepositoriesFinished` | `RepositoriesFeature.swift:3809-3830, 3977-3993` |
 | `core` handles `.repositories(.repositoriesLoaded)` with an early return | `AppFeature.swift:1741-1747` |
 | The tab title fields: `title`, `customTitle` | `PaneLayout.swift:189-195` |
 | Worktree to repository: `repositoryID(for:)` | `RepositoriesFeature.swift:6126` |
@@ -108,7 +109,7 @@ the reducer runs, as `splitPane` does.
 | Gate outcome | `nonisolated enum AgentResumeGate.ClaimOutcome: Equatable, Sendable { case granted, live, alreadyClaimed }` + `mutating func claimOutcome(_ id: ContentID) -> ClaimOutcome`; `claim(_:)` stays as `claimOutcome(id) == .granted` | `AgentResumeGate.swift` |
 | Liveness mirror | `nonisolated enum AgentResumeLiveness: Equatable, Sendable { case notCaptured, probeFailed, captured(liveSessionNames: Set<String>) }` | new `supacode/Features/AgentResume/Models/AgentResumeState.swift` |
 | Row | `nonisolated struct PendingAgentResume: Identifiable, Equatable, Sendable { let id: ContentID; let worktreeID: Worktree.ID; let tabID: TabID; let repositoryName: String; let worktreeName: String; let tabTitle: String; let agent: String; let sessionID: String; var shortSessionID: String { String(sessionID.prefix(8)) } }` | same file |
-| Reducer state | `struct AgentResumeState: Equatable { var liveness: AgentResumeLiveness = .notCaptured; var claimed: Set<ContentID> = []; var pending: IdentifiedArrayOf<PendingAgentResume> = []; var didEvaluateAutoPresent = false; var wakeQueue: [ContentID] = [] }` | same file |
+| Reducer state | `@ObservableState struct AgentResumeState: Equatable { var liveness: AgentResumeLiveness = .notCaptured; var claimed: Set<ContentID> = []; var pending: IdentifiedArrayOf<PendingAgentResume> = []; var didEvaluateAutoPresent = false; var wakeQueue: [ContentID] = [] }` | same file |
 | Predicate | `nonisolated enum AgentResumePending { static func compute(layouts: IdentifiedArrayOf<LayoutFeature.State>, liveness: AgentResumeLiveness, claimed: Set<ContentID>, enabled: Bool, worktree: (Worktree.ID) -> Worktree?, repositoryName: (Worktree.ID) -> String?) -> IdentifiedArrayOf<PendingAgentResume>; static let wakeStagger: Duration = .seconds(1) }` | new `supacode/Features/AgentResume/BusinessLogic/AgentResumePending.swift` |
 | App state | `AppFeature.State.agentResume: AgentResumeState`; `@Presents var agentResumePicker: AgentResumePickerFeature.State?` | `AppFeature.swift` (State, near `:180`) |
 | App actions | `AppFeature.Action.agentResumePicker(PresentationAction<AgentResumePickerFeature.Action>)`, `.agentResumePickerRequested`, `.agentResumeWakeTick` | `AppFeature.swift` (Action, near `:360`) |
@@ -170,7 +171,8 @@ scopes and would not yet see `isInitialLoadComplete` or a removed tab. It calls
 `refreshAgentResume(&state)` only for these actions (a cheap gate, like
 `affectsWorktreeMenuSnapshot`):
 - `.terminalEvent(.agentResumeLivenessCaptured)`, `.terminalEvent(.agentResumeClaimed)`;
-- `.repositories(.repositoriesLoaded)`, `.repositories(.delegate(.repositoriesChanged))`;
+- `.repositories(.repositoriesLoaded)`, `.repositories(.openRepositoriesFinished)`,
+  `.repositories(.delegate(.repositoriesChanged))`;
 - `.terminals(.layoutsHydrated)`, `.terminals(.detachLayout)`;
 - `.terminals(.layouts(.element(_, a)))` where `RecentTerminals.canRemoveTabs(a)`
   (`RecentTerminals.swift:51-61`);
@@ -198,9 +200,12 @@ if !state.agentResume.didEvaluateAutoPresent,
 ```
 
 - The action that fires it is the later of `.terminalEvent(.agentResumeLivenessCaptured)` and
-  `.repositories(.repositoriesLoaded)`, handled in the post-scope `Reduce`. In practice the capture
+  the first repositories action that sets `isInitialLoadComplete` (`.repositoriesLoaded` or
+  `.openRepositoriesFinished`), handled in the post-scope `Reduce`. In practice the capture
   ends first (it is concatenated before `.repositories(.task)`), so `.repositoriesLoaded` fires it.
-  The code does not depend on that order.
+  The code does not depend on that order: it checks the state, not the action.
+- `PresentationState` ids come from `@Dependency(\.uuid)`, which `AppFeature` does not have yet
+  (`AppFeature.swift:371-384`); task (c) adds it.
 - The decision is made once per process, even when pending is empty at that moment. Pending can
   grow later only through the setting flip, and a flip does not reopen the sheet.
 - `didEvaluateAutoPresent` lives in reducer state, so it is per process by construction.
@@ -481,7 +486,9 @@ and a nil command text is the `.unsupportedRecord` case. The decision order of
 - Д9. No hibernation exemption for a background-woken tab (Section 6).
 - Д10. The menu item uses plain `store.send`, like "Archived Worktrees"; it publishes no focused
   value. The menu reads `pending.isEmpty` for its enabled state; this is not added to
-  `WorktreeMenuSnapshot`, because it flips only a few times per launch.
+  `WorktreeMenuSnapshot`, because it flips only a few times per launch. `AgentResumeState` is
+  `@ObservableState`, so the menu and the palette track `pending` alone; the per-second
+  `wakeQueue` pops and the `claimed` inserts do not invalidate the menu body (the #289 class).
 - Д11. The palette item is listed only while something is pending. Rejected: always listed (a
   command that does nothing).
 - Д12. Hotkey ⌃⌘R: free in `AppShortcuts`, and R reads as "resume".
@@ -508,7 +515,7 @@ Each task is reviewed alone against the Shared Contract. Later tasks may stub ea
   `.resumeRequested` entry point the picker delegate calls). Tests (b). After: (a).
 - (c) Picker sheet, palette, menu, hotkey. Touches: new `AgentResumePickerFeature.swift`,
   `AgentResumePickerView.swift`; `AppFeature` (`@Presents agentResumePicker`, `.ifLet`,
-  `.agentResumePickerRequested`, the auto-present in `refreshAgentResume`, the live row sync and
+  `.agentResumePickerRequested`, `@Dependency(\.uuid)`, the auto-present in `refreshAgentResume`, the live row sync and
   auto-close, the palette delegate); `ContentView` (sheet, `paletteItems` argument);
   `CommandPaletteFeature` (`Delegate.resumeAgentSessions`, `items`/`commandPaletteItems`
   parameter, `CommandPaletteItemID.globalResumeAgentSessions`); `CommandPaletteItem.Kind`;
