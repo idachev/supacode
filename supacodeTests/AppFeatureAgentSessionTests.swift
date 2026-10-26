@@ -23,6 +23,8 @@ struct AppFeatureAgentSessionTests {
     return store
   }
 
+  // `strict: false`: presence fans out further actions only when its row state
+  // changes (a start does; an end or idle on an empty presence state does not).
   @Test(.dependencies) func sessionStartSendsTheUpdateAndForwardsPresence() async {
     let sent = LockIsolated<[TerminalClient.Command]>([])
     let store = makeStore(sent: sent)
@@ -32,7 +34,7 @@ struct AppFeatureAgentSessionTests {
 
     await store.send(.terminalEvent(.agentHookEventReceived(event)))
     await store.receive(\.agentPresence.hookEventReceived)
-    await store.skipReceivedActions()
+    await store.skipReceivedActions(strict: false)
     await store.finish()
 
     let expected = TerminalClient.Command.updateAgentSession(
@@ -52,7 +54,7 @@ struct AppFeatureAgentSessionTests {
 
     await store.send(.terminalEvent(.agentHookEventReceived(event)))
     await store.receive(\.agentPresence.hookEventReceived)
-    await store.skipReceivedActions()
+    await store.skipReceivedActions(strict: false)
     await store.finish()
 
     #expect(
@@ -67,7 +69,7 @@ struct AppFeatureAgentSessionTests {
 
     await store.send(.terminalEvent(.agentHookEventReceived(event)))
     await store.receive(\.agentPresence.hookEventReceived)
-    await store.skipReceivedActions()
+    await store.skipReceivedActions(strict: false)
     await store.finish()
 
     let updates = sent.value.filter {
