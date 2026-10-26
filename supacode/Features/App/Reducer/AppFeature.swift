@@ -2291,7 +2291,39 @@ struct AppFeature {
     if pending != state.agentResume.pending {
       state.agentResume.pending = pending
     }
-    return .none
+    // Sidebar marker: one action per row whose marker flips, none otherwise.
+    return pendingAgentResumeMarkerEffect(state: state)
+  }
+
+  /// Sidebar marker fan-out. Sends `.pendingAgentResumeChanged` only to the rows
+  /// whose marker flips, so an unchanged row never re-renders (CLAUDE.md: no
+  /// sidebar fan-out). Rows absent from `sidebarItems` get nothing; a rebuilt
+  /// row starts at false and the refresh on `.repositoriesChanged` sets it again.
+  private func pendingAgentResumeMarkerEffect(state: State) -> Effect<Action> {
+    let flips = Self.pendingAgentResumeMarkerFlips(
+      pending: state.agentResume.pending,
+      sidebarItems: state.repositories.sidebarItems
+    )
+    guard !flips.isEmpty else { return .none }
+    return .merge(
+      flips.map { rowID, isPending -> Effect<Action> in
+        .send(.repositories(.sidebarItems(.element(id: rowID, action: .pendingAgentResumeChanged(isPending)))))
+      }
+    )
+  }
+
+  /// The rows whose `hasPendingAgentResume` differs from "this worktree has a
+  /// pending row", mapped to the new value.
+  static func pendingAgentResumeMarkerFlips(
+    pending: IdentifiedArrayOf<PendingAgentResume>,
+    sidebarItems: IdentifiedArrayOf<SidebarItemFeature.State>
+  ) -> [SidebarItemID: Bool] {
+    let marked = Set(pending.map(\.worktreeID))
+    var flips: [SidebarItemID: Bool] = [:]
+    for row in sidebarItems where row.hasPendingAgentResume != marked.contains(row.id) {
+      flips[row.id] = marked.contains(row.id)
+    }
+    return flips
   }
 
   // MARK: - Recent terminals.
