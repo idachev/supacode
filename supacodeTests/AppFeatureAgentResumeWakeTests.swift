@@ -14,122 +14,137 @@ import Testing
 /// pending pane at once, staggers the rest by `AgentResumePending.wakeStagger`
 /// on the injected clock, re-checks pending on every tick, and a new request
 /// replaces the queue and cancels the earlier timer.
+///
+/// Serialized, and each queue test runs on the main serial executor: the
+/// `.run` of a tick must reach `clock.sleep` before the test advances the
+/// clock, or the deadline moves past the advance and the next tick never comes.
 @MainActor
+@Suite(.serialized)
 struct AppFeatureAgentResumeWakeTests {
   private static let rootPath = "/tmp/agent-resume-wake-repo"
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
   func wakesEachPendingPaneOneStaggerApart() async {
-    let fixture = Fixture()
-    let clock = TestClock()
-    let sent = LockIsolated<[TabID]>([])
-    let store = await makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
-    let (first, second, third) = (fixture.tabs[0], fixture.tabs[1], fixture.tabs[2])
+    await withMainSerialExecutor {
+      let fixture = Fixture()
+      let clock = TestClock()
+      let sent = LockIsolated<[TabID]>([])
+      let store = await Self.makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
+      let (first, second, third) = (fixture.tabs[0], fixture.tabs[1], fixture.tabs[2])
 
-    await store.send(.agentResumeWakeRequested([first.content.id, second.content.id, third.content.id]))
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
-    #expect(sent.value == [first.id])
+      await store.send(.agentResumeWakeRequested([first.content.id, second.content.id, third.content.id]))
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
+      #expect(sent.value == [first.id])
 
-    await clock.advance(by: AgentResumePending.wakeStagger - .milliseconds(1))
-    #expect(sent.value == [first.id])
+      await clock.advance(by: AgentResumePending.wakeStagger - .milliseconds(1))
+      #expect(sent.value == [first.id])
 
-    await clock.advance(by: .milliseconds(1))
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
-    #expect(sent.value == [first.id, second.id])
+      await clock.advance(by: .milliseconds(1))
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
+      #expect(sent.value == [first.id, second.id])
 
-    await clock.advance(by: AgentResumePending.wakeStagger)
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
-    #expect(sent.value == [first.id, second.id, third.id])
-    #expect(store.state.agentResume.wakeQueue.isEmpty)
-    await store.finish()
+      await clock.advance(by: AgentResumePending.wakeStagger)
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
+      #expect(sent.value == [first.id, second.id, third.id])
+      #expect(store.state.agentResume.wakeQueue.isEmpty)
+      await store.finish()
+    }
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
   func claimedPaneIsSkippedWithoutWaiting() async {
-    let fixture = Fixture()
-    let clock = TestClock()
-    let sent = LockIsolated<[TabID]>([])
-    let store = await makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
-    let (first, second, third) = (fixture.tabs[0], fixture.tabs[1], fixture.tabs[2])
+    await withMainSerialExecutor {
+      let fixture = Fixture()
+      let clock = TestClock()
+      let sent = LockIsolated<[TabID]>([])
+      let store = await Self.makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
+      let (first, second, third) = (fixture.tabs[0], fixture.tabs[1], fixture.tabs[2])
 
-    await store.send(.agentResumeWakeRequested([first.content.id, second.content.id, third.content.id]))
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
-    #expect(sent.value == [first.id])
+      await store.send(.agentResumeWakeRequested([first.content.id, second.content.id, third.content.id]))
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
+      #expect(sent.value == [first.id])
 
-    // A lazy show claims the second pane during the stagger: its tick skips straight to the third.
-    await store.send(.terminalEvent(.agentResumeClaimed(second.content.id)))
-    #expect(store.state.agentResume.pending[id: second.content.id] == nil)
+      // A lazy show claims the second pane during the stagger: its tick skips straight to the third.
+      await store.send(.terminalEvent(.agentResumeClaimed(second.content.id)))
+      #expect(store.state.agentResume.pending[id: second.content.id] == nil)
 
-    await clock.advance(by: AgentResumePending.wakeStagger)
-    await store.receive(\.agentResumeWakeTick)
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
-    #expect(sent.value == [first.id, third.id])
-    #expect(store.state.agentResume.wakeQueue.isEmpty)
-    await store.finish()
+      await clock.advance(by: AgentResumePending.wakeStagger)
+      await store.receive(\.agentResumeWakeTick)
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
+      #expect(sent.value == [first.id, third.id])
+      #expect(store.state.agentResume.wakeQueue.isEmpty)
+      await store.finish()
+    }
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
   func lastIDIsDispatchedWithoutATimer() async {
-    let fixture = Fixture()
-    let clock = TestClock()
-    let sent = LockIsolated<[TabID]>([])
-    let store = await makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
-    let first = fixture.tabs[0]
+    await withMainSerialExecutor {
+      let fixture = Fixture()
+      let clock = TestClock()
+      let sent = LockIsolated<[TabID]>([])
+      let store = await Self.makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
+      let first = fixture.tabs[0]
 
-    await store.send(.agentResumeWakeRequested([first.content.id]))
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
+      await store.send(.agentResumeWakeRequested([first.content.id]))
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
 
-    #expect(sent.value == [first.id])
-    #expect(store.state.agentResume.wakeQueue.isEmpty)
-    // No stagger timer is left in flight for the last id.
-    await store.finish()
+      #expect(sent.value == [first.id])
+      #expect(store.state.agentResume.wakeQueue.isEmpty)
+      // No stagger timer is left in flight for the last id.
+      await store.finish()
+    }
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
   func newRequestReplacesTheQueueAndCancelsItsTimer() async {
-    let fixture = Fixture()
-    let clock = TestClock()
-    let sent = LockIsolated<[TabID]>([])
-    let store = await makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
-    let (first, second, third) = (fixture.tabs[0], fixture.tabs[1], fixture.tabs[2])
+    await withMainSerialExecutor {
+      let fixture = Fixture()
+      let clock = TestClock()
+      let sent = LockIsolated<[TabID]>([])
+      let store = await Self.makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
+      let (first, second, third) = (fixture.tabs[0], fixture.tabs[1], fixture.tabs[2])
 
-    await store.send(.agentResumeWakeRequested([first.content.id, second.content.id]))
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
-    #expect(sent.value == [first.id])
+      await store.send(.agentResumeWakeRequested([first.content.id, second.content.id]))
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
+      #expect(sent.value == [first.id])
 
-    await store.send(.agentResumeWakeRequested([third.content.id]))
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
-    #expect(sent.value == [first.id, third.id])
+      await store.send(.agentResumeWakeRequested([third.content.id]))
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
+      #expect(sent.value == [first.id, third.id])
 
-    // The old queue's timer was cancelled: nothing more after the stagger.
-    await clock.advance(by: AgentResumePending.wakeStagger)
-    await Task.megaYield()
-    #expect(sent.value == [first.id, third.id])
-    await store.finish()
+      // The old queue's timer was cancelled: nothing more after the stagger.
+      await clock.advance(by: AgentResumePending.wakeStagger)
+      await Task.megaYield()
+      #expect(sent.value == [first.id, third.id])
+      await store.finish()
+    }
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
   func idThatIsNotPendingSendsNothing() async {
-    let fixture = Fixture()
-    let clock = TestClock()
-    let sent = LockIsolated<[TabID]>([])
-    let store = await makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
+    await withMainSerialExecutor {
+      let fixture = Fixture()
+      let clock = TestClock()
+      let sent = LockIsolated<[TabID]>([])
+      let store = await Self.makeLoadedStore(fixture: fixture, clock: clock, sent: sent)
 
-    await store.send(.agentResumeWakeRequested([ContentID()]))
-    await store.receive(\.agentResumeWakeTick)
-    await store.receive(\.agentResumeWakeTick)
-    await Task.megaYield()
+      await store.send(.agentResumeWakeRequested([ContentID()]))
+      await store.receive(\.agentResumeWakeTick)
+      await store.receive(\.agentResumeWakeTick)
+      await Task.megaYield()
 
-    #expect(sent.value.isEmpty)
-    await store.finish()
+      #expect(sent.value.isEmpty)
+      await store.finish()
+    }
   }
 
   @Test func wakeActionsDoNotAffectTheMenuSnapshot() {
@@ -141,7 +156,7 @@ struct AppFeatureAgentResumeWakeTests {
 
   /// A store whose gate is captured with nothing live, so every fixture tab is
   /// pending. Records the tab of every background wake command it sends.
-  private func makeLoadedStore(
+  private static func makeLoadedStore(
     fixture: Fixture,
     clock: TestClock<Duration>,
     sent: LockIsolated<[TabID]>
