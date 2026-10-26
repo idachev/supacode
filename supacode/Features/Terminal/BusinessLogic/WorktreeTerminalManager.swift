@@ -1985,11 +1985,16 @@ final class WorktreeTerminalManager {
     }
   }
 
-  /// Spends the content's one resume slot for this process. Called by the
-  /// content builder only once a restored pane holds a resumable record.
+  /// Spends the content's one resume slot for this process. The content
+  /// builder calls it on every first spawn of any origin, so a content that
+  /// already ran here can never resume into its own live session.
   func claimAgentResume(_ id: ContentID) -> Bool {
     guard agentResumeGate != nil else {
-      terminalLogger.warning("resume skipped: liveness not captured")
+      // A failed probe already logged once; only a spawn before any capture
+      // (which the `.appLaunched` ordering rules out) warns here.
+      if !didCaptureLaunchSessionLiveness {
+        terminalLogger.warning("resume skipped: liveness not captured")
+      }
       return false
     }
     return agentResumeGate?.claim(id) ?? false

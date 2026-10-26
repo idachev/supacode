@@ -140,4 +140,103 @@ struct TerminalSurfaceRecipeAgentResumeTests {
     #expect(AgentResumeCommand.initialInput(for: Self.record("grok", id: "my session title")) == nil)
     #expect(AgentResumeCommand.initialInput(for: Self.record("claude", id: "")) == nil)
   }
+
+  // MARK: - agentResumeSeed (the makeSurface decision).
+
+  /// Runs the seed decision the way `makeSurface` does, against a real gate.
+  private static func seed(
+    _ state: TerminalContentState,
+    phase: TerminalContent.SpawnPhase = .first,
+    origin: ContentOrigin,
+    contentID: ContentID,
+    gate: LockIsolated<AgentResumeGate>,
+    enabled: Bool = true
+  ) -> TerminalContentState {
+    TerminalSurfaceRecipe.agentResumeSeed(
+      state,
+      currentState: state,
+      phase: phase,
+      request: ContentRequest(
+        worktreeID: makeWorktree().id,
+        tabID: TabID(),
+        contentID: contentID,
+        content: .terminal(state),
+        origin: origin
+      ),
+      resume: TerminalSurfaceRecipe.AgentResumeContext(
+        worktree: makeWorktree(),
+        zmxAvailable: true,
+        enabled: enabled,
+        claim: { id in gate.withValue { $0.claim(id) } }
+      )
+    )
+  }
+
+  private static func deadGate() -> LockIsolated<AgentResumeGate> {
+    LockIsolated(AgentResumeGate(liveSessionNames: []))
+  }
+
+  @Test func rebootRestoredFirstSpawnInjectsOnceAndKeepsTheRecord() {
+    let gate = Self.deadGate()
+    let id = ContentID()
+    let state = TerminalContentState(workingDirectory: "/tmp/wt", agentSession: Self.record("claude"))
+
+    let first = Self.seed(state, origin: .restored, contentID: id, gate: gate)
+    #expect(first.launch?.initialInput == "claude --resume '\(Self.sessionID)'\n")
+    #expect(first.agentSession == state.agentSession)
+    #expect(first.workingDirectory == "/tmp/wt")
+
+    // A rebuild after an unexpected zmx close is another first `.restored` spawn.
+    let rebuilt = Self.seed(state, origin: .restored, contentID: id, gate: gate)
+    #expect(rebuilt.launch == nil)
+    #expect(rebuilt.agentSession == state.agentSession)
+  }
+
+  /// ЗД5 r1 F1: a content that first spawned in this process (here a new tab
+  /// with no record yet) and is later rebuilt as `.restored` after its agent
+  /// wrote a record must not get the resume typed into its live session.
+  @Test func contentFirstSpawnedInThisProcessNeverResumesOnRebuild() {
+    let gate = Self.deadGate()
+    let id = ContentID()
+
+    let created = Self.seed(TerminalContentState(workingDirectory: nil), origin: .tab, contentID: id, gate: gate)
+    #expect(created.launch == nil)
+
+    let withRecord = TerminalContentState(workingDirectory: nil, agentSession: Self.record("claude"))
+    let rebuilt = Self.seed(withRecord, origin: .restored, contentID: id, gate: gate)
+    #expect(rebuilt.launch == nil)
+  }
+
+  @Test func restoredFirstSpawnWithoutRecordSpendsTheSlot() {
+    let gate = Self.deadGate()
+    let id = ContentID()
+
+    _ = Self.seed(TerminalContentState(workingDirectory: nil), origin: .restored, contentID: id, gate: gate)
+    let withRecord = TerminalContentState(workingDirectory: nil, agentSession: Self.record("codex"))
+    #expect(Self.seed(withRecord, origin: .restored, contentID: id, gate: gate).launch == nil)
+  }
+
+  @Test func rewakeNeverClaimsOrInjects() {
+    let gate = Self.deadGate()
+    let id = ContentID()
+    let state = TerminalContentState(workingDirectory: nil, agentSession: Self.record("claude"))
+
+    #expect(Self.seed(state, phase: .rewake, origin: .restored, contentID: id, gate: gate).launch == nil)
+    #expect(gate.value.claimed.isEmpty)
+  }
+
+  @Test func liveSessionAtLaunchNeverInjects() {
+    let id = ContentID()
+    let gate = LockIsolated(AgentResumeGate(liveSessionNames: [ZmxSessionID.make(surfaceID: id.rawValue)]))
+    let state = TerminalContentState(workingDirectory: nil, agentSession: Self.record("claude"))
+
+    #expect(Self.seed(state, origin: .restored, contentID: id, gate: gate).launch == nil)
+  }
+
+  @Test func disabledSettingNeverInjects() {
+    let gate = Self.deadGate()
+    let state = TerminalContentState(workingDirectory: nil, agentSession: Self.record("claude"))
+
+    #expect(Self.seed(state, origin: .restored, contentID: ContentID(), gate: gate, enabled: false).launch == nil)
+  }
 }

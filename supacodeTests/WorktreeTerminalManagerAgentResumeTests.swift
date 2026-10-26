@@ -118,42 +118,4 @@ struct WorktreeTerminalManagerAgentResumeTests {
     #expect(!manager.claimAgentResume(dead))
     #expect(!manager.claimAgentResume(live))
   }
-
-  // MARK: - No consume.
-
-  /// The inject only seeds the surface plan; it never writes the content's
-  /// state, so the persisted record survives for the next launch.
-  @Test func builtRestoredContentKeepsItsRecord() {
-    let worktree = Worktree(
-      id: WorktreeID("/tmp/resume-fixture/wt"),
-      name: "wt",
-      detail: "detail",
-      workingDirectory: URL(filePath: "/tmp/resume-fixture/wt", directoryHint: .notDirectory),
-      repositoryRootURL: URL(filePath: "/tmp/resume-fixture", directoryHint: .notDirectory)
-    )
-    let record = AgentSessionRecord(agent: "claude", sessionID: "0B5E2C4A-6F7D-4E8A-9B1C-2D3E4F5A6B7C")
-    let state = TerminalContentState(workingDirectory: "/tmp/resume-fixture/wt", agentSession: record)
-    let builder = TerminalContentBuilder(
-      runtime: GhosttyRuntime(),
-      worktree: { _ in worktree },
-      socketPath: { nil },
-      zmxExecutablePath: { nil },
-      sourceSurface: { _ in nil },
-      wireSurface: { _, _ in },
-      environmentExtras: { _ in [:] },
-      claimAgentResume: { _ in true }
-    )
-    let request = ContentRequest(
-      worktreeID: worktree.id,
-      tabID: TabID(),
-      contentID: ContentID(),
-      content: .terminal(state),
-      origin: .restored
-    )
-
-    let content = builder.factory().make(request)
-
-    #expect(content is TerminalContent)
-    #expect(content.snapshot().state == .terminal(state))
-  }
 }
