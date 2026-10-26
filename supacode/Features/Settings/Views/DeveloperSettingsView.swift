@@ -29,6 +29,13 @@ struct DeveloperSettingsView: View {
           Text("Agent badges")
           Text("Show an icon in the sidebar and tab while a coding agent is running in that surface.")
         }
+        Toggle(isOn: $store.resumeAgentSessionsAfterRestart) {
+          Text("Resume agents after restart")
+          Text(
+            "After a reboot, panes whose agent was still running type and run its resume command "
+              + "when you open them (claude, codex, grok, agy). Codex asks once to review its updated hooks.")
+        }
+        .help("Resume coding agent sessions in their panes after a reboot")
       } footer: {
         Text("These features require an installed agent integration.")
       }

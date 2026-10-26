@@ -170,6 +170,9 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   public var openFileScript: String
   public var richAgentNotificationsEnabled: Bool
   public var agentPresenceBadgesEnabled: Bool
+  /// When true, a pane whose agent was still running before a reboot types and runs the agent's
+  /// resume command when its surface is first opened.
+  public var resumeAgentSessionsAfterRestart: Bool
   public var confirmQuitMode: ConfirmQuitMode
   /// When true, user-initiated closes ask for confirmation when a terminal
   /// surface has foreground work that Ghostty considers unsafe to interrupt.
@@ -243,6 +246,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     openFileScript: "",
     richAgentNotificationsEnabled: true,
     agentPresenceBadgesEnabled: true,
+    resumeAgentSessionsAfterRestart: true,
     confirmQuitMode: .auto,
     confirmCloseSurface: true,
     confirmCloseTab: .busy,
@@ -289,6 +293,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     openFileScript: String = "",
     richAgentNotificationsEnabled: Bool = true,
     agentPresenceBadgesEnabled: Bool = true,
+    resumeAgentSessionsAfterRestart: Bool = true,
     confirmQuitMode: ConfirmQuitMode = .auto,
     confirmCloseSurface: Bool = true,
     confirmCloseTab: ConfirmCloseTabMode = .busy,
@@ -339,6 +344,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.openFileScript = openFileScript
     self.richAgentNotificationsEnabled = richAgentNotificationsEnabled
     self.agentPresenceBadgesEnabled = agentPresenceBadgesEnabled
+    self.resumeAgentSessionsAfterRestart = resumeAgentSessionsAfterRestart
     self.confirmQuitMode = confirmQuitMode
     self.confirmCloseSurface = confirmCloseSurface
     self.confirmCloseTab = confirmCloseTab
@@ -522,6 +528,9 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     agentPresenceBadgesEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .agentPresenceBadgesEnabled)
       ?? Self.default.agentPresenceBadgesEnabled
+    resumeAgentSessionsAfterRestart =
+      try container.decodeIfPresent(Bool.self, forKey: .resumeAgentSessionsAfterRestart)
+      ?? Self.default.resumeAgentSessionsAfterRestart
     // Reject unrecognized values from corrupted or hand-edited settings files.
     // Legacy `confirmBeforeQuit: false` users explicitly opted out of the
     // dialog; `.auto` would silently re-enable it. Map `false` to `.never`
