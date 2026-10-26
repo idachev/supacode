@@ -66,8 +66,11 @@ private nonisolated struct GrokHooksPayload: Encodable {
     events: [.awaitingInput], forwardStdinAsNotification: false, agent: .grok, )
   private static let idleAndNotify = AgentHookSettingsCommand.compositeCommand(
     events: [.idle], forwardStdinAsNotification: true, agent: .grok, )
+  // SessionStart captures the session id for the agent session resume after a
+  // reboot. SessionEnd does not: grok sends `shutdown` on every exit, so it never
+  // clears the record.
   private static let sessionStart = AgentHookSettingsCommand.compositeCommand(
-    events: [.sessionStart], forwardStdinAsNotification: false, agent: .grok, )
+    events: [.sessionStart], forwardStdinAsNotification: false, agent: .grok, capturesSession: true)
   private static let sessionEndAndIdle = AgentHookSettingsCommand.compositeCommand(
     events: [.sessionEnd, .idle], forwardStdinAsNotification: false, agent: .grok, )
 
