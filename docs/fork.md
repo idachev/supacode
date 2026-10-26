@@ -209,6 +209,14 @@ Until you approve, codex panes most likely get no record and no resume, and noth
 confirmed). Agents that are already running keep their old hooks until they restart, so those
 panes get no resume either.
 
+**Known risk.** OSC 3008 signals are unauthenticated. Anything that writes to the pane (for
+example `cat` of an untrusted file, or remote output) can plant, replace or clear the pane's
+resume record. The typed command has a fixed form with a strict, shell-quoted UUID, so no
+arbitrary command can run. But after a reboot the pane may resume a wrong or non-existent
+session, or lose its real resume. Hardening (a capture-time check that the OSC pid is a live
+agent process under this pane's zmx session) is tracked as TODO ИН2 in `TODO.md`. Turn the
+setting off to opt out.
+
 **How to verify** (design Section 10):
 
 1. Run `make install-dev-build` and restart the app. In Settings → Developer, check that the
