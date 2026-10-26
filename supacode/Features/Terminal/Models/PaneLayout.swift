@@ -53,23 +53,28 @@ nonisolated struct TerminalContentState: Equatable, Codable, Sendable {
   let frozenGrid: FrozenGrid?
   /// Live-only launch override; the persistence path always strips it.
   let launch: LaunchOverride?
+  /// The agent session to resume after a restart; every copy site forwards it.
+  let agentSession: AgentSessionRecord?
 
   private enum CodingKeys: String, CodingKey {
     case workingDirectory
     case agents
     case frozenGrid
+    case agentSession
   }
 
   init(
     workingDirectory: String?,
     agents: [TerminalLayoutSnapshot.SurfaceAgentRecord]? = nil,
     frozenGrid: FrozenGrid? = nil,
-    launch: LaunchOverride? = nil
+    launch: LaunchOverride? = nil,
+    agentSession: AgentSessionRecord? = nil
   ) {
     self.workingDirectory = workingDirectory
     self.agents = agents
     self.frozenGrid = frozenGrid
     self.launch = launch
+    self.agentSession = agentSession
   }
 
   init(from decoder: any Decoder) throws {
@@ -82,6 +87,7 @@ nonisolated struct TerminalContentState: Equatable, Codable, Sendable {
       )) ?? nil
     frozenGrid = (try? container.decodeIfPresent(FrozenGrid.self, forKey: .frozenGrid)) ?? nil
     launch = nil
+    agentSession = (try? container.decodeIfPresent(AgentSessionRecord.self, forKey: .agentSession)) ?? nil
   }
 
   func encode(to encoder: any Encoder) throws {
@@ -89,6 +95,7 @@ nonisolated struct TerminalContentState: Equatable, Codable, Sendable {
     try container.encodeIfPresent(workingDirectory, forKey: .workingDirectory)
     try container.encodeIfPresent(agents, forKey: .agents)
     try container.encodeIfPresent(frozenGrid, forKey: .frozenGrid)
+    try container.encodeIfPresent(agentSession, forKey: .agentSession)
   }
 }
 

@@ -402,53 +402,59 @@ struct AppFeature {
       case .appLaunched:
         // A chord restored from disk fires no settingsChanged delta, so register it once here.
         let startupHotkey = state.settings.globalToggleVisibilityHotkey
-        return .merge(
-          refreshInstalledOpenActionsEffect(current: state.installedOpenActions),
-          .send(.repositories(.task)),
-          .send(.settings(.task)),
-          licenseClient.isEnforced ? .send(.license(.task)) : .none,
-          .send(.terminals(.task)),
-          .run { @MainActor send in
-            guard startupHotkey != nil else { return }
-            if !appLifecycleClient.updateGlobalHotkey(startupHotkey) {
-              await send(.settings(.setGlobalHotkeyRegistrationFailed(true)))
+        // Agent resume liveness is captured first: worktrees, and so any restored
+        // pane that could attach and upsert its zmx session, load only from
+        // `.repositories(.task)`, which therefore starts after the probe returns.
+        return .concatenate(
+          .run { _ in await terminalClient.captureLaunchSessionLiveness() },
+          .merge(
+            refreshInstalledOpenActionsEffect(current: state.installedOpenActions),
+            .send(.repositories(.task)),
+            .send(.settings(.task)),
+            licenseClient.isEnforced ? .send(.license(.task)) : .none,
+            .send(.terminals(.task)),
+            .run { @MainActor send in
+              guard startupHotkey != nil else { return }
+              if !appLifecycleClient.updateGlobalHotkey(startupHotkey) {
+                await send(.settings(.setGlobalHotkeyRegistrationFailed(true)))
+              }
+            },
+            .run { _ in
+              await MainActor.run {
+                NSApplication.shared.dockTile.badgeLabel = nil
+              }
+            },
+            .run { send in
+              for await event in await terminalClient.events() {
+                await send(.terminalEvent(event))
+              }
+            },
+            .run { send in
+              for await event in await worktreeInfoWatcher.events() {
+                await send(.repositories(.worktreeInfoEvent(event)))
+              }
+            },
+            .run { send in
+              // Reap crash / force-quit orphans, then resurrect agent badges
+              // from embedded records. Races with `.task` under `.merge`; the
+              // `repositoriesChanged` handler drains layout-seeded surfaces if restore wins.
+              @Dependency(\.defaultAppStorage) var defaults
+              switch LayoutsFile.readPersisted(from: defaults) {
+              case .file(let layouts):
+                let staged = AgentPresenceFeature.stageRestore(from: layouts)
+                await terminalClient.reapOrphanSessions(layouts.allKnownSurfaceIDs)
+                await send(.agentPresence(.restoreFromSnapshot(staged: staged)))
+              case .absent:
+                // A fresh start owns nothing; stray supa-* sessions are orphans.
+                await terminalClient.reapOrphanSessions([])
+              case .unreadable:
+                // Never destroy on no signal: an unreadable store must not
+                // masquerade as empty, or the sweep would kill every detached
+                // session. Skip this launch; the next successful read reaps.
+                break
+              }
             }
-          },
-          .run { _ in
-            await MainActor.run {
-              NSApplication.shared.dockTile.badgeLabel = nil
-            }
-          },
-          .run { send in
-            for await event in await terminalClient.events() {
-              await send(.terminalEvent(event))
-            }
-          },
-          .run { send in
-            for await event in await worktreeInfoWatcher.events() {
-              await send(.repositories(.worktreeInfoEvent(event)))
-            }
-          },
-          .run { send in
-            // Reap crash / force-quit orphans, then resurrect agent badges
-            // from embedded records. Races with `.task` under `.merge`; the
-            // `repositoriesChanged` handler drains layout-seeded surfaces if restore wins.
-            @Dependency(\.defaultAppStorage) var defaults
-            switch LayoutsFile.readPersisted(from: defaults) {
-            case .file(let layouts):
-              let staged = AgentPresenceFeature.stageRestore(from: layouts)
-              await terminalClient.reapOrphanSessions(layouts.allKnownSurfaceIDs)
-              await send(.agentPresence(.restoreFromSnapshot(staged: staged)))
-            case .absent:
-              // A fresh start owns nothing; stray supa-* sessions are orphans.
-              await terminalClient.reapOrphanSessions([])
-            case .unreadable:
-              // Never destroy on no signal: an unreadable store must not
-              // masquerade as empty, or the sweep would kill every detached
-              // session. Skip this launch; the next successful read reaps.
-              break
-            }
-          }
+          )
         )
 
       case .agentPresence(.delegate(.surfacesChanged(let surfaces))):
@@ -2160,7 +2166,10 @@ struct AppFeature {
         return .merge(presenceEffect, ackEffect)
 
       case .terminalEvent(.agentHookEventReceived(let event)):
-        return .send(.agentPresence(.hookEventReceived(event)))
+        return .merge(
+          .send(.agentPresence(.hookEventReceived(event))),
+          agentSessionEffect(event)
+        )
 
       // The user is looking at this surface, so whatever was parked on them there
       // is acknowledged. Scoped to the focused surface, so a broken session in
@@ -2280,6 +2289,16 @@ struct AppFeature {
       state: state,
       badgesEnabled: badgesEnabled
     )
+  }
+
+  /// Forwards a session start or explicit exit to the pane's content, which keeps
+  /// the record that resumes the agent after a reboot. Presence is forwarded apart.
+  private func agentSessionEffect(_ event: AgentHookEvent) -> Effect<Action> {
+    guard let update = AgentSessionUpdate.from(event) else { return .none }
+    let surfaceID = event.surfaceID
+    return .run { _ in
+      await terminalClient.send(.updateAgentSession(surfaceID: surfaceID, update: update))
+    }
   }
 
   // Per-surface fan-out, deliberately separate from `agentPresenceFanOutEffect`:

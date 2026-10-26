@@ -96,7 +96,9 @@ struct TerminalsFeature {
   private static func canAffectVisibility(_ action: LayoutFeature.Action) -> Bool {
     switch action {
     // Reordering groups changes no group's visibility.
-    case .resizePane, .beginTabRename, .endTabRename, .runtime(.titleCommitted), .moveGroup:
+    case .resizePane, .beginTabRename, .endTabRename, .runtime(.titleCommitted), .moveGroup,
+      .landContentSnapshot:
+      // Landing a snapshot only refreshes stored state.
       return false
     case .convertMode, .selectGroup, .newGroup:
       // A conversion or group switch swaps the visible tree.

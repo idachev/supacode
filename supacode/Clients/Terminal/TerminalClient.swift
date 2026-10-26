@@ -38,6 +38,9 @@ nonisolated struct TerminalClient: Sendable {
   /// Kill `supa-*` sessions hosted by the daemon that no persisted layout
   /// references. Called at launch to clean up crash / force-quit orphans.
   var reapOrphanSessions: @MainActor @Sendable (_ knownSurfaceIDs: Set<UUID>) async -> Void
+  /// Snapshot which `supa-*` sessions are alive before any restored pane can
+  /// attach; gates the one-shot agent resume. Runs once per process.
+  var captureLaunchSessionLiveness: @MainActor @Sendable () async -> Void
   /// Persist layouts with embedded per-surface agent records. Called on
   /// background and on quit so a force-quit between them caps staleness.
   var saveLayoutsWithAgents:
@@ -89,6 +92,8 @@ nonisolated struct TerminalClient: Sendable {
     case performBindingAction(Worktree, action: String)
     case performBindingActionOnSurface(Worktree, surfaceID: UUID, action: String)
     case setImagePasteAgents(surfaceID: UUID, agents: Set<SkillAgent>)
+    /// Folds a presence-derived agent session change into the owning content's record.
+    case updateAgentSession(surfaceID: UUID, update: AgentSessionUpdate)
     case startSearch(Worktree)
     case searchSelection(Worktree)
     case navigateSearchNext(Worktree)
@@ -188,6 +193,7 @@ nonisolated extension TerminalClient: DependencyKey {
     hasInflightBlockingScripts: { fatalError("TerminalClient.hasInflightBlockingScripts not configured") },
     terminateAllSessions: { fatalError("TerminalClient.terminateAllSessions not configured") },
     reapOrphanSessions: { _ in fatalError("TerminalClient.reapOrphanSessions not configured") },
+    captureLaunchSessionLiveness: { fatalError("TerminalClient.captureLaunchSessionLiveness not configured") },
     saveLayoutsWithAgents: { _ in fatalError("TerminalClient.saveLayoutsWithAgents not configured") }
   )
 
@@ -212,6 +218,7 @@ nonisolated extension TerminalClient: DependencyKey {
     hasInflightBlockingScripts: unimplemented("TerminalClient.hasInflightBlockingScripts", placeholder: false),
     terminateAllSessions: unimplemented("TerminalClient.terminateAllSessions"),
     reapOrphanSessions: unimplemented("TerminalClient.reapOrphanSessions"),
+    captureLaunchSessionLiveness: unimplemented("TerminalClient.captureLaunchSessionLiveness"),
     saveLayoutsWithAgents: unimplemented("TerminalClient.saveLayoutsWithAgents")
   )
 }
