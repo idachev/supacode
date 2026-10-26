@@ -94,6 +94,39 @@ struct AppFeatureAgentResumeTests {
     await store.skipInFlightEffects()
   }
 
+  /// ЗДa r1 F1: a layout mode conversion re-mints the panes; the rows follow
+  /// the new layout order.
+  @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
+  func modeConversionReordersTheRows() async throws {
+    let fixture = Fixture()
+    let worktreeID = fixture.worktrees[0].id
+    var layouts = fixture.layouts
+    let firstPane = layouts[id: worktreeID]!.layout.panes[0]
+    let secondPane = Pane(
+      id: PaneID(),
+      tabs: IdentifiedArray(uniqueElements: [Fixture.tab("a-tab-2"), Fixture.tab("a-tab-3")])
+    )
+    let tree = try SplitTree(view: firstPane.id).inserting(view: secondPane.id, at: firstPane.id, direction: .right)
+    layouts[id: worktreeID]?.layout = PaneLayout(
+      tree: tree,
+      panes: [firstPane, secondPane],
+      focusedPaneID: firstPane.id
+    )
+    let store = makeStore(fixture: fixture, layouts: layouts)
+    await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
+
+    await store.send(.terminals(.layouts(.element(id: worktreeID, action: .convertMode(to: .splitPerTab)))))
+
+    let converted = store.state.terminals.layouts[id: worktreeID]!.layout.panes
+    let expected = converted.flatMap { $0.tabs.map(\.content.id) }
+    #expect(expected.count == 4)
+    let rows = store.state.agentResume.pending.filter { $0.worktreeID == worktreeID }
+    #expect(rows.map(\.id) == expected)
+    // Each pane keeps its first tab; the others move to new panes at the end.
+    #expect(rows.map(\.tabTitle) == ["a-tab-0", "a-tab-2", "a-tab-1", "a-tab-3"])
+    await store.skipInFlightEffects()
+  }
+
   @Test func ungatedLayoutActionDoesNotRefresh() {
     let action = AppFeature.Action.terminals(.layouts(.element(id: WorktreeID("/tmp/x"), action: .equalizePanes)))
     #expect(!AppFeature.affectsAgentResume(action))
@@ -102,9 +135,12 @@ struct AppFeatureAgentResumeTests {
 
   // MARK: - Support.
 
-  private func makeStore(fixture: Fixture) -> TestStoreOf<AppFeature> {
+  private func makeStore(
+    fixture: Fixture,
+    layouts: IdentifiedArrayOf<LayoutFeature.State>? = nil
+  ) -> TestStoreOf<AppFeature> {
     var state = AppFeature.State(repositories: fixture.repositories, settings: SettingsFeature.State())
-    state.terminals.layouts = fixture.layouts
+    state.terminals.layouts = layouts ?? fixture.layouts
     let store = TestStore(initialState: state) {
       AppFeature()
     } withDependencies: {
@@ -154,21 +190,7 @@ struct AppFeatureAgentResumeTests {
       var tabs: [[TabItem]] = []
       var layouts = IdentifiedArrayOf<LayoutFeature.State>()
       for (worktree, count) in zip(worktrees, [2, 1]) {
-        let worktreeTabs = (0..<count).map { index in
-          TabItem(
-            id: TabID(),
-            title: "\(worktree.name)-tab-\(index)",
-            content: ContentSnapshot(
-              id: ContentID(),
-              state: .terminal(
-                TerminalContentState(
-                  workingDirectory: nil,
-                  agentSession: AgentSessionRecord(agent: "claude", sessionID: UUID().uuidString.lowercased())
-                )
-              )
-            )
-          )
-        }
+        let worktreeTabs = (0..<count).map { index in Self.tab("\(worktree.name)-tab-\(index)") }
         let paneID = PaneID()
         let layout = PaneLayout(
           tree: SplitTree(view: paneID),
@@ -182,6 +204,23 @@ struct AppFeatureAgentResumeTests {
       self.tabs = tabs
       self.layouts = layouts
       self.repositories = RepositoriesFeature.State(reconciledRepositories: [repository])
+    }
+
+    /// A tab holding a terminal with an agent session record.
+    static func tab(_ title: String) -> TabItem {
+      TabItem(
+        id: TabID(),
+        title: title,
+        content: ContentSnapshot(
+          id: ContentID(),
+          state: .terminal(
+            TerminalContentState(
+              workingDirectory: nil,
+              agentSession: AgentSessionRecord(agent: "claude", sessionID: UUID().uuidString.lowercased())
+            )
+          )
+        )
+      )
     }
   }
 }

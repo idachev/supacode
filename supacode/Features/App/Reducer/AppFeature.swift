@@ -2260,7 +2260,8 @@ struct AppFeature {
     case .terminals(.layouts(.element(id: _, action: let layoutAction))):
       if RecentTerminals.canRemoveTabs(layoutAction) { return true }
       switch layoutAction {
-      case .renameTab, .endTabRename, .moveTab, .moveTabToSplit, .moveTabToSpanningSplit:
+      // A mode conversion re-mints the panes, so the layout order changes.
+      case .renameTab, .endTabRename, .moveTab, .moveTabToSplit, .moveTabToSpanningSplit, .convertMode:
         return true
       default:
         return false
