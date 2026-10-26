@@ -919,6 +919,237 @@ struct AgentHookCommandTests {
     #expect(commands.allSatisfy { ManagedHookCommandVariables.unexpected(in: $0).isEmpty })
   }
 
+  // MARK: - Session capture (agent session resume).
+
+  /// The probe's real hook stdin payloads (`<agent>/<HookEvent>-*.stdin.json`), read
+  /// from the source tree like `GitWtWorktreeEntryTests` does: the test bundles have
+  /// no resources phase.
+  private static let sessionFixturesURL = URL(filePath: #filePath)
+    .deletingLastPathComponent()
+    .appending(path: "Fixtures/AgentHookSessions", directoryHint: .isDirectory)
+
+  private static func sessionFixtures(agentDirectory: String, hookEvent: String) throws -> [URL] {
+    try FileManager.default
+      .contentsOfDirectory(
+        at: sessionFixturesURL.appending(path: agentDirectory, directoryHint: .isDirectory),
+        includingPropertiesForKeys: nil)
+      .filter { $0.lastPathComponent.hasPrefix("\(hookEvent)-") && $0.lastPathComponent.hasSuffix(".stdin.json") }
+      .sorted { $0.lastPathComponent < $1.lastPathComponent }
+  }
+
+  /// The session id and `reason` the fixture carries, by the same key precedence
+  /// the hook's awk uses.
+  private static func expectedSession(in fixture: URL) throws -> (id: String?, reason: String?) {
+    let object = try #require(
+      try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+    let id = AgentPresenceOSC.sessionIDKeys.lazy
+      .compactMap { object[$0] as? String }
+      .first { !$0.isEmpty }
+    return (id, object["reason"] as? String)
+  }
+
+  private static func installedHookGroups(agentDirectory: String) throws -> [String: [JSONValue]] {
+    switch agentDirectory {
+    case "claude": return try ClaudeHookSettings.hooksByEvent()
+    case "codex": return try CodexHookSettings.hooksByEvent()
+    case "grok": return try GrokHookSettings.hooksByEvent()
+    case "agy": return AntigravityHookSettings.hooksByEvent()
+    default: return [:]
+    }
+  }
+
+  /// The Supacode command installed for `hookEvent`. Antigravity puts the hook flat
+  /// in the group; everyone else nests it under `hooks`.
+  private static func installedCommand(agentDirectory: String, hookEvent: String) throws -> String {
+    let groups = try installedHookGroups(agentDirectory: agentDirectory)
+    let group = try #require(groups[hookEvent]?.first?.objectValue, "\(agentDirectory) \(hookEvent)")
+    let command =
+      group["command"]?.stringValue
+      ?? group["hooks"]?.arrayValue?.first?.objectValue?["command"]?.stringValue
+    return try #require(command, "\(agentDirectory) \(hookEvent)")
+  }
+
+  @Test(arguments: [
+    ("claude", "SessionStart", true),
+    ("claude", "SessionEnd", true),
+    ("codex", "SessionStart", true),
+    ("codex", "SessionEnd", true),
+    ("grok", "SessionStart", true),
+    // Grok sends `shutdown` on every exit, so its SessionEnd never clears and does not capture.
+    ("grok", "SessionEnd", false),
+    ("agy", "SessionStart", true),
+  ])
+  func installedSessionHookEmitsTheProbeSession(
+    agentDirectory: String, hookEvent: String, captures: Bool
+  ) async throws {
+    // Runs the INSTALLED command (not a freshly composed one, so the opt-in flag is
+    // proven wired) on each real stdin payload the probe captured.
+    let command = try Self.installedCommand(agentDirectory: agentDirectory, hookEvent: hookEvent)
+    let fixtures = try Self.sessionFixtures(agentDirectory: agentDirectory, hookEvent: hookEvent)
+    #expect(!fixtures.isEmpty)
+    let env = [
+      "SUPACODE_SURFACE_ID": UUID().uuidString,
+      "SUPACODE_SOCKET_PATH": "/tmp/supacode-session-\(UUID().uuidString)",
+    ]
+    for fixture in fixtures {
+      let name = fixture.lastPathComponent
+      let stdin = try String(contentsOf: fixture, encoding: .utf8)
+      let expected = try Self.expectedSession(in: fixture)
+      let tty = try await runHookCommandCapturingTTY(command, env: env, stdin: stdin)
+      let signal = try #require(Self.parsePresence(fromTTY: tty), "\(name)")
+      #expect(signal.eventRawValue == (hookEvent == "SessionEnd" ? "session_end" : "session_start"), "\(name)")
+      #expect(signal.pid == ProcessInfo.processInfo.processIdentifier, "\(name)")
+      if captures {
+        let id = try #require(expected.id, "\(name)")
+        #expect(signal.sessionID == id, "\(name)")
+        #expect(signal.endReason == expected.reason, "\(name)")
+        // Only the session emit carries it: claude's trailing idle stays as it was.
+        #expect(tty.ranges(of: ";session=\(id)").count == 1, "\(name)")
+      } else {
+        #expect(signal.sessionID == nil, "\(name)")
+        #expect(signal.endReason == nil, "\(name)")
+        #expect(!tty.contains(";session="), "\(name)")
+      }
+    }
+  }
+
+  @Test func claudeExitFixtureEmitsPromptInputExitReason() async throws {
+    let command = try Self.installedCommand(agentDirectory: "claude", hookEvent: "SessionEnd")
+    let fixture = Self.sessionFixturesURL.appending(path: "claude/SessionEnd-065458-47925.stdin.json")
+    let tty = try await runHookCommandCapturingTTY(
+      command, env: ["SUPACODE_SURFACE_ID": UUID().uuidString],
+      stdin: try String(contentsOf: fixture, encoding: .utf8))
+    #expect(tty.contains(";session=ef099981-a21c-4086-a93e-6f15641fa016;reason=prompt_input_exit\u{1b}\\"))
+    let signal = try #require(Self.parsePresence(fromTTY: tty))
+    #expect(signal.sessionID == "ef099981-a21c-4086-a93e-6f15641fa016")
+    #expect(signal.endReason == "prompt_input_exit")
+    // Remote shape (no socket path): no pid, the session still rides the wire.
+    #expect(signal.pid == nil)
+  }
+
+  @Test(arguments: [
+    // A spliced `;` would add or override wire fields.
+    #"{"session_id":"a064b54a-e529-45c3-91cf-89cf1a42449;event=idle","reason":"other;kind=notify"}"#,
+    // A raw ESC would end the OSC early and start a forged one.
+    "{\"session_id\":\"a064b54a\u{1b}\\\\\u{1b}]3008;end=x\",\"reason\":\"oth\u{1b}er\"}",
+    // A JSON-escaped ESC and printf directives.
+    #"{"session_id":"a064b54a-e529-45c3-91cf-89cf1a424494\u001b","reason":"%s%n"}"#,
+  ])
+  func forgedSessionAndReasonNeverReachTheWire(stdin: String) async throws {
+    let command = try Self.installedCommand(agentDirectory: "claude", hookEvent: "SessionEnd")
+    let tty = try await runHookCommandCapturingTTY(
+      command, env: ["SUPACODE_SURFACE_ID": UUID().uuidString], stdin: stdin)
+    let signal = try #require(Self.parsePresence(fromTTY: tty))
+    #expect(signal.eventRawValue == "session_end")
+    #expect(signal.sessionID == nil)
+    #expect(signal.endReason == nil)
+    #expect(!tty.contains(";session="))
+    #expect(!tty.contains(";reason="))
+    #expect(!tty.contains("kind=notify"))
+    // Exactly the two emits (session_end, idle), nothing forged between them.
+    #expect(tty.ranges(of: "\u{1b}]3008;").count == 2)
+  }
+
+  @Test func capturingCommandStillEmitsWithEmptyStdin() async throws {
+    let command = try Self.installedCommand(agentDirectory: "claude", hookEvent: "SessionStart")
+    let tty = try await runHookCommandCapturingTTY(
+      command, env: ["SUPACODE_SURFACE_ID": UUID().uuidString], stdin: "")
+    let signal = try #require(Self.parsePresence(fromTTY: tty))
+    #expect(signal.eventRawValue == "session_start")
+    #expect(signal.sessionID == nil)
+    #expect(signal.endReason == nil)
+  }
+
+  @Test func capturingCommandWithNotifyReadsStdinOnceAndForwardsBoth() async throws {
+    let id = "a064b54a-e529-45c3-91cf-89cf1a424494"
+    let command = AgentHookSettingsCommand.compositeCommand(
+      events: [.sessionStart], forwardStdinAsNotification: true, agent: .claude, capturesSession: true)
+    #expect(command.ranges(of: "IFS= read -r __in").count == 1)
+    let tty = try await runHookCommandCapturingTTY(
+      command, env: ["SUPACODE_SURFACE_ID": UUID().uuidString],
+      stdin: #"{"session_id":"\#(id)","message":"hi there"}"# + "\n")
+    #expect(Self.parsePresence(fromTTY: tty)?.sessionID == id)
+    #expect(Self.parseNotify(fromTTY: tty)?.body == "hi there")
+  }
+
+  @Test func onlySessionEmitsOfCapturingCommandsCarryTheSessionSuffix() {
+    let command = AgentHookSettingsCommand.compositeCommand(
+      events: [.sessionEnd, .idle], forwardStdinAsNotification: false, agent: .claude, capturesSession: true)
+    #expect(command.contains(#"event=session_end%s%s\033\\' "$__sp" "$__ss""#))
+    #expect(command.contains(#"event=idle%s\033\\' "$__sp" > "$__tty""#))
+    #expect(command.ranges(of: AgentPresenceOSC.sessionCaptureShell).count == 1)
+  }
+
+  @Test func installedCaptureCommandsReadStdinOnceAndPassGrokPreflight() throws {
+    let capturing: [(String, String)] = [
+      ("claude", "SessionStart"), ("claude", "SessionEnd"), ("codex", "SessionStart"),
+      ("codex", "SessionEnd"), ("grok", "SessionStart"), ("agy", "SessionStart"),
+    ]
+    for (agentDirectory, hookEvent) in capturing {
+      let command = try Self.installedCommand(agentDirectory: agentDirectory, hookEvent: hookEvent)
+      #expect(command.ranges(of: AgentPresenceOSC.sessionCaptureShell).count == 1, "\(agentDirectory) \(hookEvent)")
+      #expect(command.ranges(of: "IFS= read -r __in").count == 1, "\(agentDirectory) \(hookEvent)")
+      // Grok collapses `$$` and preflights bare `$VAR`; the new locals are `__`-prefixed.
+      #expect(!command.contains("$$"), "\(agentDirectory) \(hookEvent)")
+      #expect(ManagedHookCommandVariables.unexpected(in: command).isEmpty, "\(agentDirectory) \(hookEvent)")
+    }
+  }
+
+  @Test func nonCapturingInstalledCommandsAreUnchanged() throws {
+    // Every slot outside the capture table keeps today's bytes, so those
+    // integrations are not flagged `.outdated` by the new build.
+    let capturing: Set<String> = [
+      "claude SessionStart", "claude SessionEnd", "codex SessionStart", "codex SessionEnd",
+      "grok SessionStart", "agy SessionStart",
+    ]
+    for agentDirectory in ["claude", "codex", "grok", "agy"] {
+      for (hookEvent, groups) in try Self.installedHookGroups(agentDirectory: agentDirectory)
+      where !capturing.contains("\(agentDirectory) \(hookEvent)") {
+        for group in groups {
+          let object = group.objectValue ?? [:]
+          let commands =
+            [object["command"]?.stringValue].compactMap { $0 }
+            + (object["hooks"]?.arrayValue ?? []).compactMap { $0.objectValue?["command"]?.stringValue }
+          for command in commands {
+            #expect(!command.contains("__ss"), "\(agentDirectory) \(hookEvent)")
+            #expect(!command.contains(AgentPresenceOSC.sessionField + "="), "\(agentDirectory) \(hookEvent)")
+          }
+        }
+      }
+    }
+    #expect(
+      try Self.installedCommand(agentDirectory: "claude", hookEvent: "UserPromptSubmit") == Self.snapshotClaudeBusy)
+    #expect(
+      AgentHookSettingsCommand.compositeCommand(
+        events: [.sessionEnd, .idle], forwardStdinAsNotification: false, agent: .claude, capturesSession: false)
+        == Self.snapshotClaudeSessionEndAndIdle)
+  }
+
+  @Test func codexSessionEndCaptureByteSnapshot_inlineLiteral() throws {
+    // Fully inlined, so a drift in `sessionCaptureShell` or the session emit shows
+    // here. A byte change marks the installed codex hook `.outdated` (and asks for
+    // codex's hook review again), so confirm it is intended before updating.
+    let awk = AgentPresenceOSC.notifyExtractAwk
+    let expected =
+      #"[ -n "${SUPACODE_SURFACE_ID:-}" ] && { "#
+      + #"__ppid=${PPID:-}; "#
+      + #"set -f; set -- $(ps -o tty= -p "$__ppid" 2>/dev/null); __tty=${1:-}; set +f; "#
+      + #"case "$__ppid" in 0|1) __ppid="";; esac; "#
+      + #"case "$__tty" in *[0-9]*) __tty="/dev/${__tty#/dev/}";; *) __tty="/dev/tty";; esac; "#
+      + #"IFS= read -r __in || true; case "$__in" in *"}") ;; *) __in=$__in$(cat) ;; esac; "#
+      + #"__sid=$(printf '%s' "$__in" | LC_ALL=C awk -v keys="session_id,sessionId,conversationId" "#
+      + #"-v budget=64 '\#(awk)'); "#
+      + #"__rs=$(printf '%s' "$__in" | LC_ALL=C awk -v keys="reason" -v budget=32 '\#(awk)'); "#
+      + #"case "$__sid" in *[!0-9A-Fa-f-]*) __sid="";; esac; "#
+      + #"case "$__rs" in *[!a-z_]*) __rs="";; esac; "#
+      + #"__ss=""; [ -n "$__sid" ] && __ss=";session=$__sid"; [ -n "$__rs" ] && __ss="$__ss;reason=$__rs"; "#
+      + #"__sp=""; [ -n "${SUPACODE_SOCKET_PATH:-}" ] && [ -n "$__ppid" ] "#
+      + #"&& __sp=";pid=$__ppid"; "#
+      + #"printf '\033]3008;end=codex;event=session_end%s%s\033\\' "$__sp" "$__ss" > "$__tty"; "#
+      + #"} >/dev/null 2>&1 || true # supacode-managed-hook"#
+    #expect(try Self.installedCommand(agentDirectory: "codex", hookEvent: "SessionEnd") == expected)
+  }
+
   /// Reconstructs libghostty's OSC 3008 split from a captured tty stream: the
   /// first `verb=id` field becomes the context id, the rest is the metadata
   /// `parse` consumes. Returns the parsed signal.

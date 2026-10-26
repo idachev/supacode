@@ -5,7 +5,8 @@ import Foundation
 /// state over SSH where the local Unix socket can't be reached. The sequence is
 /// inert in any terminal that doesn't handle OSC 3008 (no toast, no side effect).
 ///
-/// Emit shape: `OSC 3008 ; <action>=<agent> ; event=<event>[ ; pid=<pid>] ST`.
+/// Emit shape:
+/// `OSC 3008 ; <action>=<agent> ; event=<event>[ ; pid=<pid>][ ; session=<uuid>][ ; reason=<token>] ST`.
 /// libghostty splits that into `id = <agent>` (the context id, up to the first
 /// `;`) and `metadata = "event=<event>[;pid=<pid>]"`, which is what `parse`
 /// receives. `parse` derives the event solely from the `event=` field and ignores
@@ -14,7 +15,10 @@ import Foundation
 /// - `event` is the `HookEvent` rawValue;
 /// - `pid` is the agent's LOCAL process id, present only when the hook ran on the
 ///   same host (gated on `SUPACODE_SOCKET_PATH`); it feeds the app's liveness
-///   sweep so a crashed local agent is reaped. Omitted over SSH.
+///   sweep so a crashed local agent is reaped. Omitted over SSH;
+/// - `session` / `reason` are the agent's session id and SessionEnd reason, read
+///   once from the hook's stdin by the commands that opt in (`capturesSession`),
+///   so a restored pane can resume the agent's session after a reboot.
 ///
 /// The same transport also carries the rich notification leg
 /// (`kind=notify;title=<base64>;body=<base64>`); the emitter extracts the display
@@ -35,6 +39,8 @@ public nonisolated enum AgentPresenceOSC {
 
   static let eventField = "event"
   static let pidField = "pid"
+  static let sessionField = "session"
+  static let reasonField = "reason"
   static let kindField = "kind"
   static let titleField = "title"
   static let bodyField = "body"
@@ -60,6 +66,26 @@ public nonisolated enum AgentPresenceOSC {
     /// so a local hook carries it and a remote one omits it; a forged positive
     /// pid at worst pins a live-looking badge until surface close.
     public let pid: pid_t?
+    /// The agent's session id: a 36-character UUID, kept in the case received.
+    /// nil when absent or malformed (a bad value drops only this field).
+    public let sessionID: String?
+    /// The SessionEnd `reason` token (`^[a-z_]{1,32}$`), e.g. `prompt_input_exit`.
+    /// nil when absent or malformed.
+    public let endReason: String?
+
+    public init(
+      agent: String,
+      eventRawValue: String,
+      pid: pid_t?,
+      sessionID: String? = nil,
+      endReason: String? = nil
+    ) {
+      self.agent = agent
+      self.eventRawValue = eventRawValue
+      self.pid = pid
+      self.sessionID = sessionID
+      self.endReason = endReason
+    }
   }
 
   /// Parse the OSC 3008 context id + raw key=value metadata (as surfaced by
@@ -76,7 +102,28 @@ public nonisolated enum AgentPresenceOSC {
       agent: id,
       eventRawValue: String(rawEvent),
       pid: parsePid(fields[Substring(pidField)]),
+      sessionID: parseSessionID(fields[Substring(sessionField)]),
+      endReason: parseEndReason(fields[Substring(reasonField)]),
     )
+  }
+
+  /// Parse the optional `session=` field: exactly 36 bytes that form a UUID. The
+  /// length check rejects the braced and other lenient forms, and a grok session
+  /// title that `--resume` would also accept. The case is kept as received.
+  private static func parseSessionID(_ raw: Substring?) -> String? {
+    guard let raw, raw.utf8.count == 36 else { return nil }
+    let value = String(raw)
+    guard UUID(uuidString: value) != nil else { return nil }
+    return value
+  }
+
+  /// Parse the optional `reason=` field: 1-32 bytes of `[a-z_]`.
+  private static func parseEndReason(_ raw: Substring?) -> String? {
+    guard let raw, (1...32).contains(raw.utf8.count) else { return nil }
+    let isToken = raw.utf8.allSatisfy { byte in
+      (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte) || byte == UInt8(ascii: "_")
+    }
+    return isToken ? String(raw) : nil
   }
 
   /// Parse the optional `pid=` field. Rejects non-numeric and non-positive
@@ -99,9 +146,10 @@ public nonisolated enum AgentPresenceOSC {
   /// the value keeps everything after the FIRST `=` (`firstIndex(of:)`), so base64
   /// `=` padding survives intact.
   ///
-  /// Duplicate `event` / `kind` keys are rejected: a repeated key would otherwise
-  /// pin perceived state to the last occurrence, which a splice into the wire
-  /// could exploit to flip `event=` or inject `kind=notify`. All other duplicate
+  /// Duplicate `event` / `kind` / `session` / `reason` keys are rejected: a repeated
+  /// key would otherwise pin perceived state to the last occurrence, which a splice
+  /// into the wire could exploit to flip `event=`, inject `kind=notify`, or swap the
+  /// recorded session. All other duplicate
   /// keys keep the historical last-write-wins behavior.
   public static func parseFields(_ metadata: String) -> [Substring: Substring]? {
     var fields: [Substring: Substring] = [:]
@@ -117,7 +165,7 @@ public nonisolated enum AgentPresenceOSC {
   }
 
   private static let dedupedFields: Set<Substring> = [
-    Substring(eventField), Substring(kindField),
+    Substring(eventField), Substring(kindField), Substring(sessionField), Substring(reasonField),
   ]
 
   /// A parsed notification signal with already-decoded display text.
@@ -217,14 +265,45 @@ public nonisolated enum AgentPresenceOSC {
   /// with no resolvable parent stays untracked by the liveness sweep either way. A
   /// forged positive pid at worst pins a live-looking badge until surface close. The
   /// suffix is built in shell and filled into a trailing `%s`.
-  static func emitShell(event: HookEvent, agent: SkillAgent) -> String {
-    // Trailing %s for the shell-built, conditionally-empty pid suffix.
-    let meta = metadata(event: event, pidSuffix: "%s")
+  ///
+  /// `includesSession: true` appends a second `%s` filled from `$__ss`, the
+  /// `;session=...;reason=...` suffix built by `sessionCaptureShell`, which must run
+  /// first. The default leaves the command byte-identical to the pre-session shape.
+  static func emitShell(event: HookEvent, agent: SkillAgent, includesSession: Bool = false) -> String {
+    // Trailing %s for the shell-built, conditionally-empty pid (and session) suffix.
+    let meta = metadata(event: event, pidSuffix: includesSession ? "%s%s" : "%s")
     let payload = #"\033]3008;\#(action(for: event))=\#(agent.rawValue);\#(meta)\033\\"#
+    let args = includesSession ? #""$__sp" "$__ss""# : #""$__sp""#
     return #"__sp=""; [ -n "${SUPACODE_SOCKET_PATH:-}" ] && [ -n "$__ppid" ] "#
       + #"&& __sp=";\#(pidField)=$__ppid"; "#
-      + #"printf '\#(payload)' "$__sp" > "$__tty""#
+      + #"printf '\#(payload)' \#(args) > "$__tty""#
   }
+
+  /// Stdin keys that carry the agent's session id, in precedence order: claude,
+  /// codex and grok send `session_id` (grok also `sessionId`), agy `conversationId`.
+  static let sessionIDKeys = ["session_id", "sessionId", "conversationId"]
+  /// Emit-side byte caps for the captured fields. A UUID is 36 bytes and the app
+  /// rejects anything else, so these only bound a hostile payload.
+  static let sessionIDByteBudget = 64
+  static let endReasonByteBudget = 32
+
+  /// Reads the hook JSON from stdin once into `$__in`, extracts the session id
+  /// (`$__sid`) and the SessionEnd `reason` (`$__rs`), and builds `$__ss`, the
+  /// `;session=<id>;reason=<token>` suffix an `emitShell(includesSession: true)`
+  /// splices in. The `case` filters empty any value with a byte outside the UUID
+  /// or `[a-z_]` alphabets, which keeps `;`, ESC and `%` off the wire; the strict
+  /// UUID / token validation is app-side (`parse`). A later notify must use
+  /// `emitNotifyShell(readsStdin: false)` to reuse `$__in`.
+  static let sessionCaptureShell =
+    "\(readStdinSnippet); "
+    + #"__sid=$(printf '%s' "$__in" | LC_ALL=C awk -v keys="\#(sessionIDKeys.joined(separator: ","))" "#
+    + #"-v budget=\#(sessionIDByteBudget) '\#(notifyExtractAwk)'); "#
+    + #"__rs=$(printf '%s' "$__in" | LC_ALL=C awk -v keys="\#(reasonField)" "#
+    + #"-v budget=\#(endReasonByteBudget) '\#(notifyExtractAwk)'); "#
+    + #"case "$__sid" in *[!0-9A-Fa-f-]*) __sid="";; esac; "#
+    + #"case "$__rs" in *[!a-z_]*) __rs="";; esac; "#
+    + #"__ss=""; [ -n "$__sid" ] && __ss=";\#(sessionField)=$__sid"; "#
+    + #"[ -n "$__rs" ] && __ss="$__ss;\#(reasonField)=$__rs""#
 
   /// The `key=value` metadata a notify signal carries; `title` / `body` are base64.
   static func notifyMetadata(title: String, body: String) -> String {

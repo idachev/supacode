@@ -17,8 +17,10 @@ nonisolated enum AntigravityHookSettings {
   }
 
   static func hooksByEvent() -> [String: [JSONValue]] {
+    // Captures the `conversationId` for the agent session resume after a reboot.
+    // agy has no end hook, so nothing clears the record.
     let sessionStart = AgentHookSettingsCommand.compositeCommand(
-      events: [.sessionStart], forwardStdinAsNotification: false, agent: .antigravity)
+      events: [.sessionStart], forwardStdinAsNotification: false, agent: .antigravity, capturesSession: true)
     let busy = AgentHookSettingsCommand.compositeCommand(
       events: [.busy], forwardStdinAsNotification: false, agent: .antigravity)
     let idle = AgentHookSettingsCommand.compositeCommand(

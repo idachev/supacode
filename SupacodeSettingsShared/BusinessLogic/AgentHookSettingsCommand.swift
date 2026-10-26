@@ -59,18 +59,32 @@ nonisolated enum AgentHookSettingsCommand {
   /// single brace group whose output is suppressed. Guarding first keeps the
   /// command truly inert outside Supacode (no `ps` runs when the surface id is
   /// unset). The precondition rejects a no-op invocation that would emit nothing.
+  ///
+  /// `capturesSession: true` (opt-in, so other agents' hook bytes stay unchanged)
+  /// reads stdin once through `AgentPresenceOSC.sessionCaptureShell` and adds
+  /// `session=` / `reason=` to the `session_start` and `session_end` emits, so the
+  /// app can record the agent session a restored pane resumes. A notify leg then
+  /// reuses the captured `$__in` instead of reading stdin a second time.
   static func compositeCommand(
     events: [HookEvent],
     forwardStdinAsNotification: Bool,
-    agent: SkillAgent
+    agent: SkillAgent,
+    capturesSession: Bool = false
   ) -> String {
     precondition(
       !events.isEmpty || forwardStdinAsNotification,
       "compositeCommand needs at least one side-effect (events or stdin forward).",
     )
     var steps: [String] = [AgentPresenceOSC.ttyResolveSnippet]
-    steps += events.map { AgentPresenceOSC.emitShell(event: $0, agent: agent) }
-    if forwardStdinAsNotification { steps.append(AgentPresenceOSC.emitNotifyShell(agent: agent)) }
+    if capturesSession { steps.append(AgentPresenceOSC.sessionCaptureShell) }
+    steps += events.map { event in
+      AgentPresenceOSC.emitShell(
+        event: event, agent: agent,
+        includesSession: capturesSession && (event == .sessionStart || event == .sessionEnd))
+    }
+    if forwardStdinAsNotification {
+      steps.append(AgentPresenceOSC.emitNotifyShell(agent: agent, readsStdin: !capturesSession))
+    }
     return "\(oscGuardExpr) && { \(steps.joined(separator: "; ")); } >/dev/null 2>&1 || true \(ownershipMarker)"
   }
 

@@ -40,10 +40,12 @@ private nonisolated struct ClaudeHooksPayload: Encodable {
   // completion. `SessionStart(source: compact)` is what ends the compacting state.
   private static let compacting = AgentHookSettingsCommand.compositeCommand(
     events: [.compacting], forwardStdinAsNotification: false, agent: .claude)
+  // SessionStart and SessionEnd capture the session id (and the end `reason`) for
+  // the agent session resume after a reboot.
   private static let sessionStart = AgentHookSettingsCommand.compositeCommand(
-    events: [.sessionStart], forwardStdinAsNotification: false, agent: .claude)
+    events: [.sessionStart], forwardStdinAsNotification: false, agent: .claude, capturesSession: true)
   private static let sessionEndAndIdle = AgentHookSettingsCommand.compositeCommand(
-    events: [.sessionEnd, .idle], forwardStdinAsNotification: false, agent: .claude)
+    events: [.sessionEnd, .idle], forwardStdinAsNotification: false, agent: .claude, capturesSession: true)
 
   let hooks: [String: [AgentHookGroup]] = [
     "SessionStart": [
