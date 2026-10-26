@@ -871,6 +871,18 @@ final class WorktreeContentHost {
     return true
   }
 
+  /// Applies an agent session change to this host's content, live or hibernated.
+  /// False when the surface is not this host's (all hosts share one runtime, so
+  /// ownership is checked first), or when the record did not change.
+  func updateAgentSession(_ update: AgentSessionUpdate, onSurfaceID surfaceID: UUID) -> Bool {
+    guard isKnownSurface(surfaceID) else { return false }
+    guard let content = runtime.content(for: ContentID(rawValue: surfaceID)) as? TerminalContent else {
+      Self.logger.debug("Agent session update dropped: no terminal content for \(surfaceID).")
+      return false
+    }
+    return content.applyAgentSession(update)
+  }
+
   // MARK: - Setup script.
 
   func needsSetupScript() -> Bool {

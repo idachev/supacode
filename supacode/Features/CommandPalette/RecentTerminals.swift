@@ -41,7 +41,8 @@ enum RecentTerminals {
       // groups moves no focus.
       return false
     case .renameTab, .beginTabRename, .endTabRename, .enterWindowMode, .exitWindowMode, .resizePane,
-      .equalizePanes, .hibernateTab, .wakeTab, .runtime, .contentRequestedResize, .contentRequestedMoveTab:
+      .equalizePanes, .hibernateTab, .wakeTab, .landContentSnapshot, .runtime, .contentRequestedResize,
+      .contentRequestedMoveTab:
       return false
     }
   }
@@ -51,8 +52,8 @@ enum RecentTerminals {
     switch action {
     case .closeTab, .closePane, .contentRequestedClose, .runtime(.killConfirmed), .alert:
       return true
-    case .convertMode, .selectGroup, .newGroup, .moveGroup:
-      // Conversions and group actions never drop a tab.
+    case .convertMode, .selectGroup, .newGroup, .moveGroup, .landContentSnapshot:
+      // Conversions, group actions and snapshot landing never drop a tab.
       return false
     default:
       return false
