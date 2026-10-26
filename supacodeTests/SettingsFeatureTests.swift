@@ -146,6 +146,53 @@ struct SettingsFeatureTests {
     #expect(settingsFile.global.pinWorktreeWhenAgentSessionEnds == false)
   }
 
+  @Test func resumeAgentSessionsAfterRestartDefaultsToTrue() {
+    #expect(GlobalSettings.default.resumeAgentSessionsAfterRestart == true)
+    #expect(SettingsFeature.State().resumeAgentSessionsAfterRestart == true)
+  }
+
+  @Test func resumeAgentSessionsAfterRestartMissingKeyDecodesAsTrue() throws {
+    var settings = GlobalSettings.default
+    settings.resumeAgentSessionsAfterRestart = false
+    let data = try JSONEncoder().encode(settings)
+    var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["resumeAgentSessionsAfterRestart"] as? Bool == false)
+    object.removeValue(forKey: "resumeAgentSessionsAfterRestart")
+    let stripped = try JSONSerialization.data(withJSONObject: object)
+    let decoded = try JSONDecoder().decode(GlobalSettings.self, from: stripped)
+    #expect(decoded.resumeAgentSessionsAfterRestart == true)
+  }
+
+  @Test func resumeAgentSessionsAfterRestartExplicitFalseRoundTrips() throws {
+    var settings = GlobalSettings.default
+    settings.resumeAgentSessionsAfterRestart = false
+    let data = try JSONEncoder().encode(settings)
+    let decoded = try JSONDecoder().decode(GlobalSettings.self, from: data)
+    #expect(decoded.resumeAgentSessionsAfterRestart == false)
+  }
+
+  @Test(.dependencies) func togglingResumeAgentSessionsAfterRestartPersistsChanges() async {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global = .default }
+    defer { $settingsFile.withLock { $0.global = .default } }
+
+    let store = TestStore(initialState: SettingsFeature.State()) {
+      SettingsFeature()
+    }
+
+    await store.send(.binding(.set(\.resumeAgentSessionsAfterRestart, false))) {
+      $0.resumeAgentSessionsAfterRestart = false
+    }
+    await store.receive(\.delegate.settingsChanged)
+    #expect(settingsFile.global.resumeAgentSessionsAfterRestart == false)
+
+    await store.send(.binding(.set(\.resumeAgentSessionsAfterRestart, true))) {
+      $0.resumeAgentSessionsAfterRestart = true
+    }
+    await store.receive(\.delegate.settingsChanged)
+    #expect(settingsFile.global.resumeAgentSessionsAfterRestart == true)
+  }
+
   @Test(.dependencies) func chromeTextSizePersistsChanges() async {
     @Shared(.settingsFile) var settingsFile
     $settingsFile.withLock { $0.global = .default }
@@ -267,6 +314,7 @@ struct SettingsFeatureTests {
     loaded.openFileScript = "open \"$SUPACODE_FILE_PATH\""
     loaded.richAgentNotificationsEnabled = false
     loaded.agentPresenceBadgesEnabled = false
+    loaded.resumeAgentSessionsAfterRestart = false
     loaded.confirmQuitMode = .always
     loaded.confirmCloseSurface = false
     loaded.confirmCloseTab = .never

@@ -71,6 +71,12 @@ final class WorktreeTerminalManager {
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored @Dependency(\.zmxClient) private var zmxClient
   @ObservationIgnored @Dependency(\.analyticsClient) private var analyticsClient
+  /// Launch-time zmx liveness for the one-shot agent resume; nil until
+  /// `captureLaunchSessionLiveness()` ran, and stays nil when its probe failed.
+  @ObservationIgnored private(set) var agentResumeGate: AgentResumeGate?
+  /// Set on the first `captureLaunchSessionLiveness()` call, success or not,
+  /// so a later call never re-probes after restored panes may have attached.
+  @ObservationIgnored private var didCaptureLaunchSessionLiveness = false
   /// Serialized off-main writer that merges per-worktree layout changes into
   /// `layouts.json` without clobbering keys it isn't carrying. Built from the
   /// dependency context at init so async flushes use the same storage the test
@@ -518,7 +524,8 @@ final class WorktreeTerminalManager {
     case .createTab, .createTabWithInput, .openFileWithScript, .ensureInitialTab, .stopRunScript, .stopScript,
       .runBlockingScript, .closeFocusedTab, .closeFocusedSurface, .performBindingAction,
       .performBindingActionOnSurface, .selectTab, .selectTabAtIndex, .selectRelativeTab, .focusSurface, .splitSurface,
-      .destroyTab, .destroySurface, .renameTab, .setImagePasteAgents, .prune, .removeWorktreeLayout,
+      .destroyTab, .destroySurface, .renameTab, .setImagePasteAgents, .updateAgentSession, .prune,
+      .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
       .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane,
       .splitFocusedPane, .focusSplit, .toggleSplitZoom, .equalizeSplits,
@@ -565,7 +572,7 @@ final class WorktreeTerminalManager {
       .navigateSearchNext, .navigateSearchPrevious, .selectTab, .selectTabAtIndex, .selectRelativeTab,
       .focusSurface, .splitSurface, .destroyTab, .destroySurface, .renameTab, .prune, .removeWorktreeLayout,
       .setNotificationsEnabled, .enforceNotificationRetentionLimit, .setSelectedWorktreeID, .beginTabRename,
-      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane:
+      .setTerminalHibernationEnabled, .setTerminalLayoutMode, .toggleWindowModeForFocusedPane, .updateAgentSession:
       return false
     }
     return true
@@ -573,6 +580,27 @@ final class WorktreeTerminalManager {
 
   private func setImagePasteAgents(_ agents: Set<SkillAgent>, onSurfaceID surfaceID: UUID) {
     for host in hosts.values where host.setImagePasteAgents(agents, onSurfaceID: surfaceID) {
+      return
+    }
+  }
+
+  private func updateAgentSession(_ update: AgentSessionUpdate, onSurfaceID surfaceID: UUID) {
+    Self.routeAgentSessionUpdate(update, onSurfaceID: surfaceID, hosts: hosts) { [weak self] worktreeID in
+      self?.markLayoutDirty(worktreeID: worktreeID)
+    }
+  }
+
+  /// Hands the update to the one host that owns the surface and marks only that
+  /// worktree's layout dirty, so the record reaches disk within the debounce. All
+  /// hosts share one runtime, so ownership is the host's `isKnownSurface` guard.
+  static func routeAgentSessionUpdate(
+    _ update: AgentSessionUpdate,
+    onSurfaceID surfaceID: UUID,
+    hosts: [Worktree.ID: WorktreeContentHost],
+    markLayoutDirty: (Worktree.ID) -> Void
+  ) {
+    for (worktreeID, host) in hosts where host.updateAgentSession(update, onSurfaceID: surfaceID) {
+      markLayoutDirty(worktreeID)
       return
     }
   }
@@ -593,6 +621,8 @@ final class WorktreeTerminalManager {
       sendTerminals(.layoutModeChanged(mode))
     case .toggleWindowModeForFocusedPane(let worktree):
       toggleWindowModeForFocusedPane(of: worktree)
+    case .updateAgentSession(let surfaceID, let update):
+      updateAgentSession(update, onSurfaceID: surfaceID)
     case .setSelectedWorktreeID(let id):
       guard id != selectedWorktreeID else { return }
       if let previousID = selectedWorktreeID, let previousHost = hosts[previousID] {
@@ -935,6 +965,10 @@ final class WorktreeTerminalManager {
       if session.clients == 0 {
         // Reattachable: rebuild the same content at its persisted geometry.
         self.commitReportedTitle(of: ContentID(rawValue: surfaceID), worktreeID: worktreeID)
+        // Land the live snapshot first: the rebuild starts from the tab's stored
+        // one, which otherwise misses everything since the last wake (an agent
+        // session that started after it, for one).
+        self.sendLayout(worktreeID, .landContentSnapshot(tabID: tabID))
         ContentRuntime.liveValue.remove(ContentID(rawValue: surfaceID), tombstone: false)
         self.sendLayout(worktreeID, .wakeTab(id: tabID))
         return
@@ -1964,6 +1998,38 @@ final class WorktreeTerminalManager {
         group.addTask { await client.killSession(id) }
       }
     }
+  }
+
+  /// Captures which `supa-*` sessions are alive before any restored pane can
+  /// attach (an attach upserts its session). Runs once per process; a failed
+  /// probe leaves no gate, so nothing is resumed this launch.
+  func captureLaunchSessionLiveness() async {
+    guard !didCaptureLaunchSessionLiveness else { return }
+    didCaptureLaunchSessionLiveness = true
+    let probe = await zmxClient.listSessionsWithClients()
+    // A stale socket left by an unclean shutdown is listed but dead; it must
+    // count as dead or the pane that owned it never resumes.
+    agentResumeGate = probe.map { entries in
+      AgentResumeGate(liveSessionNames: Set(entries.filter { !$0.isStale }.map(\.name)))
+    }
+    if agentResumeGate == nil {
+      terminalLogger.warning("resume skipped: liveness probe failed")
+    }
+  }
+
+  /// Spends the content's one resume slot for this process. The content
+  /// builder calls it on every first spawn of any origin, so a content that
+  /// already ran here can never resume into its own live session.
+  func claimAgentResume(_ id: ContentID) -> Bool {
+    guard agentResumeGate != nil else {
+      // A failed probe already logged once; only a spawn before any capture
+      // (which the `.appLaunched` ordering rules out) warns here.
+      if !didCaptureLaunchSessionLiveness {
+        terminalLogger.warning("resume skipped: liveness not captured")
+      }
+      return false
+    }
+    return agentResumeGate?.claim(id) ?? false
   }
 
   func setNotificationsEnabled(_ enabled: Bool) {

@@ -204,7 +204,26 @@ struct ZmxSessionListParserTests {
     let entries = ZmxSessionListParser.parse(
       "name=supa-abc\terr=ConnectionRefused\tstatus=cleaning up\n"
     )
-    #expect(entries == [.init(name: "supa-abc", clients: nil)])
+    #expect(entries == [.init(name: "supa-abc", clients: nil, isStale: true)])
+  }
+
+  /// zmx prints a refused probe as `cleaning up` and a timed-out one as
+  /// `unreachable` (ThirdParty/zmx/src/util.zig, the is_error branch); only the
+  /// refused one is definitively dead.
+  @Test func refusedLineIsStaleButUnreachableIsNot() {
+    let entries = ZmxSessionListParser.parse(
+      """
+        name=supa-gone\terr=ConnectionRefused\tstatus=cleaning up
+      → name=supa-busy\terr=Timeout\tstatus=unreachable
+        name=supa-live\tpid=7\tclients=1\tcreated=0
+      """
+    )
+    #expect(
+      entries == [
+        .init(name: "supa-gone", clients: nil, isStale: true),
+        .init(name: "supa-busy", clients: nil, isStale: false),
+        .init(name: "supa-live", clients: 1, isStale: false),
+      ])
   }
 
   @Test func stripsCurrentSessionArrowPrefix() {
