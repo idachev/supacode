@@ -62,11 +62,16 @@ struct TerminalsFeatureBackgroundWakeTests {
     store.exhaustivity = .off
 
     await store.send(.layouts(.element(id: otherWorktree, action: .wakeTab(id: wokenTab.id))))
+    // The fixture never provisioned the selected worktree's visible tab, so the
+    // hibernation reconcile after the action wakes it too: a second request for
+    // a different content, not a second provision of the woken tab.
+    await store.receive(\.layouts)
 
-    #expect(requests.value.count == 1)
-    #expect(requests.value.first?.origin == .restored)
-    #expect(requests.value.first?.contentID == wokenTab.content.id)
-    #expect(requests.value.first?.worktreeID == otherWorktree)
+    let wokenRequests = requests.value.filter { $0.contentID == wokenTab.content.id }
+    #expect(wokenRequests.count == 1)
+    #expect(wokenRequests.first?.origin == .restored)
+    #expect(wokenRequests.first?.worktreeID == otherWorktree)
+    #expect(requests.value.map(\.contentID) == [wokenTab.content.id, selectedTab.content.id])
     #expect(runtime.content(for: wokenTab.content.id) != nil)
     #expect(store.state.selectedWorktreeID == selectedWorktree)
     let layout = store.state.layouts[id: otherWorktree]?.layout
@@ -75,6 +80,6 @@ struct TerminalsFeatureBackgroundWakeTests {
     let selected = store.state.layouts[id: selectedWorktree]?.layout
     #expect(selected?.focusedPaneID == selectedPaneID)
     #expect(selected?.panes[id: selectedPaneID]?.selectedTabID == selectedTab.id)
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 }

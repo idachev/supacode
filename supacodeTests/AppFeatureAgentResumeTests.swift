@@ -64,7 +64,7 @@ struct AppFeatureAgentResumeTests {
 
     #expect(!store.state.agentResume.pending.ids.contains(closed.content.id))
     #expect(store.state.agentResume.pending.count == fixture.allContentIDs.count - 1)
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
@@ -76,7 +76,7 @@ struct AppFeatureAgentResumeTests {
     await store.send(.terminals(.detachLayout(worktreeID: fixture.worktrees[0].id)))
 
     #expect(store.state.agentResume.pending.map(\.worktreeID) == [fixture.worktrees[1].id])
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
@@ -91,7 +91,7 @@ struct AppFeatureAgentResumeTests {
     )
 
     #expect(store.state.agentResume.pending[id: renamed.content.id]?.tabTitle == "Renamed")
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   /// ЗДa r1 F1: a layout mode conversion re-mints the panes; the rows follow
@@ -124,7 +124,7 @@ struct AppFeatureAgentResumeTests {
     #expect(rows.map(\.id) == expected)
     // Each pane keeps its first tab; the others move to new panes at the end.
     #expect(rows.map(\.tabTitle) == ["a-tab-0", "a-tab-2", "a-tab-1", "a-tab-3"])
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   @Test func ungatedLayoutActionDoesNotRefresh() {

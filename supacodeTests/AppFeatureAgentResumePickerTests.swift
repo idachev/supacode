@@ -33,7 +33,7 @@ struct AppFeatureAgentResumePickerTests {
     #expect(store.state.agentResume.didEvaluateAutoPresent)
     #expect(store.state.agentResumePicker?.rows.ids.elements == fixture.allContentIDs)
     #expect(store.state.agentResumePicker?.selected == Set(fixture.allContentIDs))
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
@@ -52,7 +52,7 @@ struct AppFeatureAgentResumePickerTests {
     await store.send(.terminalEvent(.agentResumeLivenessCaptured(liveSessionNames: [])))
 
     #expect(store.state.agentResumePicker?.rows.ids.elements == fixture.allContentIDs)
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   @Test(.dependencies, .dependency(\.defaultAppStorage, .inMemory))
@@ -95,7 +95,7 @@ struct AppFeatureAgentResumePickerTests {
 
     #expect(store.state.agentResume.pending.count == fixture.allContentIDs.count)
     #expect(store.state.agentResumePicker == nil)
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   // MARK: - Reopen.
@@ -136,7 +136,7 @@ struct AppFeatureAgentResumePickerTests {
     await store.receive(\.agentResumePickerRequested)
 
     #expect(store.state.agentResumePicker?.rows.ids.elements == fixture.allContentIDs)
-    await store.skipInFlightEffects()
+    await store.finish()
   }
 
   // MARK: - Live rows.
@@ -188,6 +188,7 @@ struct AppFeatureAgentResumePickerTests {
     await store.receive(\.agentResumePicker.dismiss)
 
     #expect(store.state.agentResumePicker == nil)
+    // The wake queue waits the stagger on the never-advanced test clock.
     await store.skipInFlightEffects()
   }
 
