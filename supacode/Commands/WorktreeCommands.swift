@@ -54,6 +54,7 @@ private struct WorktreeMainMenu: Commands {
     let newWt = AppShortcuts.newWorktree.effective(from: overrides)
     let archived = AppShortcuts.archivedWorktrees.effective(from: overrides)
     let recentTerminals = AppShortcuts.recentTerminals.effective(from: overrides)
+    let resumeAgentSessions = AppShortcuts.resumeAgentSessions.effective(from: overrides)
     let refresh = AppShortcuts.refreshWorktrees.effective(from: overrides)
     let run = AppShortcuts.runScript.effective(from: overrides)
     let stop = AppShortcuts.stopRunScript.effective(from: overrides)
@@ -102,6 +103,16 @@ private struct WorktreeMainMenu: Commands {
       .appKeyboardShortcut(archived)
       .help(AppShortcut.helpText("Archived Worktrees", shortcut: archived))
       .disabled(!snapshot.isInitialLoadComplete)
+      // Plain `store.send`, like "Archived Worktrees": no focused value is published,
+      // and the menu reads only `pending.isEmpty`, which flips a few times per launch.
+      Button("Resume Agent Sessions…", systemImage: "arrow.clockwise.circle") {
+        store.send(.agentResumePickerRequested)
+      }
+      .appKeyboardShortcut(resumeAgentSessions)
+      .help(
+        AppShortcut.helpText("Resume agent sessions that wait after a restart", shortcut: resumeAgentSessions)
+      )
+      .disabled(store.agentResume.pending.isEmpty)
       Button("Recent Terminals…", systemImage: "terminal") {
         guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
         store.send(.commandPalette(.togglePresentInMode(.recentTerminals)))

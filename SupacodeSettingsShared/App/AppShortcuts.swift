@@ -10,6 +10,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
   case toggleLeftSidebar, revealInSidebar
   case expandAllSidebarGroups, collapseAllSidebarGroups
   case newWorktree, refreshWorktrees, archivedWorktrees, recentTerminals, archiveWorktree
+  case resumeAgentSessions
   case deleteWorktree, confirmWorktreeAction
   case selectNextWorktree, selectPreviousWorktree
   case worktreeHistoryBack, worktreeHistoryForward
@@ -33,7 +34,8 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
       false
     case .commandPalette, .worktreeSwitcher, .openSettings, .checkForUpdates, .showMainWindow,
       .toggleLeftSidebar, .revealInSidebar, .expandAllSidebarGroups, .collapseAllSidebarGroups,
-      .newWorktree, .refreshWorktrees, .archivedWorktrees, .recentTerminals, .confirmWorktreeAction,
+      .newWorktree, .refreshWorktrees, .archivedWorktrees, .recentTerminals, .resumeAgentSessions,
+      .confirmWorktreeAction,
       .selectNextWorktree, .selectPreviousWorktree, .worktreeHistoryBack, .worktreeHistoryForward,
       .selectWorktree, .selectTab, .selectNextTab, .selectPreviousTab,
       .openWorktree, .revealInFinder, .openRepository, .addRemoteRepository, .cloneRepository,
@@ -79,6 +81,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     case .refreshWorktrees: "refreshWorktrees"
     case .archivedWorktrees: "archivedWorktrees"
     case .recentTerminals: "recentTerminals"
+    case .resumeAgentSessions: "resumeAgentSessions"
     case .archiveWorktree: "archiveWorktree"
     case .deleteWorktree: "deleteWorktree"
     case .confirmWorktreeAction: "confirmWorktreeAction"
@@ -138,6 +141,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     "refreshWorktrees": .refreshWorktrees,
     "archivedWorktrees": .archivedWorktrees,
     "recentTerminals": .recentTerminals,
+    "resumeAgentSessions": .resumeAgentSessions,
     "archiveWorktree": .archiveWorktree,
     "deleteWorktree": .deleteWorktree,
     "confirmWorktreeAction": .confirmWorktreeAction,
@@ -214,6 +218,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     case .refreshWorktrees: "Refresh Worktrees"
     case .archivedWorktrees: "Archived Worktrees"
     case .recentTerminals: "Recent Terminals"
+    case .resumeAgentSessions: "Resume Agent Sessions"
     case .archiveWorktree: "Archive Worktree"
     case .deleteWorktree: "Delete Worktree"
     case .confirmWorktreeAction: "Confirm Worktree Action"
@@ -522,6 +527,10 @@ public enum AppShortcuts {
   public static let archivedWorktrees = AppShortcut(id: .archivedWorktrees, key: "a", modifiers: [.command, .control])
   // Sits next to ⌘P (worktrees) and ⌘⇧P (commands): the third palette surface.
   public static let recentTerminals = AppShortcut(id: .recentTerminals, key: "p", modifiers: [.command, .option])
+  // ⌃⌘R: R reads as "resume"; ⌘R, ⌥⌘R, ⇧⌘R and ⌃⇧R are taken.
+  public static let resumeAgentSessions = AppShortcut(
+    id: .resumeAgentSessions, key: "r", modifiers: [.command, .control]
+  )
   public static let archiveWorktree = AppShortcut(
     id: .archiveWorktree,
     keyEquivalent: .delete, ghosttyKeyName: "backspace", modifiers: .command
@@ -699,7 +708,7 @@ public enum AppShortcuts {
     AppShortcutGroup(
       category: .worktrees,
       shortcuts: [
-        newWorktree, refreshWorktrees, archivedWorktrees, recentTerminals, archiveWorktree,
+        newWorktree, refreshWorktrees, archivedWorktrees, recentTerminals, resumeAgentSessions, archiveWorktree,
         deleteWorktree, confirmWorktreeAction, selectNextWorktree, selectPreviousWorktree,
         worktreeHistoryBack, worktreeHistoryForward,
       ]

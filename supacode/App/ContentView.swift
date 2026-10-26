@@ -75,6 +75,11 @@ struct ContentView: View {
       DeeplinkInputConfirmationView(store: confirmationStore)
     }
     .sheet(
+      item: $store.scope(state: \.agentResumePicker, action: \.agentResumePicker)
+    ) { pickerStore in
+      AgentResumePickerView(store: pickerStore)
+    }
+    .sheet(
       item: $repositoriesStore.scope(state: \.worktreeCreationPrompt, action: \.worktreeCreationPrompt)
     ) { promptStore in
       WorktreeCreationPromptView(store: promptStore)
@@ -201,7 +206,8 @@ private struct CommandPaletteOverlayHost: View {
         from: repositoriesStore.state,
         ghosttyCommands: ghosttyShortcuts.commandPaletteEntries,
         scripts: store.allScripts,
-        runningScriptIDs: store.runningScriptIDs
+        runningScriptIDs: store.runningScriptIDs,
+        hasPendingAgentResumes: !store.agentResume.pending.isEmpty
       )
     }
     let runtime = ContentRuntime.liveValue

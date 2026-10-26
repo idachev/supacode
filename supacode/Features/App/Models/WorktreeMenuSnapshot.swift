@@ -143,7 +143,8 @@ extension AppFeature.Action {
       .systemNotificationsPermissionFailed, .deeplinkReceived,
       .deeplink, .commandAckTimedOut, .deeplinkConfirmationTimedOut,
       .deeplinkReferenceOpened, .settingsWindowOpened, .settingsRelocationDidNotFinish, .settingsStoreUnreadable,
-      .alert, .deeplinkInputConfirmation:
+      .alert, .deeplinkInputConfirmation,
+      .agentResumePicker, .agentResumePickerRequested:
       return false
     // The background wake queue touches only `agentResume`, never a snapshot input.
     case .agentResumeWakeRequested, .agentResumeWakeTick:
