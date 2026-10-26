@@ -170,6 +170,13 @@ nonisolated struct TerminalClient: Sendable {
     /// `surfaceCreationFailed` so only this resolves the worktree-new ack and
     /// settles creation progress; the worktree then rests with no tabs.
     case initialTabCreationFailed(worktreeID: Worktree.ID, message: String)
+    /// The once-per-launch zmx liveness capture finished: the `supa-*` session
+    /// names alive at launch, or nil when the probe failed or zmx cannot spawn
+    /// (then nothing resumes this launch). Emitted once, before the subscription.
+    case agentResumeLivenessCaptured(liveSessionNames: Set<String>?)
+    /// A content spent its one resume slot (any first spawn). Emitted only for
+    /// a granted claim; a refused one adds nothing to the pending rule.
+    case agentResumeClaimed(ContentID)
   }
 }
 

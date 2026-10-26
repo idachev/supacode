@@ -2002,7 +2002,8 @@ final class WorktreeTerminalManager {
 
   /// Captures which `supa-*` sessions are alive before any restored pane can
   /// attach (an attach upserts its session). Runs once per process; a failed
-  /// probe leaves no gate, so nothing is resumed this launch.
+  /// probe leaves no gate, so nothing is resumed this launch. Emits the result
+  /// once so the reducer can mirror the gate for the pending resume list.
   func captureLaunchSessionLiveness() async {
     guard !didCaptureLaunchSessionLiveness else { return }
     didCaptureLaunchSessionLiveness = true
@@ -2015,21 +2016,38 @@ final class WorktreeTerminalManager {
     if agentResumeGate == nil {
       terminalLogger.warning("resume skipped: liveness probe failed")
     }
+    // The probe runs the bundled zmx without the socket-budget check, while a
+    // spawn needs the budget-gated `executableURL`; without it the seed skips
+    // every pane, so report "no resume" (nil) and leave the gate as it is.
+    let spawnsThroughZmx = zmxClient.executableURL() != nil
+    emit(.agentResumeLivenessCaptured(liveSessionNames: spawnsThroughZmx ? agentResumeGate?.liveSessionNames : nil))
   }
 
   /// Spends the content's one resume slot for this process. The content
   /// builder calls it on every first spawn of any origin, so a content that
-  /// already ran here can never resume into its own live session.
+  /// already ran here can never resume into its own live session. A granted
+  /// claim is emitted so the reducer drops the content from the pending list.
   func claimAgentResume(_ id: ContentID) -> Bool {
-    guard agentResumeGate != nil else {
-      // A failed probe already logged once; only a spawn before any capture
-      // (which the `.appLaunched` ordering rules out) warns here.
-      if !didCaptureLaunchSessionLiveness {
+    switch agentResumeGate?.claimOutcome(id) {
+    case .granted:
+      emit(.agentResumeClaimed(id))
+      return true
+    case .live:
+      terminalLogger.debug("resume claim refused: live content=\(id.rawValue)")
+      return false
+    case .alreadyClaimed:
+      terminalLogger.debug("resume claim refused: already claimed content=\(id.rawValue)")
+      return false
+    case nil:
+      // Only a spawn before any capture (which the `.appLaunched` ordering
+      // rules out) warns; after a failed probe it is a routine refusal.
+      if didCaptureLaunchSessionLiveness {
+        terminalLogger.debug("resume claim refused: no gate content=\(id.rawValue)")
+      } else {
         terminalLogger.warning("resume skipped: liveness not captured")
       }
       return false
     }
-    return agentResumeGate?.claim(id) ?? false
   }
 
   func setNotificationsEnabled(_ enabled: Bool) {

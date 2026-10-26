@@ -15,10 +15,27 @@ nonisolated struct AgentResumeGate: Equatable, Sendable {
     self.claimed = []
   }
 
+  /// Why a claim was granted or refused, so the caller can log the refusal
+  /// and announce a granted claim.
+  nonisolated enum ClaimOutcome: Equatable, Sendable {
+    /// The zmx session was dead at launch and the slot was free; now spent.
+    case granted
+    /// The zmx session was alive at launch: the agent kept running.
+    case live
+    /// The content already spent its slot in this process.
+    case alreadyClaimed
+  }
+
+  /// Checks liveness first, then spends the slot; a live content never lands
+  /// in `claimed`.
+  mutating func claimOutcome(_ id: ContentID) -> ClaimOutcome {
+    guard !liveSessionNames.contains(ZmxSessionID.make(surfaceID: id.rawValue)) else { return .live }
+    return claimed.insert(id).inserted ? .granted : .alreadyClaimed
+  }
+
   /// True only for content whose zmx session was not alive at launch and that
   /// has not claimed a resume yet in this process; a true result spends the slot.
   mutating func claim(_ id: ContentID) -> Bool {
-    guard !liveSessionNames.contains(ZmxSessionID.make(surfaceID: id.rawValue)) else { return false }
-    return claimed.insert(id).inserted
+    claimOutcome(id) == .granted
   }
 }
