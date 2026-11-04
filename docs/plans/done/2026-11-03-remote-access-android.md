@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript Worker (wrangler 4, `--profile personal`), Swift 6 / TCA app code, Kotlin + Compose + OkHttp + xterm.js.
 
-**Spec:** `docs/plans/2026-11-03-remote-access-android-design.md`, protocol `docs/remote-access-protocol.md`.
+**Spec:** `docs/plans/done/2026-11-03-remote-access-android-design.md`, protocol `docs/remote-access-protocol.md`.
 
 ## Global Constraints
 

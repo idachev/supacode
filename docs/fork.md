@@ -407,7 +407,7 @@ and [plans/2026-10-26-agent-resume-picker-design.md](plans/2026-10-26-agent-resu
 
 The fork lets the personal Android app "Supacode Remote" (`github.com/idachev/supacode-remote`)
 list the sidebar's sections and drive any terminal tab, shell or agent. Design:
-`docs/plans/2026-11-03-remote-access-android-design.md`; wire protocol:
+`docs/plans/done/2026-11-03-remote-access-android-design.md`; wire protocol:
 `docs/remote-access-protocol.md`.
 
 - **Relay.** `remote-relay/` is a Cloudflare Worker + Durable Object on Ivan's personal account's

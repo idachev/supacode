@@ -1,7 +1,7 @@
 # Remote access: setup and operations
 
 How to run the remote access relay and connect the personal Android app ("Supacode Remote") to
-Supacode. Design: `docs/plans/2026-11-03-remote-access-android-design.md`. Wire protocol:
+Supacode. Design: `docs/plans/done/2026-11-03-remote-access-android-design.md`. Wire protocol:
 `docs/remote-access-protocol.md`. Fork notes: `docs/fork.md` → "Remote Access From The Android App".
 
 Nothing account-specific is in git: no relay URL, no account ID, no keys. They live only in local,
