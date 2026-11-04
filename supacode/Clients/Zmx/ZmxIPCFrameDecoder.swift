@@ -31,6 +31,13 @@ nonisolated struct ZmxIPCFrameDecoder {
   }
 
   private var buffer: [UInt8] = []
+  private let maxPayloadSize: Int
+
+  /// `maxPayloadSize` defaults to the pty-chunk cap; a client that requests a
+  /// whole-screen `Capture` reply passes a larger one.
+  init(maxPayloadSize: Int = Self.maxPayloadSize) {
+    self.maxPayloadSize = maxPayloadSize
+  }
 
   mutating func decode(_ bytes: [UInt8]) throws -> [ZmxIPCFrame] {
     buffer.append(contentsOf: bytes)
@@ -38,7 +45,7 @@ nonisolated struct ZmxIPCFrameDecoder {
     var offset = 0
     while buffer.count - offset >= Self.headerSize {
       let length = Self.readLength(buffer, at: offset + 1)
-      guard length <= Self.maxPayloadSize else {
+      guard length <= maxPayloadSize else {
         throw DecodeError.payloadTooLarge(length)
       }
       let total = Self.headerSize + Int(length)

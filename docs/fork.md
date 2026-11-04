@@ -403,6 +403,50 @@ and [plans/2026-10-26-agent-resume-picker-design.md](plans/2026-10-26-agent-resu
   `AppFeatureAgentResumeMarkerTests`, `SidebarItemFeatureTests` and
   `TerminalSurfaceRecipeAgentResumeTests` fail if a merge breaks the resume picker.
 
+## Remote Access From The Android App
+
+The fork lets the personal Android app "Supacode Remote" (`github.com/idachev/supacode-remote`)
+list the sidebar's sections and drive any terminal tab, shell or agent. Design:
+`docs/plans/2026-11-03-remote-access-android-design.md`; wire protocol:
+`docs/remote-access-protocol.md`.
+
+- **Relay.** `remote-relay/` is a Cloudflare Worker + Durable Object on Ivan's personal account's
+  `workers.dev` subdomain. Supacode connects out to `/host`, the phone to `/client`; nothing
+  listens on the Mac. Setup, deploy, key rotation and the protections are in
+  `docs/remote-access.md`. The relay URL and account ID are not in git: `wrangler.jsonc` is local
+  (from `wrangler.example.jsonc`), and the URL lives in `~/.config/supacode/remote-access.json`.
+- **Keys.** `remote-relay/scripts/gen-keys.mjs` writes the keys to `~/.config/supacode/` (0600)
+  and prints only their hashes, which are the Worker secrets. Rotation steps:
+  `docs/remote-access.md` → "Rotate the keys".
+- **Host.** `supacode/Features/RemoteAccess/` starts at launch when the config file says
+  `"enabled": true` (never inside a test process). It reads the sidebar structure, layouts and
+  `TerminalTabChrome`; it adds no state to `LayoutFeature`.
+- **Terminal size stays the Mac's.** The host is a passive zmx client: `Capture` for the current
+  screen, broadcast `Output` after it, input with `Send`. It never sends `Init`, `Input` or `Resize`,
+  so the phone never becomes the zmx leader and never resizes the PTY. The phone renders the Mac's
+  columns × rows and zooms.
+- **Suggestions.** `RemoteSuggestionRunner` runs `claude -p --model claude-sonnet-5-5` in a login
+  shell with hooks, MCP, slash commands and tools off, over the last 80 plain lines. The phone only
+  fills its input field with a suggestion.
+
+### How to verify
+
+Run the phone simulator `node remote-relay/scripts/phone-sim.mjs [<contentId> attach]` or the
+Android app. An isolated second Supacode for tests needs
+`CFFIXED_USER_HOME=<dir>` and `ZMX_DIR=<short dir>`; `HOME` alone is ignored by Foundation, and
+without both the second instance shares `~/.supacode` state and zmx sessions with the real app.
+Only the installed app hosts remote access; a build run from DerivedData needs
+`SUPACODE_REMOTE_ACCESS=1` (and then takes the relay's host slot from the installed app).
+
+### Keeping It On Upstream Merges
+
+- The fork-only files are `supacode/Features/RemoteAccess/*`, `remote-relay/*`, `docs/remote-access*.md`, the
+  `remoteAccessHost` lines in `supacode/App/supacodeApp.swift`, `TerminalContent.gridSize` and the
+  `maxPayloadSize` init of `ZmxIPCFrameDecoder`.
+- If upstream changes the zmx IPC tags (`ThirdParty/zmx/src/ipc.zig`: `Send` 18, `Capture` 22) or
+  the `supa-<content-uuid>` session name, `ZmxRemoteStreamTests` and `RemoteAccessProtocolTests`
+  must be updated with them.
+
 ## Machine-Local Makefile Overrides (`Local.mk`)
 
 The `Makefile` includes an optional, gitignored `Local.mk` from the repository root
@@ -451,3 +495,14 @@ Signing every build with the same certificate keeps them.
 macOS may ask for the permissions once more after the first signed install. Later rebuilds
 keep them. A build from the Xcode GUI or a plain `xcodebuild` without these flags is still
 signed ad-hoc.
+
+## License
+
+The fork as a whole stays under the upstream FSL-1.1-ALv2 (the root `LICENSE`, unchanged). The
+fork-only parts that contain no upstream code are under the MIT License:
+
+- `remote-relay/` (the relay Worker; see `remote-relay/LICENSE`)
+- the protocol spec `docs/remote-access-protocol.md`
+
+The Android client ("Supacode Remote") is a separate MIT repository. The Swift host code in
+`supacode/Features/RemoteAccess/` stays under the root `LICENSE`, because it builds on the FSL app.

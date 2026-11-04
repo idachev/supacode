@@ -54,3 +54,10 @@ Supacode is a macOS terminal emulator that for running multiple coding agents in
 - Before you go on your task, check the current git branch name, if it's something generic like an animal name, name it accordingly. Do not do this for main branch
 - Do not open a pull request unless the user explicitly asks for one. Commit to the working branch and let the user decide when to push and open a PR.
 - When the user does ask you to open an issue or pull request, follow the templates in `.github`: fill the bug or feature issue form, and use the pull request template (link the issue with `Closes #<number>`, complete the checklist, and disclose any AI tools you used). A human is the author of record: never set an AI agent as a commit author or co-author.
+
+## Remote Access (fork)
+
+- The Android remote ("Supacode Remote") and its Cloudflare relay: setup, deploy, key rotation and
+  protections are in `docs/remote-access.md`; the wire protocol is `docs/remote-access-protocol.md`.
+- Never commit the relay URL, the Cloudflare account ID or any key. `remote-relay/wrangler.jsonc` is
+  local (copy `wrangler.example.jsonc`); the URL and keys live in `~/.config/supacode/`.

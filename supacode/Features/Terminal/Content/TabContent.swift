@@ -173,6 +173,16 @@ final class TerminalContent: TabContent {
 
   var renderer: NSView? { surfaceView }
 
+  /// The grid the terminal renders at now, else the one it was hibernated at;
+  /// nil before the first surface reported a size. Remote access mirrors it so
+  /// the phone renders the Mac's columns and rows instead of resizing the PTY.
+  var gridSize: (columns: Int, rows: Int)? {
+    guard let grid = surfaceView?.captureFrozenGrid() ?? state.frozenGrid,
+      grid.columns > 0, grid.rows > 0
+    else { return nil }
+    return (grid.columns, grid.rows)
+  }
+
   // Hibernated terminals have no live surface, so nothing is interruptible.
   // A locked tab (completed blocking script) parks its runner alive, so
   // Ghostty keeps reporting confirm-quit for work nothing can lose; the lock

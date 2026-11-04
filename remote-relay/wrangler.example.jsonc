@@ -1,0 +1,32 @@
+{
+  // Template for the relay's Wrangler config. The real `wrangler.jsonc` is
+  // local and gitignored: copy this file to it and pick the Worker name.
+  //   cp wrangler.example.jsonc wrangler.jsonc
+  // The Worker is served at https://<name>.<your workers.dev subdomain>.workers.dev.
+  // Wrangler takes the account from the logged-in profile; when that profile can
+  // see several accounts, add "account_id" here (only in the local copy).
+  // See docs/remote-access.md.
+  "name": "supacode-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  // Optional: serve the relay on your own zone instead, so a WAF rate limiting
+  // rule can stop floods before the Worker runs; then set "workers_dev": false.
+  // "routes": [{ "pattern": "relay.example.com", "custom_domain": true }],
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [
+      { "name": "RELAY", "class_name": "RelayDO" },
+      { "name": "GUARD", "class_name": "GuardDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RelayDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["GuardDO"] }
+  ],
+  // Connection attempts per client IP, per Cloudflare location. The
+  // namespace_id must be unique among the rate limiters of your account.
+  "ratelimits": [
+    { "name": "CONNECT_LIMIT", "namespace_id": "4201", "simple": { "limit": 20, "period": 60 } }
+  ]
+}

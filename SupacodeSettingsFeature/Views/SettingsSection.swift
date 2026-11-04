@@ -9,6 +9,7 @@ public enum SettingsSection: Hashable {
   case shortcuts
   case updates
   case license
+  case remoteAccess
   case forges
   case scripts
   case repository(String)

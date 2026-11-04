@@ -55,7 +55,9 @@ nonisolated struct TerminalClient: Sendable {
       id: UUID? = nil,
       title: String? = nil,
       focusing: Bool = true,
-      anchor: UUID? = nil
+      anchor: UUID? = nil,
+      /// Starts the shell here instead of inheriting the focused terminal's directory.
+      workingDirectory: String? = nil
     )
     case createTabWithInput(
       Worktree,

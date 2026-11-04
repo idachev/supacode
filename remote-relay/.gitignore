@@ -1,0 +1,5 @@
+node_modules/
+.wrangler/
+tmp/
+# Local, account-specific; start from wrangler.example.jsonc.
+wrangler.jsonc

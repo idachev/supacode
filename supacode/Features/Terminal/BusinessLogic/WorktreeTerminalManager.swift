@@ -326,7 +326,8 @@ final class WorktreeTerminalManager {
     tabID: UUID?,
     customTitle: String?,
     focusing: Bool,
-    anchor: UUID? = nil
+    anchor: UUID? = nil,
+    workingDirectory: String? = nil
   ) {
     Task {
       createTabAsync(
@@ -336,7 +337,8 @@ final class WorktreeTerminalManager {
         tabID: tabID,
         customTitle: customTitle,
         focusing: focusing,
-        anchor: anchor
+        anchor: anchor,
+        workingDirectory: workingDirectory
       )
     }
   }
@@ -344,10 +346,12 @@ final class WorktreeTerminalManager {
   // swiftlint:disable:next cyclomatic_complexity
   private func handleTabCommand(_ command: TerminalClient.Command) -> Bool {
     switch command {
-    case .createTab(let worktree, let runSetupScriptIfNew, let id, let title, let focusing, let anchor):
+    case .createTab(
+      let worktree, let runSetupScriptIfNew, let id, let title, let focusing, let anchor, let workingDirectory
+    ):
       scheduleTabCreation(
         in: worktree, runSetupScriptIfNew: runSetupScriptIfNew, input: nil,
-        tabID: id, customTitle: title, focusing: focusing, anchor: anchor)
+        tabID: id, customTitle: title, focusing: focusing, anchor: anchor, workingDirectory: workingDirectory)
     case .createTabWithInput(
       let worktree, let input, let runSetupScriptIfNew, let id, let title, let focusing, let anchor
     ):
@@ -1005,7 +1009,8 @@ final class WorktreeTerminalManager {
     customTitle: String? = nil,
     focusing: Bool = true,
     anchor: UUID? = nil,
-    isInitialTab: Bool = false
+    isInitialTab: Bool = false,
+    workingDirectory: String? = nil
   ) {
     let host = host(for: worktree) { runSetupScriptIfNew }
     // Mint upfront so a title-only request still has a rename target, keeping
@@ -1033,7 +1038,7 @@ final class WorktreeTerminalManager {
       tabID: TabID(rawValue: mintedID),
       contentID: ContentID(rawValue: mintedID),
       title: "\(worktree.name) \(nextTabIndex(in: layout, prefix: worktree.name))",
-      content: .terminal(TerminalContentState(workingDirectory: nil, launch: launch)),
+      content: .terminal(TerminalContentState(workingDirectory: workingDirectory, launch: launch)),
       geometry: ContentRuntime.liveValue.spawnGeometry(near: inheritedFrom, fallback: inheritedFrom),
       select: focusing,
       inheritedFrom: inheritedFrom

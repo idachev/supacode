@@ -1,0 +1,61 @@
+import Clocks
+import ConcurrencyExtras
+import Foundation
+import Testing
+
+@testable import supacode
+
+/// The bounded wait a same-network `hello` takes while the LAN endpoint starts
+/// (`RemoteHostRouter.finishes(_:within:clock:)`), driven by a `TestClock`.
+/// The router itself needs a live app store, so only its helpers are tested here.
+@Suite(.serialized)
+struct RemoteAccessHelloWaitTests {
+  @Test func onlySameNetworkPhonesWaitAndOnlyWhileTheLANStarts() {
+    #expect(RemoteHostRouter.helloWaitsForLAN(sameNetwork: true, lanStarting: true))
+    #expect(!RemoteHostRouter.helloWaitsForLAN(sameNetwork: true, lanStarting: false))
+    #expect(!RemoteHostRouter.helloWaitsForLAN(sameNetwork: false, lanStarting: true))
+    #expect(!RemoteHostRouter.helloWaitsForLAN(sameNetwork: false, lanStarting: false))
+  }
+
+  @Test func aFinishedStartAnswersWithoutWaitingForTheClock() async {
+    let clock = TestClock()
+    let start = Task<Void, Never> {}
+    let ready = await RemoteHostRouter.finishes(start, within: RemoteHostRouter.helloLANWait, clock: clock)
+    #expect(ready)
+  }
+
+  @Test func aStartThatEndsBeforeTheDeadlineCountsAsReady() async {
+    let clock = TestClock()
+    let gate = AsyncStream<Void>.makeStream()
+    let start = Task<Void, Never> { for await _ in gate.stream {} }
+    let wait = Task { await RemoteHostRouter.finishes(start, within: .seconds(3), clock: clock) }
+    await Task.megaYield()
+    await clock.advance(by: .seconds(2))
+    gate.continuation.finish()
+    #expect(await wait.value)
+  }
+
+  @Test func aStartStillRunningAtTheDeadlineGivesUp() async {
+    let clock = TestClock()
+    let gate = AsyncStream<Void>.makeStream()
+    let start = Task<Void, Never> { for await _ in gate.stream {} }
+    let wait = Task { await RemoteHostRouter.finishes(start, within: .seconds(3), clock: clock) }
+    await Task.megaYield()
+    await clock.advance(by: .seconds(3))
+    #expect(await wait.value == false)
+    gate.continuation.finish()
+    await start.value
+  }
+
+  @Test func aCancelledWaitGivesUpAtOnce() async {
+    let clock = TestClock()
+    let gate = AsyncStream<Void>.makeStream()
+    let start = Task<Void, Never> { for await _ in gate.stream {} }
+    let wait = Task { await RemoteHostRouter.finishes(start, within: .seconds(3), clock: clock) }
+    await Task.megaYield()
+    wait.cancel()
+    #expect(await wait.value == false)
+    gate.continuation.finish()
+    await start.value
+  }
+}

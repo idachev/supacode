@@ -182,7 +182,8 @@ final class ZmxSessionWatcher: ZmxSessionWatching {
   /// Connects a blocking AF_UNIX stream socket to the session path. Returns nil
   /// on any failure (missing socket file, no listener); the caller retries.
   /// Captures the failing errno so the give-up log can name the cause.
-  private nonisolated static func connect(to path: String, lastConnectErrno: inout Int32) -> Int32? {
+  /// Shared by `ZmxRemoteStream`, so both passive clients harden the socket alike.
+  nonisolated static func connect(to path: String, lastConnectErrno: inout Int32) -> Int32? {
     let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
     guard socketFD >= 0 else {
       lastConnectErrno = errno

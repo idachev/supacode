@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Supacode Remote Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: one reading column; the three hops (phone, Cloudflare, Mac) keep one colour each everywhere. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1b2330;
+  --muted: #5b6676;
+  --line: #d5dae2;
+  --phone: #6a4fc7;
+  --phone-soft: #efebfb;
+  --edge: #c26a12;
+  --edge-soft: #fbf0e3;
+  --mac: #127a6a;
+  --mac-soft: #e3f4f1;
+  --ext: #8a8f99;
+  --code-bg: #eef1f5;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151c; --surface: #181e27; --fg: #e4e8ee; --muted: #9aa5b5; --line: #2c3542;
+    --phone: #a993f5; --phone-soft: #241d3d; --edge: #f0a04b; --edge-soft: #33240f;
+    --mac: #4fc7b3; --mac-soft: #0f2c28; --ext: #7d8592; --code-bg: #1f2631;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151c; --surface: #181e27; --fg: #e4e8ee; --muted: #9aa5b5; --line: #2c3542;
+  --phone: #a993f5; --phone-soft: #241d3d; --edge: #f0a04b; --edge-soft: #33240f;
+  --mac: #4fc7b3; --mac-soft: #0f2c28; --ext: #7d8592; --code-bg: #1f2631;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.6 var(--font-body);
+}
+main {
+  max-width: 880px; margin: 0 auto;
+  padding-block: 32px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 40px;
+}
+header { display: grid; gap: 10px; }
+.eyebrow { font: 500 12px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font: 600 clamp(28px, 5vw, 40px)/1.1 var(--font-display); margin: 0; text-wrap: balance; }
+h2 { font: 600 22px/1.2 var(--font-display); margin: 0 0 12px; text-wrap: balance; }
+h3 { font: 600 15px/1.3 var(--font-body); margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--muted); font-size: 16px; }
+code, .mono { font-family: var(--font-mono); font-size: .88em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+section { display: grid; gap: 14px; min-width: 0; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.dot.phone { background: var(--phone); } .dot.edge { background: var(--edge); } .dot.mac { background: var(--mac); } .dot.ext { background: var(--ext); }
+
+.diagram { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.diagram svg { display: block; width: 100%; min-width: 600px; height: auto; }
+svg text { font-family: var(--font-body); fill: var(--fg); }
+svg .mono { font-family: var(--font-mono); }
+svg .muted { fill: var(--muted); }
+svg .zone-phone { fill: var(--phone-soft); stroke: var(--phone); }
+svg .zone-edge { fill: var(--edge-soft); stroke: var(--edge); }
+svg .zone-mac { fill: var(--mac-soft); stroke: var(--mac); }
+svg .box { fill: var(--surface); stroke: var(--line); }
+svg .ext-box { fill: var(--surface); stroke: var(--ext); stroke-dasharray: 5 4; }
+svg .label-phone { fill: var(--phone); } svg .label-edge { fill: var(--edge); } svg .label-mac { fill: var(--mac); }
+svg .wire { stroke: var(--fg); stroke-width: 1.6; fill: none; }
+svg .wire-ext { stroke: var(--ext); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+svg .arrowhead { fill: var(--fg); } svg .arrowhead-ext { fill: var(--ext); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+th { font: 500 12px/1.3 var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+.tag { display: inline-block; font: 500 11px/1.6 var(--font-mono); padding: 0 7px; border-radius: 999px; white-space: nowrap; }
+.tag.phone { background: var(--phone-soft); color: var(--phone); }
+.tag.edge { background: var(--edge-soft); color: var(--edge); }
+.tag.mac { background: var(--mac-soft); color: var(--mac); }
+.tag.none { background: var(--code-bg); color: var(--muted); }
+
+.flows { display: grid; gap: 12px; }
+.flow { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 8px; min-width: 0; }
+.flow ol { margin: 0; padding-left: 22px; display: grid; gap: 4px; }
+.flow li { padding-left: 2px; }
+.hop { font: 500 11px/1 var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+
+.notes { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.note { border-left: 3px solid var(--line); padding: 2px 0 2px 12px; display: grid; gap: 4px; min-width: 0; }
+.note.edge { border-left-color: var(--edge); } .note.mac { border-left-color: var(--mac); } .note.phone { border-left-color: var(--phone); }
+.note p { color: var(--muted); font-size: 14px; }
+footer { color: var(--muted); font-size: 13px; }
+a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Supacode fork · remote access · protocol v1</div>
+    <h1>Supacode Remote Architecture</h1>
+    <p class="lede">Как телефонът стига до терминалите на Mac: кои ресурси се вдигат, през кои хопове минава всяко съобщение и какво се пази на всяко място. Адресът на релето и акаунтът не са тук: те живеят само в локалните файлове.</p>
+  </header>
+
+  <section aria-labelledby="map">
+    <h2 id="map">Картата</h2>
+    <div class="legend">
+      <span><i class="dot phone"></i>Телефон</span>
+      <span><i class="dot edge"></i>Cloudflare</span>
+      <span><i class="dot mac"></i>Mac</span>
+      <span><i class="dot ext"></i>Външна услуга</span>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 680 880" role="img" aria-label="Телефонът се свързва към Cloudflare през /client, Supacode на Mac се свързва навън към същото реле през /host; RelayDO свързва двете страни.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="ahx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="arrowhead-ext" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+
+        <!-- Phone zone -->
+        <rect class="zone-phone" x="20" y="16" width="640" height="150" rx="12" stroke-width="1.5"/>
+        <text class="label-phone" x="36" y="42" font-size="13" font-weight="600">ТЕЛЕФОН · Android приложение „Supacode Remote“</text>
+        <rect class="box" x="36" y="58" width="190" height="92" rx="8"/>
+        <text x="50" y="82" font-size="13" font-weight="600">Сесии и tabs</text>
+        <text class="muted" x="50" y="102" font-size="12">Compose UI, секции</text>
+        <text class="muted" x="50" y="120" font-size="12">Active · Pinned · групи</text>
+        <text class="muted" x="50" y="138" font-size="12">list на всеки 3 s</text>
+        <rect class="box" x="245" y="58" width="190" height="92" rx="8"/>
+        <text x="259" y="82" font-size="13" font-weight="600">Терминал</text>
+        <text class="muted" x="259" y="102" font-size="12">xterm.js в WebView</text>
+        <text class="muted" x="259" y="120" font-size="12">размерът на Mac, zoom</text>
+        <text class="muted" x="259" y="138" font-size="12">поле, клавиши, Копирай</text>
+        <rect class="box" x="454" y="58" width="190" height="92" rx="8"/>
+        <text x="468" y="82" font-size="13" font-weight="600">Фонова услуга</text>
+        <text class="muted" x="468" y="102" font-size="12">известие при</text>
+        <text class="muted mono" x="468" y="120" font-size="10.5">awaitingInput</text>
+        <text class="muted" x="468" y="138" font-size="12">ключ: криптиран</text>
+
+        <!-- phone -> edge -->
+        <path class="wire" d="M340 166 L340 214" marker-end="url(#ah)"/>
+        <text x="352" y="188" font-size="12" font-weight="600">WSS /client</text>
+        <text class="muted mono" x="352" y="205" font-size="11">Bearer &lt;client key&gt;</text>
+
+        <!-- Cloudflare zone -->
+        <rect class="zone-edge" x="20" y="218" width="640" height="300" rx="12" stroke-width="1.5"/>
+        <text class="label-edge" x="36" y="244" font-size="13" font-weight="600">CLOUDFLARE · личният акаунт</text>
+        <rect class="box" x="36" y="258" width="300" height="56" rx="8"/>
+        <text x="50" y="281" font-size="13" font-weight="600">DNS + TLS на собствен домейн</text>
+        <text class="muted mono" x="50" y="300" font-size="10.5">relay.&lt;zone&gt; · Universal SSL</text>
+        <rect class="box" x="344" y="258" width="300" height="56" rx="8"/>
+        <text x="358" y="281" font-size="13" font-weight="600">WAF rate limiting правило</text>
+        <text class="muted" x="358" y="300" font-size="12">10 заявки / 10 s / IP → 429</text>
+        <rect class="box" x="36" y="326" width="608" height="74" rx="8"/>
+        <text x="50" y="349" font-size="13" font-weight="600">Worker supacode-relay · проверка на входа</text>
+        <text class="muted" x="50" y="369" font-size="12">CONNECT_LIMIT: 20 опита / мин / IP · GuardDO: 5 грешни ключа / 10 мин → блок 1 ч</text>
+        <text class="muted" x="50" y="387" font-size="12">SHA-256 на ключа срещу secret, сравнение с постоянно време · 401 / 403</text>
+        <rect class="box" x="36" y="412" width="608" height="90" rx="8"/>
+        <text x="50" y="435" font-size="13" font-weight="600">RelayDO · един Durable Object, hibernation WebSockets</text>
+        <text class="muted" x="50" y="455" font-size="12">дава connId на всеки телефон, добавя и маха префикса</text>
+        <text class="muted mono" x="50" y="473" font-size="10.5">&lt;connId&gt;\n&lt;json&gt;</text>
+        <text class="muted" x="50" y="491" font-size="12">ping → pong без събуждане · един host, новият сменя стария</text>
+
+        <!-- mac -> edge (outbound) -->
+        <path class="wire" d="M340 566 L340 522" marker-end="url(#ah)"/>
+        <text x="352" y="542" font-size="12" font-weight="600">WSS /host · изходяща</text>
+        <text class="muted mono" x="352" y="559" font-size="11">Bearer &lt;host key&gt;</text>
+
+        <!-- Mac zone -->
+        <rect class="zone-mac" x="20" y="570" width="640" height="214" rx="12" stroke-width="1.5"/>
+        <text class="label-mac" x="36" y="596" font-size="13" font-weight="600">MAC · Supacode от /Applications (няма отворен порт)</text>
+        <rect class="box" x="36" y="610" width="608" height="50" rx="8"/>
+        <text x="50" y="631" font-size="13" font-weight="600">RemoteRelayConnection → RemoteHostRouter</text>
+        <text class="muted" x="50" y="649" font-size="12">reconnect с backoff, ping 30 s, тишина 75 s = нова връзка</text>
+        <rect class="box" x="36" y="672" width="190" height="96" rx="8"/>
+        <text x="50" y="695" font-size="13" font-weight="600">Състояние</text>
+        <text class="muted" x="50" y="714" font-size="12">sidebar структура</text>
+        <text class="muted" x="50" y="732" font-size="12">layouts, tabs</text>
+        <text class="muted" x="50" y="750" font-size="12">TabChrome: агенти</text>
+        <rect class="box" x="245" y="672" width="190" height="96" rx="8"/>
+        <text x="259" y="695" font-size="13" font-weight="600">zmx сесии</text>
+        <text class="muted mono" x="259" y="714" font-size="10.5">supa-&lt;content-uuid&gt;</text>
+        <text class="muted" x="259" y="732" font-size="12">пасивен клиент:</text>
+        <text class="muted mono" x="259" y="750" font-size="10.5">Capture·Output·Send</text>
+        <rect class="box" x="454" y="672" width="190" height="96" rx="8"/>
+        <text x="468" y="695" font-size="13" font-weight="600">Предложи</text>
+        <text class="muted mono" x="468" y="714" font-size="10.5">claude -p</text>
+        <text class="muted" x="468" y="732" font-size="12">Sonnet 5.5, login-ът</text>
+        <text class="muted" x="468" y="750" font-size="12">на Claude Code</text>
+
+        <!-- external -->
+        <path class="wire-ext" d="M549 768 L549 818" marker-end="url(#ahx)"/>
+        <rect class="ext-box" x="360" y="822" width="300" height="44" rx="8"/>
+        <text x="374" y="842" font-size="13" font-weight="600">Anthropic API</text>
+        <text class="muted" x="374" y="859" font-size="12">последните 80 реда, само при „Предложи“</text>
+      </svg>
+    </div>
+  </section>
+
+  <section aria-labelledby="infra">
+    <h2 id="infra">Какво се вдига като инфраструктура</h2>
+    <p>Всичко в Cloudflare е на Free плана. Ресурсите се правят с <code>wrangler deploy</code> от <code>remote-relay/</code>, а WAF правилото и домейнът са в зоната. Стъпките са в <code>docs/remote-access.md</code>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Ресурс</th><th>Къде</th><th>Как се създава</th><th>Какво пази</th></tr></thead>
+        <tbody>
+          <tr><td><code>supacode-relay</code> Worker</td><td><span class="tag edge">Cloudflare</span></td><td><code>wrangler deploy</code>, конфиг от <code>wrangler.example.jsonc</code></td><td>нищо; само код</td></tr>
+          <tr><td><code>RelayDO</code></td><td><span class="tag edge">Cloudflare</span></td><td>migration v1, SQLite клас, един обект <code>default</code></td><td>отворените WebSockets в паметта; терминалният поток не се записва</td></tr>
+          <tr><td><code>GuardDO</code></td><td><span class="tag edge">Cloudflare</span></td><td>migration v2, един обект на клиентски IP</td><td>времената на грешните ключове; изтрива се сам след блока</td></tr>
+          <tr><td><code>CONNECT_LIMIT</code></td><td><span class="tag edge">Cloudflare</span></td><td>Workers Rate Limiting binding</td><td>брояч по IP за 60 s</td></tr>
+          <tr><td>Secrets <code>HOST_KEY_SHA256</code>, <code>CLIENT_KEY_SHA256</code></td><td><span class="tag edge">Cloudflare</span></td><td><code>wrangler secret put</code></td><td>само хешовете на ключовете</td></tr>
+          <tr><td>Custom domain и DNS запис</td><td><span class="tag edge">Cloudflare зона</span></td><td>route с <code>custom_domain: true</code>; <code>workers.dev</code> е изключен</td><td>CNAME към Worker-а, сертификат от Universal SSL</td></tr>
+          <tr><td>WAF rate limiting правило</td><td><span class="tag edge">Cloudflare зона</span></td><td>единственото правило на Free плана</td><td>брояч по IP за 10 s</td></tr>
+          <tr><td><code>remote-access.json</code>, <code>remote-client-key.txt</code></td><td><span class="tag mac">Mac</span></td><td><code>gen-keys.mjs --relay …</code>, права 0600</td><td>адресът, host ключът, ключът за връзка</td></tr>
+          <tr><td>Supacode с RemoteAccess</td><td><span class="tag mac">Mac</span></td><td>само копието в <code>/Applications</code>; иначе <code>SUPACODE_REMOTE_ACCESS=1</code></td><td>нищо ново на диска</td></tr>
+          <tr><td>APK</td><td><span class="tag phone">Телефон</span></td><td>debug build, извън Play Store</td><td>ключът за връзка, криптиран с Android Keystore</td></tr>
+          <tr><td>Няма</td><td><span class="tag none">—</span></td><td>tunnel, отворен порт, база данни, FCM</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="flows">
+    <h2 id="flows">Как минават данните</h2>
+    <p>Всяко съобщение е JSON в текстов WebSocket frame. Релето не чете съдържанието; то само слага и маха <code>&lt;connId&gt;\n</code>. Стъпките са в реда, в който се случват.</p>
+    <div class="flows">
+      <article class="flow">
+        <h3>Свързване</h3>
+        <div class="hop">Mac → Cloudflare ← телефон</div>
+        <ol>
+          <li>Supacode отваря <code>wss://…/host</code> с host ключа. Телефонът отваря <code>wss://…/client</code> с клиентския ключ от ключа за връзка.</li>
+          <li>WAF правилото и <code>CONNECT_LIMIT</code> режат залпове, <code>GuardDO</code> пази от налучкване, Worker-ът сравнява SHA-256 на ключа със secret-а.</li>
+          <li><code>RelayDO</code> приема телефона, дава му connId, праща му <code>{"t":"relay","hostOnline":…}</code> и казва на Mac <code>conn.open</code>.</li>
+        </ol>
+      </article>
+      <article class="flow">
+        <h3>Списък на сесиите</h3>
+        <div class="hop">телефон → RelayDO → Mac → обратно</div>
+        <ol>
+          <li>Телефонът праща <code>list</code> на всеки 3 s, докато екранът е отворен.</li>
+          <li>Mac сглобява отговора от sidebar структурата, layouts на worktrees и <code>TabChrome</code> на всеки tab: секции, групи, заглавия, агенти и тяхното състояние.</li>
+        </ol>
+      </article>
+      <article class="flow">
+        <h3>Жив терминал</h3>
+        <div class="hop">телефон ⇄ RelayDO ⇄ Mac ⇄ zmx</div>
+        <ol>
+          <li><code>attach</code>: Mac пита zmx за shell pid-а (<code>Info</code>), чете размера на PTY устройството и отговаря <code>attached</code> с колони и редове.</li>
+          <li>Mac се свързва към сокета <code>supa-&lt;content-uuid&gt;</code> като пасивен клиент и иска <code>Capture</code>: текущия екран и до 500 реда история като VT.</li>
+          <li>Живият изход идва като <code>Output</code>, събира се до 8 ms или 64 KiB, кодира се в base64 и отива като <code>out</code>.</li>
+          <li>Въвеждането от телефона (<code>input</code>, UTF-8 в base64) влиза в PTY-то през <code>Send</code>. Телефонът никога не става водещ клиент, затова размерът на Mac не се мени.</li>
+        </ol>
+      </article>
+      <article class="flow">
+        <h3>„Предложи“</h3>
+        <div class="hop">телефон → Mac → Anthropic → обратно</div>
+        <ol>
+          <li>Mac взима последните 80 реда като обикновен текст (<code>Capture</code>, plain).</li>
+          <li>Пуска <code>claude -p --model claude-sonnet-5-5</code> с изключени hooks, MCP и tools. Това е единственото място, където терминален текст излиза към трета страна.</li>
+          <li>До 3 предложения се връщат и само попълват полето на телефона.</li>
+        </ol>
+      </article>
+      <article class="flow">
+        <h3>Известия и поддръжка на връзката</h3>
+        <div class="hop">телефон ⇄ RelayDO ⇄ Mac</div>
+        <ol>
+          <li>Фоновата услуга на телефона пита <code>list</code> на всеки 15 s и показва известие, щом агент мине в <code>awaitingInput</code>.</li>
+          <li>Двете страни пращат <code>ping</code> на 30 s; релето отговаря <code>pong</code> само, без да буди Durable Object. Mac без отговор 75 s отваря нова връзка.</li>
+        </ol>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="where">
+    <h2 id="where">Какво къде се пази</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Данни</th><th>Телефон</th><th>Cloudflare</th><th>Mac</th></tr></thead>
+        <tbody>
+          <tr><td>Клиентски ключ</td><td>криптиран</td><td>само SHA-256</td><td><code>remote-client-key.txt</code></td></tr>
+          <tr><td>Host ключ</td><td>—</td><td>само SHA-256</td><td><code>remote-access.json</code></td></tr>
+          <tr><td>Терминален изход</td><td>xterm.js история, 5000 реда в паметта</td><td>минава през паметта, не се записва</td><td>zmx сесията</td></tr>
+          <tr><td>Въвеждане</td><td>докато се праща</td><td>минава през паметта</td><td>PTY</td></tr>
+          <tr><td>Списък на сесиите</td><td>последният отговор</td><td>минава през паметта</td><td>състоянието на Supacode</td></tr>
+          <tr><td>IP на клиент с грешни ключове</td><td>—</td><td><code>GuardDO</code>, до 1 ч</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="bounds">
+    <h2 id="bounds">Граници на доверие</h2>
+    <div class="notes">
+      <div class="note edge"><h3>Cloudflare вижда трафика</h3><p>TLS свършва на ръба на Cloudflare, така че Worker-ът вижда съобщенията в чист вид. Нищо от тях не се записва.</p></div>
+      <div class="note mac"><h3>Mac не слуша</h3><p>Supacode само се свързва навън. Без валиден ключ никой не стига до сесиите, а грешните опити се блокират по IP.</p></div>
+      <div class="note phone"><h3>APK без адрес</h3><p>Адресът и ключът идват заедно в ключа за връзка при първото пускане. Изгубен телефон: сменяш ключовете и старият спира веднага.</p></div>
+    </div>
+  </section>
+
+  <footer>Източници: <code>docs/remote-access.md</code>, <code>docs/remote-access-protocol.md</code>, <code>remote-relay/</code>, <code>supacode/Features/RemoteAccess/</code>.</footer>
+</main>
+</body>
+</html>

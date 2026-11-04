@@ -45,6 +45,8 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
   }
   var terminalManager: WorktreeTerminalManager?
   var globalHotkeyMonitor: GlobalHotkeyMonitor?
+  /// The phone-facing remote access host; nil unless configured.
+  var remoteAccessHost: RemoteAccessHostController?
   private var bufferedDeeplinkURLs: [URL] = []
   private var physicalShortcutMonitor: Any?
 
@@ -58,6 +60,7 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
     // Release the global Carbon registration explicitly rather than leaning on
     // deinit timing.
     globalHotkeyMonitor?.tearDown()
+    remoteAccessHost?.stop()
     // Drop the queued debounce timers; a flush already on the writer's serial
     // queue still completes, but the terminal write below runs on that same queue
     // and is therefore ordered strictly after it, never regressed by a late flush.
@@ -236,6 +239,13 @@ struct SupacodeApp: App {
       appStore?.state.agentPresence.agentsBySurface() ?? [:]
     }
     Self.configureSocketHandlers(terminalManager: terminalManager, store: appStore)
+    // Settings restarts the host through the controller when the config changes.
+    let remoteAccessHost = RemoteAccessHostController.shared
+    remoteAccessHost.configure { [weak appStore, weak terminalManager] in
+      guard let appStore, let terminalManager else { return nil }
+      return RemoteHostRouter.startIfConfigured(store: appStore, terminalManager: terminalManager)
+    }
+    appDelegate.remoteAccessHost = remoteAccessHost
   }
 
   @MainActor

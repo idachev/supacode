@@ -173,6 +173,9 @@ private struct SettingsSidebarView: View {
       Label("Updates", systemImage: "arrow.down.circle")
         .appFont(.body)
         .tag(SettingsSection.updates)
+      Label("Remote Access", systemImage: "iphone.radiowaves.left.and.right")
+        .appFont(.body)
+        .tag(SettingsSection.remoteAccess)
 
       ForEach(settingsFile.repositoryGroups) { group in
         RepositoryGroupHeader(
@@ -252,6 +255,7 @@ private struct SettingsDetailView: View {
   @Bindable var settingsStore: StoreOf<SettingsFeature>
   let updatesStore: StoreOf<UpdatesFeature>
   let licenseStore: StoreOf<LicenseFeature>
+  let remoteAccessStore: StoreOf<RemoteAccessFeature>
   @Environment(GhosttyShortcutManager.self) private var ghosttyShortcuts: GhosttyShortcutManager?
 
   var body: some View {
@@ -276,6 +280,8 @@ private struct SettingsDetailView: View {
       LicenseSettingsView(store: licenseStore)
     case .updates:
       UpdatesSettingsView(settingsStore: settingsStore, updatesStore: updatesStore)
+    case .remoteAccess:
+      RemoteAccessSettingsView(store: remoteAccessStore)
     case .forges:
       ForgesSettingsView(store: settingsStore)
     case .scripts:
@@ -364,7 +370,8 @@ struct SettingsView: View {
         selectedRepositorySummary: selectedRepositorySummary,
         settingsStore: settingsStore,
         updatesStore: updatesStore,
-        licenseStore: store.scope(state: \.license, action: \.license)
+        licenseStore: store.scope(state: \.license, action: \.license),
+        remoteAccessStore: store.scope(state: \.remoteAccess, action: \.remoteAccess)
       )
     }
     .toolbar {
