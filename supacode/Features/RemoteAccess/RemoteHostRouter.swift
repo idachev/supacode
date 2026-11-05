@@ -13,6 +13,9 @@ nonisolated private let routerLogger = SupaLogger("RemoteAccess")
 @MainActor
 final class RemoteHostRouter {
   static let fallbackGrid = (columns: 160, rows: 48)
+  /// The largest grid a phone-opened tab starts at while the Mac does not show
+  /// it; it would otherwise take the whole Mac window or screen.
+  static let newTabGrid = (columns: 120, rows: 40)
   static let sizePollInterval: Duration = .seconds(2)
   static let suggestionContextRows = 80
   static let wakeTimeout: Duration = .seconds(6)
@@ -450,7 +453,12 @@ final class RemoteHostRouter {
       let waitID = UUID()
       let wait = Task { [weak self] in
         let contentID = await Self.poll(every: Self.tabNewPollInterval, within: Self.tabNewTimeout, clock: clock) {
-          [weak self] in self?.source.contentID(ofTab: tabID, in: worktreeRaw)
+          [weak self] () -> UUID? in
+          guard let self, let contentID = self.source.contentID(ofTab: tabID, in: worktreeRaw) else { return nil }
+          // Answer only once the grid is capped, so `attached` already reports it.
+          let capped = self.source.capNewTabGrid(
+            contentID: contentID, columns: Self.newTabGrid.columns, rows: Self.newTabGrid.rows)
+          return capped ? contentID : nil
         }
         guard let self, !Task.isCancelled else { return }
         self.tabNewWaits[connID]?[waitID] = nil

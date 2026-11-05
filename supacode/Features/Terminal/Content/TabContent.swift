@@ -183,6 +183,12 @@ final class TerminalContent: TabContent {
     return (grid.columns, grid.rows)
   }
 
+  /// Caps the grid of a terminal the Mac has not shown yet (a tab the phone
+  /// opened). Returns false while there is no live surface.
+  func capUnmountedGrid(maxColumns: Int, maxRows: Int) -> Bool {
+    surfaceView?.capUnmountedGrid(maxColumns: maxColumns, maxRows: maxRows) ?? false
+  }
+
   // Hibernated terminals have no live surface, so nothing is interruptible.
   // A locked tab (completed blocking script) parks its runner alive, so
   // Ghostty keeps reporting confirm-quit for work nothing can lose; the lock

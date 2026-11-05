@@ -5,6 +5,32 @@ import Testing
 
 @MainActor
 struct TerminalRenderingPolicyTests {
+  @Test func gridCapRemovesWholeCellsAndKeepsThePadding() {
+    // 403 × 110 cells of 8 × 16 px plus a 6 px padding remainder on each axis.
+    let capped = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 403 * 8 + 6, height: 110 * 16 + 6),
+      grid: (403, 110), cell: CGSize(width: 8, height: 16), limit: (120, 40))
+    #expect(capped == CGSize(width: 120 * 8 + 6, height: 40 * 16 + 6))
+  }
+
+  @Test func gridCapShrinksOnlyTheAxisThatIsTooBig() {
+    let capped = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 1606, height: 486),
+      grid: (200, 30), cell: CGSize(width: 8, height: 16), limit: (120, 40))
+    #expect(capped == CGSize(width: 966, height: 486))
+  }
+
+  @Test func gridCapLeavesAFittingOrUnmeasuredGridAlone() {
+    let fitting = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 806, height: 486),
+      grid: (100, 30), cell: CGSize(width: 8, height: 16), limit: (120, 40))
+    #expect(fitting == nil)
+    let unmeasured = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 3200, height: 1800),
+      grid: (403, 110), cell: CGSize(width: 0, height: 0), limit: (120, 40))
+    #expect(unmeasured == nil)
+  }
+
   @Test func resizeSkipsOnlySizesThatWereActuallyApplied() {
     let applied = CGSize(width: 1600, height: 1200)
     let decision = GhosttySurfaceView.ResizePolicy.decision(

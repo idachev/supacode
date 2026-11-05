@@ -125,6 +125,9 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
   once the new terminal tab exists and its content can be attached.
 - The Mac opens one new terminal tab (the default shell, the worktree's directory) in that
   worktree, as its "new tab" action does. It does not change which worktree the Mac window shows.
+- The new terminal starts at most 120 × 40, not at the size of the whole Mac window. The cap
+  holds while the Mac does not show the tab; once the Mac shows it, the terminal takes its
+  pane's size and the phone gets a `size` message.
 - An unknown or archived worktree, or a tab that does not start within 10 s, gives
   `{"t":"error","id":4,"message":"…"}`.
 - The phone attaches to `contentId` itself. There is no `tab.close`: the user ends the shell

@@ -1076,6 +1076,47 @@ final class GhosttySurfaceView: NSView, Identifiable {
     }
   }
 
+  /// Caps a grid by whole cells, keeping the padding remainder.
+  enum GridCap {
+    typealias Grid = (columns: Int, rows: Int)
+
+    /// The backing size that renders at most `limit`; nil when the grid already
+    /// fits or the cell metrics are still unknown.
+    static func backingSize(current: CGSize, grid: Grid, cell: CGSize, limit: Grid) -> CGSize? {
+      guard cell.width > 0, cell.height > 0, grid.columns > limit.columns || grid.rows > limit.rows else { return nil }
+      let extraColumns = max(0, grid.columns - limit.columns)
+      let extraRows = max(0, grid.rows - limit.rows)
+      return CGSize(
+        width: current.width - CGFloat(extraColumns) * cell.width,
+        height: current.height - CGFloat(extraRows) * cell.height
+      )
+    }
+  }
+
+  /// Shrinks a surface that was never in a window to at most `maxColumns` ×
+  /// `maxRows`. Once the view is mounted it follows its pane again, so the cap
+  /// only shapes a terminal nobody sees on the Mac. Returns false while the
+  /// core surface or its cell metrics do not exist yet.
+  func capUnmountedGrid(maxColumns: Int, maxRows: Int) -> Bool {
+    guard let surface else { return false }
+    guard window == nil, !hasBeenInWindow else { return true }
+    let size = ghostty_surface_size(surface)
+    // Unknown cell metrics cannot be capped yet; the caller retries.
+    guard size.cell_width_px > 0, size.cell_height_px > 0 else { return false }
+    guard
+      let capped = GridCap.backingSize(
+        current: CGSize(width: CGFloat(size.width_px), height: CGFloat(size.height_px)),
+        grid: (Int(size.columns), Int(size.rows)),
+        cell: CGSize(width: CGFloat(size.cell_width_px), height: CGFloat(size.cell_height_px)),
+        limit: (maxColumns, maxRows)
+      )
+    else { return true }
+    // Off-window backing conversion is 1x, so the point frame is the pixel size.
+    setFrameSize(capped)
+    updateSurfaceSize()
+    return true
+  }
+
   func updateCellSize(width: UInt32, height: UInt32) {
     cellSize = CGSize(width: CGFloat(width), height: CGFloat(height))
     scrollWrapper?.updateSurfaceSize()

@@ -99,6 +99,13 @@ final class RemoteSnapshotSource {
     return content?.gridSize
   }
 
+  /// Caps a phone-opened terminal the Mac does not show, so the phone does not
+  /// get the whole Mac window's width. False while the terminal has no surface.
+  func capNewTabGrid(contentID: UUID, columns: Int, rows: Int) -> Bool {
+    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    return content?.capUnmountedGrid(maxColumns: columns, maxRows: rows) ?? false
+  }
+
   /// Whether the terminal refuses input (a completed blocking script's parked
   /// shell); the phone must not type where the Mac would not.
   func isReadOnly(contentID: UUID) -> Bool {
