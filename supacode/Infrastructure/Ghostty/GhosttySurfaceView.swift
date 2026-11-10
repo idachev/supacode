@@ -282,8 +282,9 @@ final class GhosttySurfaceView: NSView, Identifiable {
     } else {
       initialInputCString = nil
     }
-    // Off-window backing conversion is 1x, so a point frame equal to the intended
-    // pixel size makes ghostty_surface_new spawn the PTY at an honest grid (#780).
+    // Off-window the frame is in backing pixels (`surfaceBackingSize` does not
+    // convert it), so a frame equal to the intended pixel size makes
+    // ghostty_surface_new spawn the PTY at an honest grid (#780).
     super.init(frame: NSRect(origin: .zero, size: initialGeometry.pixelSize))
     wantsLayer = true
     bridge.surfaceView = self
@@ -1036,10 +1037,11 @@ final class GhosttySurfaceView: NSView, Identifiable {
 
   func updateSurfaceSize(contentSize: CGSize? = nil) {
     guard let surface else { return }
-    // Off-window backing conversion is 1x; re-measuring a detached view would
-    // halve the applied size and poison the hibernation freeze.
+    // A detached view that was once mounted keeps its point frame, which
+    // `surfaceBackingSize` would not convert; re-measuring it would shrink the
+    // applied size and poison the hibernation freeze.
     guard window != nil || !hasBeenInWindow else { return }
-    let backingSize = convertToBacking(contentSize ?? bounds.size)
+    let backingSize = Self.surfaceBackingSize(of: self, size: contentSize ?? bounds.size)
     // A remote client's grid holds while the pane keeps the size it had then.
     if requestedGridHold.keeps(layoutBackingSize: backingSize) { return }
     let currentSize = ghostty_surface_size(surface)
@@ -1052,6 +1054,15 @@ final class GhosttySurfaceView: NSView, Identifiable {
     guard decision == .apply else { return }
     lastAppliedBackingSize = backingSize
     pushSurfaceSize(backingSize)
+  }
+
+  /// The backing pixel size of `size` in `view`'s coordinates. In a window it
+  /// converts at the window's scale. Without a window AppKit's
+  /// `convertToBacking` multiplies by the main screen's scale (2x on Retina),
+  /// but a never-mounted surface's frame is already in pixels (`init`,
+  /// `capUnmountedGrid`), so off-window the size passes through unchanged.
+  static func surfaceBackingSize(of view: NSView, size: CGSize) -> CGSize {
+    view.window != nil ? view.convertToBacking(size) : size
   }
 
   private func pushSurfaceSize(_ backingSize: CGSize) {
@@ -1189,7 +1200,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
         exact: exact
       )
     else { return true }
-    // Off-window backing conversion is 1x, so the point frame is the pixel size.
+    // Off-window the frame is the pixel size (`surfaceBackingSize` does not convert it).
     setFrameSize(capped)
     updateSurfaceSize()
     return true

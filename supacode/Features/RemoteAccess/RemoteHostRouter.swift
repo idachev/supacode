@@ -542,29 +542,68 @@ final class RemoteHostRouter {
       let first = attempt()
       let token = UUID()
       let wait = Task { [weak self] in
-        let settled = await Self.settleResize(
-          first: first, clock: clock, wake: { source.wake(contentID: request.contentID) }, attempt: attempt)
-        let outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
-        switch settled {
-        case .failed(let failure):
-          outcome = .failure(failure)
-        case .applied, .unchanged:
-          // Also for an unchanged grid: the PTY may still be taking an earlier resize.
-          let confirmation = await Self.confirmResize(
-            grid: (columns: request.columns, rows: request.rows),
-            interval: Self.resizeSettle, within: Self.resizeConfirmTimeout, clock: clock,
-            readSize: { await Self.ptySize(socketPath: socketPath) })
-          outcome = .success(confirmation)
-        }
-        guard !Task.isCancelled, let self else { return }
-        self.resizeWaits.finished(contentID: request.contentID, token: token)
-        self.finishResize(connID: connID, request: request, requestID: requestID, outcome: outcome)
+        await Self.runResize(
+          request: request, first: first, clock: clock,
+          wake: { source.wake(contentID: request.contentID) }, attempt: attempt,
+          readSize: { await Self.ptySize(socketPath: socketPath) },
+          finish: { outcome in
+            guard let self else { return }
+            self.resizeWaits.finished(contentID: request.contentID, token: token)
+            self.finishResize(connID: connID, request: request, requestID: requestID, outcome: outcome)
+          })
       }
       resizeWaits.start(contentID: request.contentID, connID: connID, token: token, task: wait)
     }
   }
 
-  /// Answers a settled `resize`, unless the phone left that terminal meanwhile.
+  /// Settles one `resize` (`settleResize`), confirms the size on the session
+  /// PTY (`confirmResize`) and hands the outcome to `finish`, unless a newer
+  /// `resize` of that terminal or the requester's detach cancelled the wait
+  /// meanwhile: a cancelled request gets no reply and no redraw.
+  static func runResize(
+    request: RemoteResizeRequest,
+    first: RemoteResizeAttempt,
+    clock: any Clock<Duration>,
+    wake: @MainActor () -> Bool,
+    attempt: @escaping @MainActor @Sendable () -> RemoteResizeAttempt,
+    readSize: @escaping @Sendable () async -> (columns: Int, rows: Int)?,
+    finish: @MainActor (Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>) -> Void
+  ) async {
+    let settled = await settleResize(first: first, clock: clock, wake: wake, attempt: attempt)
+    let outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
+    switch settled {
+    case .failed(let failure):
+      outcome = .failure(failure)
+    case .applied, .unchanged:
+      // Also for an unchanged grid: the PTY may still be taking an earlier resize.
+      let confirmation = await confirmResize(
+        grid: (columns: request.columns, rows: request.rows),
+        interval: resizeSettle, within: resizeConfirmTimeout, clock: clock, readSize: readSize)
+      outcome = .success(confirmation)
+    }
+    guard !Task.isCancelled else { return }
+    finish(outcome)
+  }
+
+  /// Ctrl+L (form feed): the redraw key of shells and TUIs (Claude Code, vim, htop).
+  nonisolated static let redrawKey: [UInt8] = [0x0C]
+
+  /// The input a settled `resize` writes to the terminal (ЗД9): Ctrl+L once
+  /// the PTY confirmed the requested size, also when the grid already had it
+  /// (the client asks for a resize when the screen looks wrong, so it doubles
+  /// as a redraw); nothing for a `resize_failed` outcome or a read-only terminal.
+  nonisolated static func redrawInput(
+    for outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>,
+    isReadOnly: Bool
+  ) -> [UInt8] {
+    guard !isReadOnly, case .success(.matched) = outcome else { return [] }
+    return redrawKey
+  }
+
+  /// Answers a settled `resize`, unless the phone left that terminal meanwhile,
+  /// then writes the redraw key (`redrawInput(for:isReadOnly:)`) once, as an
+  /// `input` would: through the requester's stream, or the first other open
+  /// stream of that terminal when the requester's is not open (`writeOnce`).
   private func finishResize(
     connID: String,
     request: RemoteResizeRequest,
@@ -593,6 +632,27 @@ final class RemoteHostRouter {
         self.reply(connID, error)
       }
     }
+    let redraw = Self.redrawInput(for: outcome, isReadOnly: source.isReadOnly(contentID: request.contentID))
+    guard !redraw.isEmpty else { return }
+    // The requester's stream may not be open yet (an `attach` still measuring
+    // the grid) or already closed; any other phone's stream on that terminal
+    // reaches the same zmx session.
+    let others = clients.compactMap { other, entry -> (String, ZmxRemoteStream)? in
+      guard other != connID, case .some(let shown) = entry, shown.contentID == request.contentID else { return nil }
+      return (other, shown.stream)
+    }
+    .sorted { $0.0 < $1.0 }
+    .map(\.1)
+    let senders = ([attachment.stream] + others).map { stream in { (bytes: [UInt8]) in stream.send(bytes) } }
+    if !Self.writeOnce(redraw, through: senders) {
+      routerLogger.info("resize from \(connID): no open stream took the redraw input")
+    }
+  }
+
+  /// Writes `bytes` through the first of `senders` that takes them (each is a
+  /// stream's `send`), so the terminal gets them once. False when none did.
+  nonisolated static func writeOnce(_ bytes: [UInt8], through senders: [([UInt8]) -> Bool]) -> Bool {
+    senders.contains { send in send(bytes) }
   }
 
   /// One frame a settled `resize` sends.

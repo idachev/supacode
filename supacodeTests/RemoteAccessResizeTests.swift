@@ -287,6 +287,165 @@ struct RemoteAccessResizeTests {
     #expect(waits.pendingConnID(contentID: Self.contentID) == "A")
   }
 
+  // MARK: - Redraw after a confirmed resize (ЗД9)
+
+  /// Runs one `resize` the way the router does and records the input its
+  /// settled outcome writes (`redrawInput`), per finished request.
+  private static func runResize(
+    first: RemoteResizeAttempt,
+    clock: TestClock<Duration>,
+    isReadOnly: Bool = false,
+    wake: @escaping @MainActor @Sendable () -> Bool = { true },
+    readSize: @escaping @Sendable () async -> (columns: Int, rows: Int)?,
+    written: LockIsolated<[[UInt8]]>
+  ) -> Task<Void, Never> {
+    Task { @MainActor in
+      await RemoteHostRouter.runResize(
+        request: Self.request, first: first, clock: clock, wake: wake, attempt: { first },
+        readSize: readSize,
+        finish: { outcome in
+          let input = RemoteHostRouter.redrawInput(for: outcome, isReadOnly: isReadOnly)
+          written.withValue { $0.append(input) }
+        })
+    }
+  }
+
+  @Test func aConfirmedResizeWritesCtrlLOnce() async {
+    let clock = TestClock()
+    let reads = LockIsolated(0)
+    let written = LockIsolated<[[UInt8]]>([])
+    let wait = Self.runResize(
+      first: .applied, clock: clock,
+      readSize: {
+        reads.withValue { $0 += 1 }
+        return reads.value >= 2 ? (columns: 139, rows: 56) : (columns: 122, rows: 47)
+      },
+      written: written)
+    await Task.megaYield()
+    await clock.advance(by: RemoteHostRouter.resizeSettle)
+    await wait.value
+    #expect(written.value == [[0x0C]])
+    // Further reads and time do not send it again.
+    await clock.advance(by: RemoteHostRouter.resizeConfirmTimeout)
+    #expect(written.value == [[0x0C]])
+  }
+
+  @Test func aConfirmedSameSizeResizeAlsoWritesCtrlL() async {
+    let clock = TestClock()
+    let written = LockIsolated<[[UInt8]]>([])
+    let wait = Self.runResize(
+      first: .unchanged, clock: clock, readSize: { (columns: 139, rows: 56) }, written: written)
+    await wait.value
+    #expect(written.value == [[0x0C]])
+  }
+
+  @Test func aResizeThatFailsToApplyWritesNothing() async {
+    let clock = TestClock()
+    let written = LockIsolated<[[UInt8]]>([])
+    let wait = Self.runResize(
+      first: .noSurface, clock: clock, wake: { false }, readSize: { (columns: 139, rows: 56) }, written: written)
+    await wait.value
+    // resize_failed (contentGone): answered, but no redraw.
+    #expect(written.value == [[]])
+  }
+
+  @Test func aPTYThatKeepsItsSizeWritesNothing() async {
+    let clock = TestClock()
+    let written = LockIsolated<[[UInt8]]>([])
+    let wait = Self.runResize(
+      first: .applied, clock: clock, readSize: { (columns: 122, rows: 47) }, written: written)
+    await Task.megaYield()
+    await clock.advance(by: RemoteHostRouter.resizeConfirmTimeout)
+    await wait.value
+    #expect(written.value == [[]])
+  }
+
+  @Test func anUnreadablePTYWritesNothing() async {
+    let clock = TestClock()
+    let written = LockIsolated<[[UInt8]]>([])
+    let wait = Self.runResize(first: .applied, clock: clock, readSize: { nil }, written: written)
+    await Task.megaYield()
+    await clock.advance(by: RemoteHostRouter.resizeConfirmTimeout)
+    await wait.value
+    #expect(written.value == [[]])
+  }
+
+  @Test func aReadOnlyTerminalGetsNoCtrlL() async {
+    let clock = TestClock()
+    let written = LockIsolated<[[UInt8]]>([])
+    let wait = Self.runResize(
+      first: .applied, clock: clock, isReadOnly: true, readSize: { (columns: 139, rows: 56) }, written: written)
+    await wait.value
+    #expect(written.value == [[]])
+  }
+
+  @Test func onlyTheNewerOfTwoOverlappingResizesWritesCtrlL() async {
+    let clock = TestClock()
+    let written = LockIsolated<[[UInt8]]>([])
+    let reads = LockIsolated(0)
+    var waits = RemoteResizeWaits()
+    // The older request's PTY follows on its second read, after the newer request arrived.
+    let older = Self.runResize(
+      first: .applied, clock: clock,
+      readSize: {
+        reads.withValue { $0 += 1 }
+        return reads.value >= 2 ? (columns: 139, rows: 56) : (columns: 122, rows: 47)
+      },
+      written: written)
+    waits.start(contentID: Self.contentID, connID: "A", token: UUID(), task: older)
+    await Task.megaYield()
+    #expect(written.value.isEmpty)
+    // The router cancels the older wait before it applies the newer size.
+    waits.cancel(contentID: Self.contentID)
+    let newer = Self.runResize(
+      first: .unchanged, clock: clock, readSize: { (columns: 139, rows: 56) }, written: written)
+    waits.start(contentID: Self.contentID, connID: "B", token: UUID(), task: newer)
+    await newer.value
+    await clock.advance(by: RemoteHostRouter.resizeConfirmTimeout)
+    await older.value
+    #expect(written.value == [[0x0C]])
+  }
+
+  @Test func onlyAMatchedOutcomeRedraws() {
+    #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false) == [0x0C])
+    #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: true).isEmpty)
+    #expect(RemoteHostRouter.redrawInput(for: .success(.mismatch(columns: 1, rows: 1)), isReadOnly: false).isEmpty)
+    #expect(RemoteHostRouter.redrawInput(for: .success(.unreadable), isReadOnly: false).isEmpty)
+    #expect(RemoteHostRouter.redrawInput(for: .failure(.notReady), isReadOnly: false).isEmpty)
+  }
+
+  @Test func theRedrawGoesThroughTheFirstOpenStreamOnly() {
+    // A stream whose `attach` has not started it yet has no socket: its real
+    // `send` fails, so the next attached stream of that terminal takes it.
+    let notStarted = ZmxRemoteStream(socketPath: "/nonexistent/supacode-zd9.sock")
+    defer { notStarted.stop() }
+    let second = LockIsolated<[[UInt8]]>([])
+    let third = LockIsolated<[[UInt8]]>([])
+    let wrote = RemoteHostRouter.writeOnce(
+      RemoteHostRouter.redrawKey,
+      through: [
+        { notStarted.send($0) },
+        { bytes in
+          second.withValue { $0.append(bytes) }
+          return true
+        },
+        { bytes in
+          third.withValue { $0.append(bytes) }
+          return true
+        },
+      ])
+    #expect(wrote)
+    #expect(second.value == [[0x0C]])
+    #expect(third.value.isEmpty)
+  }
+
+  @Test func aRedrawNoStreamTakesReportsFailure() {
+    let notStarted = ZmxRemoteStream(socketPath: "/nonexistent/supacode-zd9.sock")
+    defer { notStarted.stop() }
+    #expect(!RemoteHostRouter.writeOnce(RemoteHostRouter.redrawKey, through: [{ notStarted.send($0) }]))
+    #expect(!RemoteHostRouter.writeOnce(RemoteHostRouter.redrawKey, through: []))
+  }
+
   // MARK: - PTY size
 
   @Test func aProcessWithoutATerminalHasNone() {

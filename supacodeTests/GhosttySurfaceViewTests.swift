@@ -24,6 +24,63 @@ struct GhosttySurfaceViewTests {
     )
   }
 
+  @Test func surfaceBackingSizeOffWindowIsTheFrameNotTheMainScreenScale() {
+    // A never-mounted surface's frame is already in pixels; AppKit's
+    // off-window `convertToBacking` would scale it by the main screen (2x on Retina).
+    let view = HotkeyRecorderNSView(frame: NSRect(x: 0, y: 0, width: 1120, height: 912))
+    #expect(view.window == nil)
+    #expect(
+      GhosttySurfaceView.surfaceBackingSize(of: view, size: view.bounds.size)
+        == CGSize(width: 1120, height: 912)
+    )
+  }
+
+  // Drives the real `updateSurfaceSize` path: a never-mounted surface hands
+  // Ghostty its pixel frame as is, and an exact remote grid lands exactly,
+  // not at the main screen's 2x. Needs a live core surface, absent when the
+  // display sleeps; then there is nothing to measure.
+  @Test func unmountedSurfacePushesItsPixelFrameUnscaled() {
+    let surfaceView = GhosttySurfaceView(
+      id: UUID(),
+      runtime: GhosttyRuntime(),
+      workingDirectory: nil,
+      initialGeometry: .fallback,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB
+    )
+    defer { surfaceView.closeSurface() }
+    guard let surface = surfaceView.surface else { return }
+    #expect(surfaceView.window == nil)
+
+    let start = ghostty_surface_size(surface)
+    #expect(CGFloat(start.width_px) == ContentGeometry.fallback.pixelSize.width)
+    #expect(CGFloat(start.height_px) == ContentGeometry.fallback.pixelSize.height)
+    guard start.cell_width_px > 0, start.cell_height_px > 0 else { return }
+
+    #expect(surfaceView.applyRequestedGrid(columns: 40, rows: 12) == .applied)
+    let resized = ghostty_surface_size(surface)
+    #expect(Int(resized.columns) == 40)
+    #expect(Int(resized.rows) == 12)
+  }
+
+  @Test func surfaceBackingSizeInWindowConvertsAtTheWindowScale() {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.borderless],
+      backing: .buffered,
+      defer: true
+    )
+    window.isReleasedWhenClosed = false
+    let view = HotkeyRecorderNSView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+    window.contentView?.addSubview(view)
+    let size = CGSize(width: 200, height: 100)
+    #expect(GhosttySurfaceView.surfaceBackingSize(of: view, size: size) == view.convertToBacking(size))
+    let scale = window.backingScaleFactor
+    #expect(
+      GhosttySurfaceView.surfaceBackingSize(of: view, size: size)
+        == CGSize(width: 200 * scale, height: 100 * scale)
+    )
+  }
+
   @Test func normalizedWorkingDirectoryPathKeepsRootPath() {
     #expect(GhosttySurfaceView.normalizedWorkingDirectoryPath("/") == "/")
   }

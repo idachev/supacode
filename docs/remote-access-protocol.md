@@ -259,6 +259,13 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
   - A newer `resize` of the same terminal from any client, or the requester's `detach` or `attach`
     of another content, cancels a pending one; the cancelled request gets no reply of its own (the
     newer one's `size` reaches every attached client).
+- After a confirmed resize (the PTY took the requested size, the point where the clients get
+  `size`), the host sends Ctrl+L (0x0C) to the terminal once, written exactly as an `input`
+  would, so shells and TUIs (Claude Code, vim, htop) redraw at the new size. Also for a resize to
+  the size the grid already had (the client's resize button doubles as a redraw). Not after
+  `resize_failed` (a PTY that kept another size included), not for a cancelled request (only the
+  newer one sends it), not for a read-only terminal, and never for size changes that did not come
+  from a `resize` (the Mac's own pane, `attach`).
 - The requested size holds until the Mac's own pane for that tab changes layout (a window
   resize, the pane shown or hidden, a split change, zoom); then the pane's size returns and
   the clients get `size`. A later `resize` from any client wins again (last request wins).

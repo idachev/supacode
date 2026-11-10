@@ -61,8 +61,10 @@ nonisolated struct TerminalStartGrid: Equatable, Sendable {
 
 /// Deliberate initial geometry for content whose renderer is not yet in a window.
 ///
-/// Off-window views convert to backing at 1x and read their point frame as pixels,
-/// so the first PTY grid is honest only when pixels and scale are chosen explicitly.
+/// A never-mounted surface's frame is in backing pixels and reaches Ghostty
+/// unconverted (`GhosttySurfaceView.surfaceBackingSize`; AppKit's off-window
+/// `convertToBacking` would scale it by the main screen), so the first PTY grid
+/// is honest only when pixels and scale are chosen explicitly.
 nonisolated struct ContentGeometry: Equatable, Sendable {
   /// Backing pixels the renderer assumes until real layout lands.
   let pixelSize: CGSize
