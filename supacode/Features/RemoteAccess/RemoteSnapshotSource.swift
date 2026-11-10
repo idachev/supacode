@@ -107,11 +107,17 @@ final class RemoteSnapshotSource {
     return content?.capUnmountedGrid(maxColumns: columns, maxRows: rows, exact: exact) ?? false
   }
 
-  /// Sets an existing terminal's grid for a client's `resize`. False while the
-  /// terminal has no live surface (hibernated) or its cell metrics are unknown.
-  func resizeGrid(contentID: UUID, columns: Int, rows: Int) -> Bool {
+  /// One try at setting an existing terminal's grid for a client's `resize`.
+  /// `.noSurface` while the terminal has no live surface (never started since
+  /// launch, or hibernated); the router then wakes it (`wake(contentID:)`).
+  func resizeGrid(contentID: UUID, columns: Int, rows: Int) -> RemoteResizeAttempt {
     let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
-    return content?.applyRequestedGrid(columns: columns, rows: rows) ?? false
+    switch content?.applyRequestedGrid(columns: columns, rows: rows) {
+    case .applied: return .applied
+    case .unchanged: return .unchanged
+    case .notReady: return .notReady
+    case nil: return content?.sessionFailedToStart == true ? .failedToStart : .noSurface
+    }
   }
 
   /// Whether the terminal refuses input (a completed blocking script's parked

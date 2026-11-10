@@ -312,8 +312,8 @@ nonisolated final class ZmxRemoteStream: @unchecked Sendable {
   }
 
   /// The session PTY's real size, read from its terminal device: zmx's `Info`
-  /// reply names the shell pid, whose controlling tty is the PTY. This is the
-  /// size every program in the session renders at, whatever the app's view
+  /// reply names the session's pid, whose controlling tty is the PTY. This is
+  /// the size every program in the session renders at, whatever the app's view
   /// reports. nil when the session is gone or the device cannot be read.
   /// Blocking: call it off the main actor.
   static func ptySize(socketPath: String) -> (columns: Int, rows: Int)? {
@@ -321,12 +321,9 @@ nonisolated final class ZmxRemoteStream: @unchecked Sendable {
       let info = requestOnce(
         socketPath: socketPath, request: ZmxIPCFrameEncoder.frame(tag: ZmxIPCFrameEncoder.infoTag, payload: []),
         replyTag: ZmxIPCFrameEncoder.infoTag, timeoutMilliseconds: 1500),
-      let pid = ZmxIPCFrameEncoder.infoPID(info), pid > 0
-    else { return nil }
-    var bsdInfo = proc_bsdinfo()
-    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsdInfo, size) == size,
-      bsdInfo.e_tdev != UInt32.max, let name = devname(dev_t(bitPattern: bsdInfo.e_tdev), S_IFCHR)
+      let pid = ZmxIPCFrameEncoder.infoPID(info), pid > 0,
+      let terminal = controllingTerminal(pid: pid),
+      let name = devname(terminal, S_IFCHR)
     else { return nil }
     let device = open("/dev/" + String(cString: name), O_RDONLY | O_NOCTTY | O_NONBLOCK)
     guard device >= 0 else { return nil }
@@ -334,6 +331,20 @@ nonisolated final class ZmxRemoteStream: @unchecked Sendable {
     var window = winsize()
     guard ioctl(device, TIOCGWINSZ, &window) == 0, window.ws_col > 0, window.ws_row > 0 else { return nil }
     return (Int(window.ws_col), Int(window.ws_row))
+  }
+
+  /// The controlling terminal of `pid`, nil when it has none or cannot be read.
+  /// `sysctl(KERN_PROC_PID)`, not `proc_pidinfo(PROC_PIDTBSDINFO)`: the session
+  /// pid is usually the setuid-root `/usr/bin/login`, and `proc_pidinfo` refuses
+  /// another user's process (EPERM), which left every PTY read nil.
+  static func controllingTerminal(pid: Int32) -> dev_t? {
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    var process = kinfo_proc()
+    var length = MemoryLayout<kinfo_proc>.stride
+    guard sysctl(&mib, UInt32(mib.count), &process, &length, nil, 0) == 0, length > 0 else { return nil }
+    let terminal = process.kp_eproc.e_tdev
+    // NODEV (-1) when the process has no controlling terminal.
+    return terminal == -1 ? nil : terminal
   }
 
   /// Sends one request frame over a fresh passive connection and returns the
