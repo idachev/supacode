@@ -113,7 +113,7 @@ from its hardware, so a copied config does not make two Macs evict each other.
    "Mac name", or delete the `hostName` key from the copy to show this Mac's computer name.
 4. On the phone, open „Mac-ове“ and pick the Mac.
 
-Do not run `node scripts/gen-keys.mjs --force` on the new Mac: it mints new keys, which stop every
+Do not run `node scripts/gen-keys.mjs --force` (in `remote-relay/`) on the new Mac: it mints new keys, which stop every
 other Mac and the phone. Roll out in this order: relay, phone, then Supacode on each Mac. A second
 Mac needs the new relay and the new Supacode (an old build files as `default` and would evict the
 other old build).
@@ -227,7 +227,7 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
   Supacode build that is not updated yet.
 - **Two Macs show the same name**: give them different names in Settings → Remote Access → "Mac name".
 - **`401` on connect**: the key does not match the secret. Print the hashes with
-  `node scripts/gen-keys.mjs` and set the secrets again.
+  `node scripts/gen-keys.mjs` (run from `remote-relay/`) and set the secrets again.
 - **`403` on connect**: the IP is blocked for an hour after 5 failed keys. Wait, or connect from
   another network.
 - **A second Supacode for tests** needs `CFFIXED_USER_HOME=<dir>` and `ZMX_DIR=<short dir>`

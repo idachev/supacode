@@ -117,7 +117,9 @@ goes only to clients bound to that host id.
 
 host → relay, on the reserved `connId` `@`: `@\n{"t":"host.name","name":"<new name>"}`.
 
-- The relay normalizes the name, updates the host, and sends the new list to every client. No
+- The relay normalizes the name, updates the host, and sends the new list to every client. A frame
+  without `name` (or whose name normalizes to empty) clears the name: the host is then listed
+  without a name. No
   reconnect: the clients of that host keep their streams.
 - `host.name` is the only control frame. The relay drops any other `@` frame, and never forwards `@`
   to a client. Connection ids are 16 hex characters, so `@` never collides with one. An old relay
