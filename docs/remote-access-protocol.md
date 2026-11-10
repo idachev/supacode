@@ -141,6 +141,13 @@ with the relay.
 
 Every request may carry a numeric `id`; the response repeats it.
 
+Decoder rule (every message): a frame that is not a JSON object with a string `t`, or in which any
+strictly typed field has the wrong type (e.g. `id` not an integer; `worktreeId`, `contentId` not
+strings; `sameNetwork` not a boolean; `scrollback`, `v` not integers), is dropped with no reply,
+even when the message type does not use that field. Only the lenient fields (`repositoryId`,
+`name`, `cols`, `rows`) never cause a drop: a value of another type reads as invalid and the
+handler answers it.
+
 ### hello
 
 - client → host `{"t":"hello","v":1}`
@@ -176,12 +183,12 @@ Every request may carry a numeric `id`; the response repeats it.
 - host → client:
 
 ```json
-{"t":"list","id":1,"repos":[
+{"t":"list","id":1,"canRefreshWorktrees":true,"repos":[
   {"id":"<repository id>","name":"supacode","group":"<sidebar group name, omitted when none>",
    "canCreateWorktree":true,"worktrees":[
     {"id":"<worktree id>","name":"remote-access","branch":"remote-access",
      "status":"main|pinned|unpinned","focused":true,"title":"<custom title or null>",
-     "working":true,"tabs":[
+     "working":true,"canDeleteWorktree":false,"tabs":[
        {"id":"<tab uuid>","contentId":"<content uuid>","title":"claude","focused":true,
         "working":false,"readOnly":false,
         "agents":[{"agent":"claude","activity":"busy|awaitingInput|idle|error|compacting"}]}
@@ -211,6 +218,19 @@ Every request may carry a numeric `id`; the response repeats it.
   id (`pending:…`) with no matching entry in `worktrees`; clients skip row ids they cannot resolve.
 - Each repository has `canCreateWorktree`: true for a git repository (local or ssh) that is not
   being removed, so the client may offer `worktree.new` for it. Absent (an older host) means false.
+- Each worktree has `canDeleteWorktree`: true when it is in a git repository (local or ssh) that is
+  not being removed, is not the main worktree, its row is idle (not being created, archived or
+  deleted) and no remote `worktree.delete` of it is in flight; the client may then offer
+  `worktree.delete`. It does not reflect uncommitted changes (checked at delete time). Absent (an
+  older host) means false.
+- The top-level `canRefreshWorktrees` is true on a host that answers `worktrees.refresh`. Absent
+  (an older host) means false: no refresh button.
+- The top-level `loadFailures` lists the repositories whose load failed on the Mac (they are not in
+  `repos`): `"loadFailures":[{"repositoryId":"<id>","message":"<the app's failure text>"}]`,
+  omitted when empty. Clients show each as "cannot be read on the Mac: <message>" and keep no stale
+  rows for it.
+- `id` is always present: the request's `id`, or `null` when the request had none (older hosts
+  omit it then).
 
 Optional fields (`group`, `title`, `collapsed`, …) are omitted when they have no value. Archived worktrees are left out. Order follows the sidebar: per repository main first, then
 pinned, then the rest. `contentId` is the id the terminal messages use. `agent` is the raw
@@ -382,6 +402,84 @@ Client contract:
   `tabId` may come before the ssh roster reload finishes, and the worktree then shows in a later
   `list`.
 
+### worktree.delete
+
+Deletes one worktree the way Supacode's own "Delete Worktree…" does on the Mac (its delete script,
+then `git worktree remove`), after checking that nothing would be lost. The local branch is never
+deleted, whatever the Mac's "Delete local branch with worktree" setting says. The Mac shows no
+confirmation (the client confirmed) and its window keeps its selection.
+
+- client → host `{"t":"worktree.delete","id":8,"worktreeId":"<worktree id from list>"}`
+  - `worktreeId` (string, required): `repos[].worktrees[].id` from `list`. A value of another type
+    drops the message (decoder rule).
+  - `id` (optional integer): echoed in the reply or error (`null` when omitted).
+  - No `repositoryId`, `deleteBranch` or `force` field.
+- Dirty check, before anything runs: `git status --porcelain=v1 -z --untracked-files=all
+  --ignored=matching` in the worktree and in every initialized submodule (recursively, paths
+  prefixed with the submodule path). Every record counts (staged or unstaged changes, conflicts,
+  untracked files, ignored files such as `.env`) except a wholly ignored directory (`node_modules/`,
+  `build/`). A detached HEAD whose commits no branch, tag or remote ref holds is dirty too.
+  Unpushed commits on a branch do not block (the branch stays). A dirty worktree is refused with
+  `worktree_dirty`; there is no force option. For an ssh worktree the check runs on the ssh host.
+- When the repository has a delete script, the same check runs again after the script and right
+  before the removal. If it finds changes then, nothing is removed, the worktree stays, and the
+  client gets `worktree_dirty` (the script's own effects stay).
+- An orphan worktree (its directory is gone) skips the check and the delete script.
+- host → client, success:
+  `{"t":"worktree.delete","id":8,"worktreeId":"…","repositoryId":"…"}`, sent only after the app
+  reported the delete done. Any `list` sent after it no longer has the worktree.
+- Errors: `{"t":"error","id":8,"message":"…","code":"<code>"}`
+
+| code | when | message |
+|---|---|---|
+| `worktree_invalid` | `worktreeId` missing or empty; unknown, archived, or a pending (`pending:…`) id | `worktree.delete needs a worktreeId`, `no such worktree` |
+| `worktree_unsupported` | the main worktree; a folder (non-git) entry; a repository being removed | `the main worktree cannot be deleted`, `folders cannot be deleted from the remote`, `the repository is being removed` |
+| `worktree_busy` | the row is being created, archived or deleted, or a remote delete of it is still in flight (its client may have gone) | `the worktree is busy (being created, archived or deleted)` |
+| `worktree_dirty` | the dirty check found a counted record, or detached commits on no ref; before the delete, or after the delete script | `the worktree has uncommitted changes, untracked or ignored files (N): <up to 5 paths>; commit, stash or remove them on the Mac first`, or `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first` (both joined with `; ` when both apply) |
+| `worktree_failed` | the app reported a failure, the check failed, or the worktree vanished without a delete result | `Delete script failed (exit code N).`, `Delete cancelled.`, `Unable to delete worktree: <git message>`, `The worktree could not be found. It may have already been removed.`, `The delete script completed, but the worktree could not be found.`, `could not check the worktree for changes: <error>`, `the worktree left the list before it was deleted (removed outside Supacode, or its repository was removed)` |
+| `worktree_timeout` | no outcome within 300 s | `the delete is still running on the Mac; the worktree may disappear from the list later` |
+
+- `worktree_invalid`, `worktree_unsupported`, `worktree_busy` and `worktree_dirty` show nothing on
+  the Mac. App failures (`worktree_failed`) also show the Mac's normal alert.
+- Old hosts answer `{"t":"error","id":8,"message":"unknown message type: worktree.delete"}` with no
+  `code`; they also send no `canDeleteWorktree`, so clients show no button for them. A client that
+  gets this error hides the feature for that host.
+
+### worktrees.refresh
+
+Does what the Mac's "Refresh Worktrees" does, so a worktree removed outside Supacode (`git worktree
+remove`, the `supacode` CLI, another tool) leaves the Mac's sidebar and `list`.
+
+- client → host `{"t":"worktrees.refresh","id":9}`
+- host → client: a full `list` frame with the same `id`
+  (`{"t":"list","id":9,"repos":[…],"sections":[…],…}`), built after a git load that began after
+  the request has finished. A `list` frame the client did not ask for is rendered like any other.
+- ssh repositories: the reply reflects the local load; an ssh repository's roster is re-read in
+  the background and shows in a later `list`.
+- A refresh while another runs restarts the load; each request waits for its own.
+- Errors: `refresh_timeout` `the refresh is still running on the Mac; send list again later` when
+  no load finished within 60 s.
+- Old hosts answer `unknown message type: worktrees.refresh` with no `code`; they also send no
+  `canRefreshWorktrees`.
+
+Client contract for `worktree.delete` and `worktrees.refresh`:
+
+- К6 Request id: every reply and every error carries the request's `id` (explicit `null` when
+  none), except a message dropped by the decoder rule.
+- К7 Lost connection: a wait belongs to its connection; `conn.close`, a LAN socket closing and the
+  relay socket dropping cancel it. The delete or refresh itself goes on. The client shows
+  "Connection lost; the worktree may still disappear from the list", does not retry, and sends
+  `list` after reconnecting.
+- К8 Reply time: `worktree.delete` within 300 s of receipt plus main-actor slack (the dirty check
+  included); client timeout 310 s from sending. `worktrees.refresh` within 60 s; client timeout
+  70 s. Errors the host decides itself are immediate. After a timeout the client behaves as in К7.
+- К9 Late outcome: after a timeout or a lost connection the client cannot learn a late failure
+  (only the Mac's alert shows it). A retry of `worktree.delete` while the first still runs gets
+  `worktree_busy`; once it has succeeded, `no such worktree`; once it has failed, the retry runs
+  normally.
+- К10 Attached terminals: the deleted worktree's terminals end; an attached client gets `detached`
+  for each, before or after the `worktree.delete` reply (no order is promised).
+
 ### suggest
 
 - client → host `{"t":"suggest","id":3,"contentId":"…"}`
@@ -393,8 +491,9 @@ Client contract:
 
 - host → client `{"t":"error","id":<request id or null>,"message":"…"}`.
 - Optional fields, omitted when absent: `code`, a machine-readable reason (`resize_failed`, and
-  for `worktree.new` `worktree_invalid`, `worktree_busy`, `worktree_unsupported`, `worktree_failed`,
-  `worktree_timeout`), and `contentId`, the terminal the error is about (for requests without an `id`).
+  for `worktree.new` and `worktree.delete` `worktree_invalid`, `worktree_busy`,
+  `worktree_unsupported`, `worktree_failed`, `worktree_timeout`, for `worktree.delete` also
+  `worktree_dirty`, and for `worktrees.refresh` `refresh_timeout`), and `contentId`, the terminal the error is about (for requests without an `id`).
   Clients must ignore codes they do not know and fall back to `message`.
 
 ## LAN shortcut
