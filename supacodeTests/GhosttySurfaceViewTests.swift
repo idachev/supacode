@@ -24,6 +24,36 @@ struct GhosttySurfaceViewTests {
     )
   }
 
+  @Test func surfaceBackingSizeOffWindowIsTheFrameNotTheMainScreenScale() {
+    // A never-mounted surface's frame is already in pixels; AppKit's
+    // off-window `convertToBacking` would scale it by the main screen (2x on Retina).
+    let view = HotkeyRecorderNSView(frame: NSRect(x: 0, y: 0, width: 1120, height: 912))
+    #expect(view.window == nil)
+    #expect(
+      GhosttySurfaceView.surfaceBackingSize(of: view, size: view.bounds.size)
+        == CGSize(width: 1120, height: 912)
+    )
+  }
+
+  @Test func surfaceBackingSizeInWindowConvertsAtTheWindowScale() {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.borderless],
+      backing: .buffered,
+      defer: true
+    )
+    window.isReleasedWhenClosed = false
+    let view = HotkeyRecorderNSView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+    window.contentView?.addSubview(view)
+    let size = CGSize(width: 200, height: 100)
+    #expect(GhosttySurfaceView.surfaceBackingSize(of: view, size: size) == view.convertToBacking(size))
+    let scale = window.backingScaleFactor
+    #expect(
+      GhosttySurfaceView.surfaceBackingSize(of: view, size: size)
+        == CGSize(width: 200 * scale, height: 100 * scale)
+    )
+  }
+
   @Test func normalizedWorkingDirectoryPathKeepsRootPath() {
     #expect(GhosttySurfaceView.normalizedWorkingDirectoryPath("/") == "/")
   }
