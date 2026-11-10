@@ -49,17 +49,15 @@ struct SidebarListView: View {
     // No reordering while filtered: the hidden sections would make a drop
     // position ambiguous.
     let moveSections: ((IndexSet, Int) -> Void)? =
-      if structure.isFiltered {
-        nil
-      } else {
-        { offsets, destination in
-          if let mutation = structure.nativeGroupDrop(offsets: offsets, destination: destination) {
-            store.send(.repositoryGroupsChanged(mutation))
-          } else if sectionSort.allowsReordering,
-            let drop = structure.nativeRepositoryDrop(offsets: offsets, destination: destination)
-          {
-            store.send(.repositoryDropped(drop.repositoryIDs, relativeTo: drop.targetID, after: drop.after))
-          }
+      structure.isFiltered
+      ? nil
+      : { offsets, destination in
+        if let mutation = structure.nativeGroupDrop(offsets: offsets, destination: destination) {
+          store.send(.repositoryGroupsChanged(mutation))
+        } else if sectionSort.allowsReordering,
+          let drop = structure.nativeRepositoryDrop(offsets: offsets, destination: destination)
+        {
+          store.send(.repositoryDropped(drop.repositoryIDs, relativeTo: drop.targetID, after: drop.after))
         }
       }
 
