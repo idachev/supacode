@@ -248,7 +248,7 @@ as `default` and would evict the other old build).
 ```json
 {"t":"relay","hostOnline":true,"host":"3f9a0c1d2e4b5a69",
  "hosts":[{"id":"3f9a0c1d2e4b5a69","name":"Office Mac","online":true},
-          {"id":"default","online":false}]}
+          {"id":"7c21e0b94d3a8f50","name":"Home Mac","online":false}]}
 ```
 
 - `hostOnline` keeps its meaning, now for the bound host.
