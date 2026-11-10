@@ -167,7 +167,7 @@ describe("host frame recipients (РЛ3, ПР3)", () => {
   it("handles a rename on @ and drops any other @ frame", () => {
     expect(routeHostFrame("@", '{"t":"host.name","name":"  New\\nName "}')).toEqual({ kind: "rename", name: "New Name" });
     expect(routeHostFrame("@", '{"t":"host.name","name":"   "}')).toEqual({ kind: "rename", name: undefined });
-    expect(routeHostFrame("@", '{"t":"host.name"}')).toEqual({ kind: "drop" });
+    expect(routeHostFrame("@", '{"t":"host.name"}')).toEqual({ kind: "rename", name: undefined });
     expect(routeHostFrame("@", '{"t":"host.name","name":5}')).toEqual({ kind: "drop" });
     expect(routeHostFrame("@", '{"t":"other"}')).toEqual({ kind: "drop" });
     expect(routeHostFrame("@", "not json")).toEqual({ kind: "drop" });

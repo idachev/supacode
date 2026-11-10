@@ -154,15 +154,16 @@ export type HostFrameRoute =
 
 /**
  * Classifies a parsed host frame. `@` is the control channel: only
- * `{"t":"host.name","name":<string>}` is accepted (a name that normalizes to
- * empty clears it); any other `@` frame is dropped and never forwarded.
+ * `{"t":"host.name","name"?:<string>}` is accepted (a missing name, or one that
+ * normalizes to empty, clears it); any other `@` frame is dropped and never forwarded.
  * Direct frames still need `isBoundTo` per recipient.
  */
 export function routeHostFrame(connId: string, json: string): HostFrameRoute {
   if (connId === CONTROL_CONN_ID) {
     try {
       const value = JSON.parse(json) as { t?: unknown; name?: unknown };
-      if (value && value.t === "host.name" && typeof value.name === "string") {
+      // ИД4: an empty name is omitted, so a frame without `name` clears it.
+      if (value && value.t === "host.name" && (value.name === undefined || typeof value.name === "string")) {
         return { kind: "rename", name: normalizeHostName(value.name) };
       }
     } catch {
