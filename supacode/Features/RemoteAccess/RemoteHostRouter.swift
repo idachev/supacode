@@ -555,7 +555,7 @@ final class RemoteHostRouter {
     }
     let requestID = message.id
     let grid = RemoteTabNewGrid.resolve(cols: message.cols, rows: message.rows, fallback: Self.newTabGrid)
-    switch source.requestNewTab(worktreeID: worktreeRaw) {
+    switch source.requestNewTab(worktreeID: worktreeRaw, startGrid: grid.startGrid) {
     case .failure(let rejection):
       replyError(connID, id: requestID, rejection.message)
     case .success(let tabID):
@@ -566,6 +566,8 @@ final class RemoteHostRouter {
           [weak self] () -> UUID? in
           guard let self, let contentID = self.source.contentID(ofTab: tabID, in: worktreeRaw) else { return nil }
           // Answer only once the grid is sized, so `attached` already reports it.
+          // A tab started at the grid (`startGrid`) passes at once; one with no
+          // live terminal to measure it on is sized here, after its PTY started.
           let sized = self.source.sizeNewTabGrid(
             contentID: contentID, columns: grid.columns, rows: grid.rows, exact: grid.exact)
           return sized ? contentID : nil

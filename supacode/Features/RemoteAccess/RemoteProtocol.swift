@@ -87,6 +87,12 @@ nonisolated struct RemoteTabNewGrid: Equatable, Sendable {
       rows: min(max(rowCount, rowRange.lowerBound), rowRange.upperBound),
       exact: true)
   }
+
+  /// The grid the new terminal starts at, so its PTY and zmx session are born
+  /// at this size instead of being resized after.
+  var startGrid: TerminalStartGrid {
+    TerminalStartGrid(columns: columns, rows: rows, exact: exact)
+  }
 }
 
 /// A client's `resize` of the terminal it is attached to, checked and clamped

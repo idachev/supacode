@@ -51,6 +51,14 @@ nonisolated struct FrozenGrid: Equatable, Codable, Sendable {
   }
 }
 
+/// The grid a new terminal must start at (a remote `tab.new`): exactly
+/// `columns` × `rows` when `exact`, else at most that (a cap that only shrinks).
+nonisolated struct TerminalStartGrid: Equatable, Sendable {
+  let columns: Int
+  let rows: Int
+  let exact: Bool
+}
+
 /// Deliberate initial geometry for content whose renderer is not yet in a window.
 ///
 /// Off-window views convert to backing at 1x and read their point frame as pixels,
@@ -61,8 +69,8 @@ nonisolated struct ContentGeometry: Equatable, Sendable {
   /// Display scale for rasterization until the view joins a window.
   let scale: CGFloat
 
-  // Only `candidate`, `restored`, and `fallback` may produce values, so every
-  // geometry in circulation satisfies its producer's validation.
+  // Only `candidate`, `restored`, `sized`, and `fallback` may produce values, so
+  // every geometry in circulation satisfies its producer's validation.
   private init(pixelSize: CGSize, scale: CGFloat) {
     self.pixelSize = pixelSize
     self.scale = scale
@@ -146,6 +154,20 @@ nonisolated extension ContentGeometry {
       pixelSize: CGSize(width: grid.backingWidth, height: grid.backingHeight),
       scale: grid.scale
     )
+  }
+
+  /// Geometry for exact backing pixels at a scale, measured on a live surface
+  /// (`GhosttySurfaceView.startGeometry(for:)`) so a new surface's first PTY grid
+  /// is a requested one; nil for an absurd or empty size.
+  static func sized(pixelSize: CGSize, scale: CGFloat) -> ContentGeometry? {
+    guard
+      pixelSize.width.isFinite, pixelSize.height.isFinite, scale.isFinite,
+      pixelSize.width > 0, pixelSize.height > 0, scale > 0,
+      Double(pixelSize.width) <= maximumRestoredPixelExtent,
+      Double(pixelSize.height) <= maximumRestoredPixelExtent,
+      Double(scale) <= maximumRestoredScale
+    else { return nil }
+    return ContentGeometry(pixelSize: pixelSize, scale: scale)
   }
 
   /// Converts a point size at a scale into pixel geometry; nil when too small to

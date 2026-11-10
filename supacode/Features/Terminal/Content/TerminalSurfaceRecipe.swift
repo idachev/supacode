@@ -146,6 +146,9 @@ nonisolated enum TerminalSurfaceRecipe {
     var environment: [String: String]
     var workingDirectory: URL?
     var fontSize: Float32?
+    /// True when `fontSize` is the source surface's own (window-inherit), so
+    /// the source's cells measure the new surface (`startGeometry`).
+    var fontFromSource = false
     var context: ghostty_surface_context_e
     /// Blocking-script runners emit their own OSC 133/7 and must not get
     /// Ghostty's shell integration injected into the host shell.
@@ -233,6 +236,7 @@ nonisolated enum TerminalSurfaceRecipe {
       ),
       workingDirectory: workingDirectory,
       fontSize: fontSize,
+      fontFromSource: seed.terminalState.frozenGrid == nil && inherited.fontSize != nil,
       context: context,
       disableShellIntegration: override?.bypassZmx ?? false,
       usesZmx: launch.usesZmx
@@ -254,6 +258,37 @@ nonisolated enum TerminalSurfaceRecipe {
       return path.isEmpty ? nil : URL(filePath: path, directoryHint: .isDirectory)
     }
     return (workingDirectory, fontSize)
+  }
+
+  /// Whether a new surface starts with its source's font, so the source's cell
+  /// size measures its start grid: it inherits the source's font, or both are
+  /// at the configured default (no inherited or remembered font, and the
+  /// source was never zoomed). False without a live source.
+  static func sharesSourceFont(
+    fontFromSource: Bool,
+    plannedFontSize: Float32?,
+    sourceZoomedFontSize: Float32?
+  ) -> Bool {
+    guard let sourceZoomedFontSize else { return false }
+    return fontFromSource || (plannedFontSize == nil && sourceZoomedFontSize == 0)
+  }
+
+  /// The geometry that starts a new surface's PTY at `grid` (a remote
+  /// `tab.new`), measured on the source surface it inherits from; nil when no
+  /// grid was asked, there is no live source, or the fonts may differ. The
+  /// caller then spawns at its own geometry and the grid is applied after.
+  @MainActor
+  static func startGeometry(
+    for grid: TerminalStartGrid?,
+    plan: SurfacePlan,
+    source: GhosttySurfaceView?
+  ) -> ContentGeometry? {
+    guard let grid, let source,
+      sharesSourceFont(
+        fontFromSource: plan.fontFromSource, plannedFontSize: plan.fontSize,
+        sourceZoomedFontSize: source.zoomedFontSize)
+    else { return nil }
+    return source.startGeometry(for: grid)
   }
 
   static let rememberedZoomFontSizeKey = "terminalRememberedFontSize"
@@ -413,6 +448,9 @@ struct TerminalContentBuilder {
   /// every first spawn); false when its zmx session was alive at launch, it
   /// already spawned in this process, or launch liveness was never captured.
   var claimAgentResume: (ContentID) -> Bool
+  /// The grid a fresh surface must start at (a remote `tab.new`), read once on
+  /// its first spawn; nil keeps the runtime's geometry.
+  var startGrid: (ContentRequest) -> TerminalStartGrid? = { _ in nil }
 
   func factory() -> LayoutContentFactory {
     LayoutContentFactory { request in
@@ -474,6 +512,7 @@ struct TerminalContentBuilder {
             claim: claimAgentResume
           )
         )
+        let source = effective.inheritedFrom.flatMap(sourceSurface)
         let plan = TerminalSurfaceRecipe.plan(
           for: effective,
           seed: TerminalSurfaceRecipe.PlanSeed(
@@ -481,13 +520,18 @@ struct TerminalContentBuilder {
             worktree: worktree,
             socketPath: socketPath(),
             zmxExecutablePath: zmxPath,
-            inheritedFrom: effective.inheritedFrom.flatMap(sourceSurface),
+            inheritedFrom: source,
             fallbackFontSize: TerminalSurfaceRecipe.rememberedZoomFontSize(
               gatedBy: runtime.windowInheritsFontSize()
             ),
             extraEnvironment: environmentExtras(effective)
           )
         )
+        // A requested start grid shapes the frame Ghostty spawns the PTY at,
+        // so the shell and its zmx session are born at that size (ТД1).
+        let startGeometry =
+          phase == .first
+          ? TerminalSurfaceRecipe.startGeometry(for: startGrid(effective), plan: plan, source: source) : nil
         let view = GhosttySurfaceView(
           id: request.contentID.rawValue,
           runtime: runtime,
@@ -498,7 +542,7 @@ struct TerminalContentBuilder {
           commandWrapper: plan.commandWrapper,
           disableShellIntegration: plan.disableShellIntegration,
           fontSize: plan.fontSize,
-          initialGeometry: geometry,
+          initialGeometry: startGeometry ?? geometry,
           context: plan.context
         )
         // Without a Ghostty surface the view is dead; free it before any
