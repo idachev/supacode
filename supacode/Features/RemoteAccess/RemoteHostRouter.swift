@@ -6,7 +6,7 @@ import SupacodeSettingsShared
 nonisolated private let routerLogger = SupaLogger("RemoteAccess")
 
 /// Answers the phones behind the relay: `hello`, `list`, terminal
-/// `attach` / `detach` / `input` / `resize`, `tab.new` and `suggest`
+/// `attach` / `detach` / `input` / `resize`, `tab.new`, `worktree.new` and `suggest`
 /// (`docs/remote-access-protocol.md`). One instance per app, started at launch
 /// when `~/.config/supacode/remote-access.json` enables it.
 @MainActor
@@ -53,6 +53,12 @@ final class RemoteHostRouter {
   /// `tab.new` waits in flight per phone, cancelled when that phone's
   /// connection ends so a reused connId never gets a stale answer.
   private var tabNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
+  /// `worktree.new` waits in flight per phone, cancelled with the phone's
+  /// connection (the creation itself goes on).
+  private var worktreeNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
+  /// `RemoteWorktreeNewRequest.inFlightKey` of every `worktree.new` wait in
+  /// flight, so a duplicate gets `worktree_busy` at once.
+  private var worktreeNewInFlight: Set<String> = []
   /// The `resize` in flight per terminal (waking it, then reading the PTY
   /// size); a newer `resize` of that terminal from any phone, or the
   /// requester's detach or end, cancels it (last request wins).
@@ -201,6 +207,7 @@ final class RemoteHostRouter {
 
   private func lanClosed(_ connID: String) {
     cancelTabNewWaits(connID: connID)
+    cancelWorktreeNewWaits(connID: connID)
     detach(connID: connID)
     clients[connID] = nil
     lanSinks[connID] = nil
@@ -259,6 +266,7 @@ final class RemoteHostRouter {
       if message.sameNetwork == true { sameNetwork.insert(connID) } else { sameNetwork.remove(connID) }
     case "conn.close":
       cancelTabNewWaits(connID: connID)
+      cancelWorktreeNewWaits(connID: connID)
       detach(connID: connID)
       clients[connID] = nil
       sameNetwork.remove(connID)
@@ -283,6 +291,8 @@ final class RemoteHostRouter {
       suggest(connID: connID, message: message)
     case "tab.new":
       newTab(connID: connID, message: message)
+    case "worktree.new":
+      newWorktree(connID: connID, message: message)
     case "resize":
       resize(connID: connID, message: message)
     default:
@@ -779,6 +789,9 @@ final class RemoteHostRouter {
     for connID in tabNewWaits.keys where lanSinks[connID] == nil {
       cancelTabNewWaits(connID: connID)
     }
+    for connID in worktreeNewWaits.keys where lanSinks[connID] == nil {
+      cancelWorktreeNewWaits(connID: connID)
+    }
     for connID in clients.keys where lanSinks[connID] == nil {
       detach(connID: connID)
       clients[connID] = nil
@@ -833,6 +846,68 @@ final class RemoteHostRouter {
 
   private func cancelTabNewWaits(connID: String) {
     guard let waits = tabNewWaits.removeValue(forKey: connID) else { return }
+    for wait in waits.values { wait.cancel() }
+  }
+
+  // MARK: - New worktree
+
+  /// Creates a worktree in a repository the way the Mac's own New Worktree
+  /// button does, and answers once the app reported the outcome and (for a
+  /// created worktree) its first terminal tab is in the layout, or without
+  /// the tab after `worktreeNewTabTimeout` (`runWorktreeNew`). Refusals the
+  /// router can decide (bad fields, unknown repository, duplicate) are answered at once.
+  private func newWorktree(connID: String, message: RemoteInboundMessage) {
+    let requestID = message.id
+    let request: RemoteWorktreeNewRequest
+    switch RemoteWorktreeNewRequest.resolve(message) {
+    case .failure(let rejection):
+      replyError(connID, id: requestID, rejection.message, code: rejection.code)
+      return
+    case .success(let resolved):
+      request = resolved
+    }
+    let key = request.inFlightKey
+    guard !worktreeNewInFlight.contains(key) else {
+      let busy = RemoteWorktreeNewRejection.busy
+      replyError(connID, id: requestID, busy.message, code: busy.code)
+      return
+    }
+    let start: RemoteWorktreeNewStart
+    switch source.requestNewWorktree(repositoryID: request.repositoryID, name: request.name) {
+    case .failure(let rejection):
+      replyError(connID, id: requestID, rejection.message, code: rejection.code)
+      return
+    case .success(let started):
+      start = started
+    }
+    worktreeNewInFlight.insert(key)
+    let grid = RemoteTabNewGrid.resolve(cols: message.cols, rows: message.rows, fallback: Self.newTabGrid)
+    let source = self.source
+    let clock = self.clock
+    let probes = source.worktreeNewProbes(pendingID: start.pendingID, grid: grid)
+    let waitID = UUID()
+    let wait = Task { [weak self] in
+      let outcome = await Self.runWorktreeNew(isSSH: start.isSSH, clock: clock, probes: probes)
+      // Every exit, a cancelled wait included, so the app's entry never leaks.
+      source.consumeWorktreeCreation(pendingID: start.pendingID)
+      guard let self else { return }
+      self.worktreeNewInFlight.remove(key)
+      self.worktreeNewWaits[connID]?[waitID] = nil
+      guard self.clients[connID] != nil,
+        let reply = Self.worktreeNewReply(for: outcome, repositoryID: request.repositoryID, requestID: requestID)
+      else { return }
+      switch reply {
+      case .worktree(let created): self.reply(connID, created)
+      case .error(let error): self.reply(connID, error)
+      }
+    }
+    worktreeNewWaits[connID, default: [:]][waitID] = wait
+  }
+
+  /// Stops this phone's `worktree.new` waits; each still consumes its entry
+  /// and frees its name, but sends nothing. The creations go on.
+  private func cancelWorktreeNewWaits(connID: String) {
+    guard let waits = worktreeNewWaits.removeValue(forKey: connID) else { return }
     for wait in waits.values { wait.cancel() }
   }
 
@@ -933,7 +1008,7 @@ final class RemoteHostRouter {
     deliver(connID, [json])
   }
 
-  private func replyError(_ connID: String, id: Int?, _ text: String) {
-    reply(connID, RemoteErrorMessage(id: id, message: text))
+  private func replyError(_ connID: String, id: Int?, _ text: String, code: String? = nil) {
+    reply(connID, RemoteErrorMessage(id: id, message: text, code: code))
   }
 }

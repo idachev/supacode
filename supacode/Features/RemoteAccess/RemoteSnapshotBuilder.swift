@@ -9,6 +9,8 @@ nonisolated enum RemoteSnapshotBuilder {
     let name: String
     var group: String?
     let worktrees: [WorktreeInput]
+    /// `RemoteRepository.canCreateWorktree`.
+    var canCreateWorktree = false
   }
 
   struct WorktreeInput: Equatable, Sendable {
@@ -47,7 +49,8 @@ nonisolated enum RemoteSnapshotBuilder {
             working: worktree.tabs.contains(where: \.working),
             tabs: worktree.tabs
           )
-        }
+        },
+        canCreateWorktree: repository.canCreateWorktree
       )
     }
   }

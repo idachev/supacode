@@ -86,7 +86,10 @@ final class RemoteSnapshotSource {
             sidebarIndex: bucket?.items.index(forKey: worktree.id),
             tabs: tabs(of: worktree.id)
           )
-        }
+        },
+        canCreateWorktree: Self.canCreateWorktree(
+          isGitRepository: repository.isGitRepository,
+          isBeingRemoved: state.removingRepositoryIDs[repository.id] != nil)
       )
     }
     return RemoteSnapshotBuilder.build(repositories: Array(inputs))
@@ -203,6 +206,80 @@ final class RemoteSnapshotSource {
       return layout?.pane(containingTab: tab)?.tabs[id: tab]?.content.id.rawValue
     }
     return nil
+  }
+
+  // MARK: - New worktree
+
+  /// Whether `list` offers `worktree.new` for a repository: a git repository
+  /// (local or ssh) that is not being removed.
+  nonisolated static func canCreateWorktree(isGitRepository: Bool, isBeingRemoved: Bool) -> Bool {
+    RemoteWorktreeNewRejection.check(found: true, isGitRepository: isGitRepository, isBeingRemoved: isBeingRemoved)
+      == nil
+  }
+
+  /// Checks the repository and hands the creation to the app
+  /// (`.remoteWorktreeNewRequested`) under a fresh pending id, which the
+  /// outcome is filed under (`worktreeCreation(pendingID:)`). The app applies
+  /// its own name and git rules; this only refuses what it cannot create in.
+  func requestNewWorktree(
+    repositoryID raw: String, name: String
+  ) -> Result<RemoteWorktreeNewStart, RemoteWorktreeNewRejection> {
+    let state = store.repositories
+    let repository = state.repositories.first { $0.id.rawValue == raw }
+    if let rejection = RemoteWorktreeNewRejection.check(
+      found: repository != nil,
+      isGitRepository: repository?.isGitRepository ?? false,
+      isBeingRemoved: repository.map { state.removingRepositoryIDs[$0.id] != nil } ?? false)
+    {
+      return .failure(rejection)
+    }
+    guard let repository else { return .failure(.unknownRepository) }
+    let pendingID = WorktreeID(WorktreeID.pendingPrefix + "remote-" + UUID().uuidString)
+    store.send(.remoteWorktreeNewRequested(repositoryID: repository.id, name: name, pendingID: pendingID))
+    return .success(RemoteWorktreeNewStart(pendingID: pendingID, isSSH: repository.host != nil))
+  }
+
+  /// Where a remote creation stands; nil once consumed (or never requested).
+  func worktreeCreation(pendingID: Worktree.ID) -> AppFeature.RemoteWorktreeCreation? {
+    store.remoteWorktreeCreations[pendingID]
+  }
+
+  /// The router is done with this creation (answered, timed out or the phone left).
+  func consumeWorktreeCreation(pendingID: Worktree.ID) {
+    store.send(.remoteWorktreeCreationConsumed(pendingID: pendingID))
+  }
+
+  /// The first terminal tab of a worktree's layout, in `list` order
+  /// (`tabs(in:runtime:)`), so `worktree.new`'s `tabId` / `contentId` match the next `list`.
+  func firstTerminalTab(of worktreeID: Worktree.ID) -> RemoteTab? {
+    tabs(of: worktreeID).first
+  }
+
+  /// Whether the roster lists this worktree (an ssh creation enters it only
+  /// after its repository reload).
+  func containsWorktree(_ worktreeID: Worktree.ID) -> Bool {
+    store.repositories.repositories.contains { $0.worktrees[id: worktreeID] != nil }
+  }
+
+  /// What the router's `worktree.new` wait reads (`RemoteHostRouter.runWorktreeNew`).
+  /// An ssh worktree's first tab is opened the way `tab.new` opens one, at `grid`.
+  func worktreeNewProbes(pendingID: Worktree.ID, grid: RemoteTabNewGrid) -> RemoteWorktreeNewProbes {
+    RemoteWorktreeNewProbes(
+      creation: { [weak self] in self?.worktreeCreation(pendingID: pendingID) },
+      firstTab: { [weak self] worktreeID in
+        self?.firstTerminalTab(of: worktreeID).map { RemoteWorktreeNewTab(tabId: $0.id, contentId: $0.contentId) }
+      },
+      openTab: { [weak self] worktreeID in
+        guard let self, self.containsWorktree(worktreeID) else { return nil }
+        return self.requestNewTab(worktreeID: worktreeID.rawValue, startGrid: grid.startGrid)
+      },
+      tabContent: { [weak self] tabID, worktreeID in
+        guard let self, let contentID = self.contentID(ofTab: tabID, in: worktreeID.rawValue) else { return nil }
+        let sized = self.sizeNewTabGrid(
+          contentID: contentID, columns: grid.columns, rows: grid.rows, exact: grid.exact)
+        return sized ? contentID : nil
+      }
+    )
   }
 
   private func tabs(of worktreeID: Worktree.ID) -> [RemoteTab] {
