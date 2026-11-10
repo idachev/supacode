@@ -103,6 +103,9 @@ private struct SidebarItemGroupView: View {
     let shortcutHintBuilder: (SidebarItemID) -> String? = { rowID in
       shortcutHintByID[rowID]
     }
+    // No row reordering while filtered: hidden rows would make a drop
+    // position ambiguous (a drop at the end lands after every hidden row).
+    let moveAction: ((IndexSet, Int) -> Void)? = isFiltered ? nil : moveRows
     switch moveBehavior {
     case .disabled:
       ForEach(nestedBranchRows) { row in
@@ -115,7 +118,8 @@ private struct SidebarItemGroupView: View {
           isRepositoryRemoving: isRepositoryRemoving,
           hideSubtitle: hideSubtitle,
           moveMode: .alwaysDisabled,
-          shortcutHint: shortcutHintBuilder
+          shortcutHint: shortcutHintBuilder,
+          isFiltered: isFiltered
         )
       }
     case .pinned, .unpinned:
@@ -130,7 +134,8 @@ private struct SidebarItemGroupView: View {
             isRepositoryRemoving: isRepositoryRemoving,
             hideSubtitle: hideSubtitle,
             moveMode: .alwaysDisabled,
-            shortcutHint: shortcutHintBuilder
+            shortcutHint: shortcutHintBuilder,
+            isFiltered: isFiltered
           )
         }
       } else {
@@ -144,10 +149,11 @@ private struct SidebarItemGroupView: View {
             isRepositoryRemoving: isRepositoryRemoving,
             hideSubtitle: hideSubtitle,
             moveMode: .conditional,
-            shortcutHint: shortcutHintBuilder
+            shortcutHint: shortcutHintBuilder,
+            isFiltered: isFiltered
           )
         }
-        .onMove(perform: moveRows)
+        .onMove(perform: moveAction)
       }
     }
   }
@@ -222,6 +228,7 @@ private struct SidebarBranchNestingRowView: View {
   let hideSubtitle: Bool
   let moveMode: SidebarRowMoveMode
   let shortcutHint: (SidebarItemID) -> String?
+  var isFiltered = false
 
   var body: some View {
     switch row {
@@ -247,7 +254,8 @@ private struct SidebarBranchNestingRowView: View {
           depth: depth,
           isCollapsed: isCollapsed,
           leafDescendantIDs: leafDescendantIDs,
-          store: store
+          store: store,
+          isFiltered: isFiltered
         )
       }
     }
@@ -267,10 +275,14 @@ private struct SidebarPathGroupHeaderRow: View {
   let isCollapsed: Bool
   let leafDescendantIDs: [SidebarItemID]
   @Bindable var store: StoreOf<RepositoriesFeature>
+  /// While filtering the folder shows forced-expanded; a click would only
+  /// rewrite the stored collapsed prefixes the user cannot see.
+  var isFiltered = false
 
   var body: some View {
     let label = components.isEmpty ? prefix : components.joined(separator: "/")
     Button {
+      guard !isFiltered else { return }
       _ = withAnimation(.easeOut(duration: 0.2)) {
         store.send(
           .branchNestExpansionChanged(

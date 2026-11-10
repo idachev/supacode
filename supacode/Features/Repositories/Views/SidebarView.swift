@@ -29,7 +29,8 @@ struct SidebarView: View {
       SidebarFilterField(
         query: $store.sidebarFilterQuery.sending(\.sidebarFilterQueryChanged),
         isFocused: $isFilterFocused,
-        shortcut: filterShortcut
+        shortcut: filterShortcut,
+        onEscape: { store.send(.sidebarFilterEscaped) }
       )
       .padding(.horizontal, 10)
       .padding(.vertical, 6)

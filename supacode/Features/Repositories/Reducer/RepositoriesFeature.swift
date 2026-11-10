@@ -397,6 +397,9 @@ struct RepositoriesFeature {
     case sidebarFilterQueryChanged(String)
     /// The sidebar filter field gained or lost focus, or ⇧⌘F asked for it.
     case sidebarFilterFocusChanged(Bool)
+    /// Esc in the sidebar filter field: clear it and hand focus to the selected
+    /// worktree's terminal, as the web app of Supacode Remote does.
+    case sidebarFilterEscaped
     case setOpenPanelPresented(Bool)
     case requestAddRemoteRepository
     case requestEditRemoteRepository(Repository.ID)
@@ -3746,6 +3749,14 @@ struct RepositoriesFeature {
       case .sidebarFilterFocusChanged(let isFocused):
         state.isSidebarFilterFocused = isFocused
         return .none
+
+      case .sidebarFilterEscaped:
+        state.sidebarFilterQuery = ""
+        state.isSidebarFilterFocused = false
+        guard let worktreeID = state.selectedWorktreeID, state.sidebarItems[id: worktreeID] != nil else {
+          return .none
+        }
+        return .send(.sidebarItems(.element(id: worktreeID, action: .focusTerminalRequested)))
 
       case .setOpenPanelPresented(let isPresented):
         state.isOpenPanelPresented = isPresented

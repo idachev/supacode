@@ -3,12 +3,13 @@ import SwiftUI
 
 /// The text field above the sidebar list that filters repositories, worktrees
 /// and branches (rules in `SidebarFilter`). Owns appearance only; the parent
-/// places and pads it. Esc clears the text, and a second Esc leaves the field.
+/// places and pads it. Esc runs `onEscape` (clear and focus the terminal).
 struct SidebarFilterField: View {
   @Binding var query: String
   var isFocused: FocusState<Bool>.Binding
   /// The effective "Filter Sidebar" shortcut, shown in the tooltip.
   let shortcut: AppShortcut?
+  let onEscape: () -> Void
 
   var body: some View {
     HStack(spacing: 6) {
@@ -18,13 +19,7 @@ struct SidebarFilterField: View {
       TextField("Filter", text: $query, prompt: Text("Filter"))
         .textFieldStyle(.plain)
         .focused(isFocused)
-        .onExitCommand {
-          if query.isEmpty {
-            isFocused.wrappedValue = false
-          } else {
-            query = ""
-          }
-        }
+        .onExitCommand(perform: onEscape)
         .help(AppShortcut.helpText("Filter repositories, worktrees and branches", shortcut: shortcut))
         .accessibilityLabel("Filter Sidebar")
       if !query.isEmpty {

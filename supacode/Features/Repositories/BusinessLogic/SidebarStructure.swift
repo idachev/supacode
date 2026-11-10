@@ -550,7 +550,7 @@ extension RepositoriesFeature.Action {
     case .repositoryGroupCreation(.confirm),
       .repositoryGroupsChanged, .repositoryGroupsReloaded, .revealSelectedWorktreeInSidebar,
       .sidebarGroupingTogglesChanged, .sidebarNestByBranchChanged,
-      .sidebarSectionSortChanged, .sidebarFilterQueryChanged,
+      .sidebarSectionSortChanged, .sidebarFilterQueryChanged, .sidebarFilterEscaped,
       .repositoryExpansionChanged, .branchNestExpansionChanged,
       .setAllSidebarGroupsExpanded,
       .setMoveNotifiedWorktreeToTop,
@@ -895,7 +895,8 @@ extension RepositoriesFeature.State {
       pinnedHoisted: pinnedRowIDs,
       activeHoisted: activeRowIDs,
       hoisted: hoists.hoistedSet,
-      sections: sections
+      sections: sections,
+      ignoringCollapse: filter != nil
     )
 
     let highlightProjections = computeRepositoryHighlightProjections(
@@ -1109,9 +1110,10 @@ extension RepositoriesFeature.State {
     pinnedHoisted: [Worktree.ID],
     activeHoisted: [Worktree.ID],
     hoisted: Set<Worktree.ID>,
-    sections: [SidebarStructure.Section]
+    sections: [SidebarStructure.Section],
+    ignoringCollapse: Bool = false
   ) -> HotkeyOrdering {
-    let perRepoVisibleIDs = hotkeyEligibleIDs(in: sections)
+    let perRepoVisibleIDs = hotkeyEligibleIDs(in: sections, ignoringCollapse: ignoringCollapse)
     var order: [Worktree.ID] = []
     order.reserveCapacity(pinnedHoisted.count + activeHoisted.count + perRepoVisibleIDs.count)
     order.append(contentsOf: activeHoisted)
@@ -1194,7 +1196,22 @@ extension RepositoriesFeature.State {
   /// the same top-down order the user sees them. Skips group headers (only
   /// leaves get hotkeys) and falls back to `orderedSidebarItemIDs` for repo
   /// sections where branch nesting hides some rows inside collapsed groups.
-  private func hotkeyEligibleIDs(in sections: [SidebarStructure.Section]) -> [Worktree.ID] {
+  /// `ignoringCollapse` is set for the filtered structure: the sidebar then
+  /// shows every repository and branch folder expanded, so every row of the
+  /// filtered sections gets a slot regardless of the stored collapse state.
+  private func hotkeyEligibleIDs(
+    in sections: [SidebarStructure.Section],
+    ignoringCollapse: Bool = false
+  ) -> [Worktree.ID] {
+    if ignoringCollapse {
+      return sections.flatMap { section -> [Worktree.ID] in
+        switch section {
+        case .folder(_, let rowID): [rowID]
+        case .repository(_, let groups): groups.flatMap(\.rowIDs)
+        case .repositoryGroup, .highlight, .placeholder, .failedRepository, .environmentBlockedRepository: []
+        }
+      }
+    }
     let expandedRepoIDs = expandedRepositoryIDs
     let nestingFilter = orderedSidebarItemIDs(includingRepositoryIDs: expandedRepoIDs)
     let visibleSet = Set(nestingFilter)

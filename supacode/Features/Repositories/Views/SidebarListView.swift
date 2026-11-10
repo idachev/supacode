@@ -189,8 +189,11 @@ private struct SidebarSectionDispatcher: View {
       RepositoryGroupHeader(
         group: group, surface: .sidebar,
         repositoryIDs: Set(store.state.orderedRepositoryIDs().map(\.rawValue))
-      ) {
-        store.send(.repositoryGroupsChanged($0))
+      ) { mutation in
+        // While filtering the group shows a forced-expanded copy; a chevron
+        // click would only rewrite the stored state the user cannot see.
+        if structure.isFiltered, case .sidebarExpanded = mutation { return }
+        store.send(.repositoryGroupsChanged(mutation))
       }
     case .placeholder:
       SidebarPlaceholderView()

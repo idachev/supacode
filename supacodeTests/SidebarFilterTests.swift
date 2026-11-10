@@ -240,6 +240,49 @@ struct SidebarFilterTests {
     #expect(fixture.state.worktreeID(byOffset: -1) == fixture.bugfix.id)
   }
 
+  @Test func collapsedRepositoryRowsGetHotkeySlotsWhileFiltered() throws {
+    var fixture = makeFixture()
+    fixture.state.$sidebar.withLock { $0.sections[fixture.app.id, default: .init()].collapsed = true }
+    let full = fixture.state.computeSidebarStructure(groupPinned: false, groupActive: false)
+    #expect(!full.hotkeySlots.map(\.id).contains(fixture.login.id))
+
+    // The filtered sidebar shows the collapsed repository expanded, so its rows get slots.
+    let structure = try #require(filtered(fixture.state, "login"))
+    #expect(structure.hotkeySlots.map(\.id) == [fixture.login.id])
+    #expect(structure.slotByID[fixture.login.id] == 0)
+  }
+
+  @Test func escapeClearsTheFilterAndFocusesTheSelectedTerminal() async {
+    var fixture = makeFixture()
+    fixture.state.selection = .worktree(fixture.bugfix.id)
+    fixture.state.sidebarFilterQuery = "bug"
+    fixture.state.isSidebarFilterFocused = true
+    fixture.state.applyCacheRecomputes(.all)
+    let store = TestStore(initialState: fixture.state) { RepositoriesFeature() }
+
+    await store.send(.sidebarFilterEscaped) {
+      $0.sidebarFilterQuery = ""
+      $0.isSidebarFilterFocused = false
+      $0.applyPostReduceCacheRecomputes(.sidebarStructure)
+    }
+    #expect(store.state.filteredSidebarStructure == nil)
+    await store.receive(\.sidebarItems[id: fixture.bugfix.id].focusTerminalRequested) {
+      $0.sidebarItems[id: fixture.bugfix.id]?.shouldFocusTerminal = true
+    }
+  }
+
+  @Test func escapeWithoutSelectionOnlyClearsTheFilter() async {
+    var fixture = makeFixture()
+    fixture.state.sidebarFilterQuery = "bug"
+    fixture.state.applyCacheRecomputes(.all)
+    let store = TestStore(initialState: fixture.state) { RepositoriesFeature() }
+
+    await store.send(.sidebarFilterEscaped) {
+      $0.sidebarFilterQuery = ""
+      $0.applyPostReduceCacheRecomputes(.sidebarStructure)
+    }
+  }
+
   @Test func focusRequestSetsFocusState() async {
     let store = TestStore(initialState: makeFixture().state) { RepositoriesFeature() }
     await store.send(.sidebarFilterFocusChanged(true)) {
