@@ -9,6 +9,26 @@ import {
   relayStatus,
   requestId,
 } from "./frames";
+import {
+  KNOWN_HOST_PREFIX,
+  type ClientAttachment,
+  type HostAttachment,
+  type HostInfo,
+  type HostSocketView,
+  type KnownHost,
+  boundHostOf,
+  buildHostList,
+  clientForwardTarget,
+  clientStatus,
+  hostIdOf,
+  isBoundTo,
+  knownHostEntry,
+  newestHost,
+  onlineHosts,
+  parseConnectRequest,
+  routeHostFrame,
+  socketsToReplace,
+} from "./hosts";
 
 export interface Env {
   RELAY: DurableObjectNamespace<RelayDO>;
@@ -22,22 +42,12 @@ const OPEN_STATE = 1;
 const CLIENT_TAG = "client";
 const clientTag = (connId: string) => `c:${connId}`;
 
-interface ClientAttachment {
-  connId: string;
-  /** CF-Connecting-IP, for the same-network hint. */
-  ip?: string | null;
-}
-
-interface HostAttachment {
-  /** Accept time; the highest one is the current host. */
-  generation: number;
-  ip?: string | null;
-}
-
 /**
- * One instance routes every frame between the single Supacode host socket and
- * the phone sockets. It never parses application messages beyond the
- * `<connId>\n` prefix (see docs/remote-access-protocol.md, "Relay framing").
+ * One instance routes every frame between the Supacode host sockets (one slot
+ * per hostId) and the phone sockets, each bound to one hostId for its life. It
+ * never parses application messages beyond the `<connId>\n` prefix (see
+ * docs/remote-access-protocol.md, "Relay framing"); the routing decisions live
+ * in `hosts.ts`.
  */
 export class RelayDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -47,23 +57,24 @@ export class RelayDO extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const role = new URL(request.url).pathname === "/host" ? HOST_TAG : CLIENT_TAG;
+    // The Worker already rejected a bad id with 400; this is the same parse.
+    const parsed = parseConnectRequest(new URL(request.url));
+    if (!parsed) return new Response("bad host id", { status: 400 });
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const ip = request.headers.get("CF-Connecting-IP");
-    if (role === HOST_TAG) {
-      this.acceptHost(server, ip);
+    if (parsed.role === "host") {
+      await this.acceptHost(server, ip, parsed.hostId, parsed.name);
     } else {
-      this.acceptClient(server, ip);
+      await this.acceptClient(server, ip, parsed.hostId);
     }
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private acceptHost(socket: WebSocket, ip: string | null) {
-    const previous = this.ctx.getWebSockets(HOST_TAG);
-    const generation = Date.now();
+  private async acceptHost(socket: WebSocket, ip: string | null, hostId: string, name: string | undefined) {
+    const previous = socketsToReplace(this.hostViews(), hostId);
     this.ctx.acceptWebSocket(socket, [HOST_TAG]);
-    socket.serializeAttachment({ generation, ip } satisfies HostAttachment);
+    socket.serializeAttachment({ generation: Date.now(), ip, hostId, name } satisfies HostAttachment);
     for (const old of previous) {
       // The text notice tells the old host to stop instead of reconnecting and
       // replacing this one in turn (two Supacode instances would flap).
@@ -74,42 +85,56 @@ export class RelayDO extends DurableObject<Env> {
         // Already closing.
       }
     }
-    // The host forgets every attachment when it reconnects, so a phone must
-    // see a false -> true edge to re-attach, even when the old socket is
-    // still listed as open.
-    if (previous.length > 0) this.broadcastToClients(relayStatus(false));
-    for (const phone of this.ctx.getWebSockets(CLIENT_TAG)) {
-      const attachment = phone.deserializeAttachment() as ClientAttachment | null;
-      if (attachment) {
+    await this.remember(hostId, name);
+    const { hosts, online } = await this.hostList();
+    const clients = this.clientViews();
+    // The host forgets every attachment when it reconnects, so a phone bound
+    // to it must see a false -> true edge to re-attach, even when the old
+    // socket is still listed as open. Phones bound to other hosts see nothing.
+    if (previous.length > 0) {
+      for (const { socket: phone, attachment } of clients) {
+        if (isBoundTo(attachment, hostId)) this.safeSend(phone, relayStatus(false, { host: hostId, hosts }));
+      }
+    }
+    for (const { attachment } of clients) {
+      if (attachment && isBoundTo(attachment, hostId)) {
         this.safeSend(socket, encodeHostFrame(attachment.connId, connOpen(sameNetwork(ip, attachment.ip ?? null))));
       }
     }
-    this.broadcastToClients(relayStatus(true));
+    this.sendStatusToClients(hosts, online);
   }
 
-  private acceptClient(socket: WebSocket, ip: string | null) {
+  private async acceptClient(socket: WebSocket, ip: string | null, hostId: string | null) {
     const connId = randomConnId();
+    const attachment: ClientAttachment = { connId, ip, hostId };
     this.ctx.acceptWebSocket(socket, [CLIENT_TAG, clientTag(connId)]);
-    socket.serializeAttachment({ connId, ip } satisfies ClientAttachment);
-    const host = this.host();
-    this.safeSend(socket, relayStatus(host !== null));
+    socket.serializeAttachment(attachment);
+    const { hosts, online, pruned } = await this.hostList();
+    if (pruned) {
+      // The list shrank for everyone, this client included.
+      this.sendStatusToClients(hosts, online);
+    } else {
+      this.safeSend(socket, statusFor(attachment, hosts, online));
+    }
+    // An unbound client, or one bound to an offline host, is announced nowhere (СВ2).
+    const target = clientForwardTarget(attachment, online);
+    const host = target === null ? null : newestHost(this.hostViews(), target);
     if (host) {
-      const hostIP = (host.deserializeAttachment() as HostAttachment | null)?.ip ?? null;
-      this.safeSend(host, encodeHostFrame(connId, connOpen(sameNetwork(ip, hostIP))));
+      this.safeSend(host.socket, encodeHostFrame(connId, connOpen(sameNetwork(ip, host.attachment?.ip ?? null))));
     }
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
     if (typeof message !== "string") return;
     if (this.ctx.getTags(socket).includes(HOST_TAG)) {
-      this.routeFromHost(message);
+      await this.routeFromHost(socket, message);
     } else {
       this.routeFromClient(socket, message);
     }
   }
 
   async webSocketClose(socket: WebSocket, code: number, reason: string) {
-    this.handleGone(socket);
+    await this.handleGone(socket);
     try {
       socket.close(code === 1005 ? 1000 : code, reason);
     } catch {
@@ -118,65 +143,112 @@ export class RelayDO extends DurableObject<Env> {
   }
 
   async webSocketError(socket: WebSocket) {
-    this.handleGone(socket);
+    await this.handleGone(socket);
   }
 
-  private handleGone(socket: WebSocket) {
-    const tags = this.ctx.getTags(socket);
-    if (tags.includes(HOST_TAG)) {
-      // Only the current host going away takes the Mac offline; a replaced
-      // one closing later changes nothing.
-      const current = this.host();
-      if (current === null || current === socket) {
-        if (this.host(socket) === null) this.broadcastToClients(relayStatus(false));
-      }
+  private async handleGone(socket: WebSocket) {
+    if (this.ctx.getTags(socket).includes(HOST_TAG)) {
+      const attachment = socket.deserializeAttachment() as HostAttachment | null;
+      const hostId = hostIdOf(attachment);
+      // Only the last socket of a hostId going away takes that Mac offline; a
+      // replaced one closing later changes nothing.
+      if (newestHost(this.hostViews(), hostId, socket) !== null) return;
+      await this.remember(hostId, attachment?.name);
+      const { hosts, online } = await this.hostList(socket);
+      this.sendStatusToClients(hosts, online);
       return;
     }
     const attachment = socket.deserializeAttachment() as ClientAttachment | null;
-    const host = this.host();
-    if (attachment && host) this.safeSend(host, encodeHostFrame(attachment.connId, '{"t":"conn.close"}'));
+    const host = this.boundHost(attachment);
+    if (attachment && host) this.safeSend(host.socket, encodeHostFrame(attachment.connId, '{"t":"conn.close"}'));
   }
 
-  private routeFromHost(message: string) {
+  private async routeFromHost(socket: WebSocket, message: string) {
     const frame = parseHostFrame(message);
     if (!frame) return;
-    if (frame.connId === "*") {
-      this.broadcastToClients(frame.json);
-      return;
-    }
-    for (const phone of this.ctx.getWebSockets(clientTag(frame.connId))) {
-      this.safeSend(phone, frame.json);
+    const attachment = socket.deserializeAttachment() as HostAttachment | null;
+    const hostId = hostIdOf(attachment);
+    const route = routeHostFrame(frame.connId, frame.json);
+    switch (route.kind) {
+      case "rename": {
+        // ИД3: the only frame that writes storage; never forwarded.
+        socket.serializeAttachment({ ...(attachment ?? { generation: 0 }), hostId, name: route.name } satisfies HostAttachment);
+        await this.remember(hostId, route.name);
+        const { hosts, online } = await this.hostList();
+        this.sendStatusToClients(hosts, online);
+        return;
+      }
+      case "broadcast":
+        for (const { socket: phone, attachment: client } of this.clientViews()) {
+          if (isBoundTo(client, hostId)) this.safeSend(phone, frame.json);
+        }
+        return;
+      case "direct":
+        for (const phone of this.ctx.getWebSockets(clientTag(route.connId))) {
+          // A frame for a phone bound to another Mac is dropped.
+          if (isBoundTo(phone.deserializeAttachment() as ClientAttachment | null, hostId)) this.safeSend(phone, frame.json);
+        }
+        return;
+      case "drop":
+        return;
     }
   }
 
   private routeFromClient(socket: WebSocket, message: string) {
     const attachment = socket.deserializeAttachment() as ClientAttachment | null;
     if (!attachment) return;
-    const host = this.host();
+    // Unbound, or the bound host is offline: the usual error (РЛ3, СВ2).
+    const host = this.boundHost(attachment);
     if (!host) {
       this.safeSend(socket, hostOfflineError(requestId(message)));
       return;
     }
-    this.safeSend(host, encodeHostFrame(attachment.connId, message));
+    this.safeSend(host.socket, encodeHostFrame(attachment.connId, message));
   }
 
-  /** The newest host socket; a replaced one may still be listed while it closes. */
-  private host(except?: WebSocket): WebSocket | null {
-    let newest: WebSocket | null = null;
-    let newestGeneration = -1;
-    for (const socket of this.ctx.getWebSockets(HOST_TAG)) {
-      if (socket === except || socket.readyState !== OPEN_STATE) continue;
-      const generation = (socket.deserializeAttachment() as HostAttachment | null)?.generation ?? 0;
-      if (generation > newestGeneration) {
-        newest = socket;
-        newestGeneration = generation;
-      }
+  /** The newest open socket of the client's bound host; null when unbound or offline. */
+  private boundHost(client: ClientAttachment | null): HostSocketView<WebSocket> | null {
+    const bound = boundHostOf(client);
+    return bound === null ? null : newestHost(this.hostViews(), bound);
+  }
+
+  /** Stores `host:<hostId>` on host accept, rename and disconnect (РЛ5); never the legacy host. */
+  private async remember(hostId: string, name: string | undefined) {
+    const entry = knownHostEntry(hostId, name, Date.now());
+    if (entry) await this.ctx.storage.put(KNOWN_HOST_PREFIX + hostId, entry);
+  }
+
+  /** The current host list; prunes stored hosts that aged out (РЛ5). `except` is a host socket that is closing. */
+  private async hostList(except?: WebSocket): Promise<{ hosts: HostInfo[]; online: Map<string, string | undefined>; pruned: boolean }> {
+    const stored = await this.ctx.storage.list<KnownHost>({ prefix: KNOWN_HOST_PREFIX });
+    const known = new Map<string, KnownHost>();
+    for (const [key, entry] of stored) known.set(key.slice(KNOWN_HOST_PREFIX.length), entry);
+    const online = onlineHosts(this.hostViews(), except);
+    const { hosts, prune } = buildHostList(known, online, Date.now());
+    if (prune.length > 0) await this.ctx.storage.delete(prune.map((id) => KNOWN_HOST_PREFIX + id));
+    return { hosts, online, pruned: prune.length > 0 };
+  }
+
+  /** ПР1: each client gets its own copy, with its own `host` and `hostOnline`. */
+  private sendStatusToClients(hosts: HostInfo[], online: ReadonlyMap<string, unknown>) {
+    for (const { socket, attachment } of this.clientViews()) {
+      this.safeSend(socket, statusFor(attachment, hosts, online));
     }
-    return newest;
   }
 
-  private broadcastToClients(text: string) {
-    for (const phone of this.ctx.getWebSockets(CLIENT_TAG)) this.safeSend(phone, text);
+  private hostViews(): HostSocketView<WebSocket>[] {
+    return this.ctx.getWebSockets(HOST_TAG).map((socket) => ({
+      socket,
+      attachment: socket.deserializeAttachment() as HostAttachment | null,
+      open: socket.readyState === OPEN_STATE,
+    }));
+  }
+
+  private clientViews(): { socket: WebSocket; attachment: ClientAttachment | null }[] {
+    return this.ctx.getWebSockets(CLIENT_TAG).map((socket) => ({
+      socket,
+      attachment: socket.deserializeAttachment() as ClientAttachment | null,
+    }));
   }
 
   private safeSend(socket: WebSocket, text: string) {
@@ -186,4 +258,9 @@ export class RelayDO extends DurableObject<Env> {
       // The peer is closing; its close handler cleans up.
     }
   }
+}
+
+function statusFor(client: ClientAttachment | null, hosts: HostInfo[], online: ReadonlyMap<string, unknown>): string {
+  const status = clientStatus(client, hosts, online);
+  return relayStatus(status.hostOnline, status);
 }
