@@ -164,8 +164,8 @@ that is not being removed. Absent (old host) means false: the client shows no bu
   closing and the relay socket dropping cancel the waits of those phones (as `tab.new` does), and a
   path switch (LAN ↔ relay) is a new connection id. The host never re-sends a reply and never
   cancels the creation. The client shows "Connection lost; the worktree may still appear in the
-  list", does not retry, and after reconnecting refreshes `list`. A retry with the same name would
-  fail with "Branch name already exists" (or `creationInProgress` while the first still runs).
+  list", does not retry, and after reconnecting refreshes `list`. A retry with the same name gets
+  `worktree_busy` while the first still runs, or "Branch name already exists" once it has succeeded.
 - К3 Reply time: the host answers within **310 s** of receiving the request: at most 300 s
   local / 290 s ssh (`worktreeNewTimeout`) for the app's outcome (license check included), then at
   most 10 s local / 20 s ssh (`worktreeNewTabTimeout`) for the first tab, each enforced by `RemoteHostRouter.poll`'s raced
@@ -241,9 +241,11 @@ that is not being removed. Absent (old host) means false: the client shows no bu
        name as the branch, `RepositoriesFeature+Remote.swift:466-472`);
      - `createRandomWorktreeFailed` → `.failed("<title>: <message>")`;
        `worktreeCreationRejected` (local guards, license, and every ssh failure) → `.failed(message)`;
-     - Mac cancel: `cancelPendingWorktree` sends `.cliWorktreeAckCancelled(pendingID)` at once
-       (`RepositoriesFeature.swift:5514`) → `.failed("Worktree creation was cancelled on the Mac.")`
-       (the success-arm check above is the backstop).
+     - Mac cancel: no arm for `.cliWorktreeAckCancelled(pendingID)`, although `cancelPendingWorktree`
+       sends it at once (`RepositoriesFeature.swift:5514`). git keeps running, so the entry stays
+       `.creating` (and the busy guard holds) until the creation's terminal action:
+       `createRandomWorktreeSucceeded` with the cancel flag (above) or `createRandomWorktreeFailed`
+       (cancelled failure) → `.failed`. The phone gets `worktree_failed` only then.
    - `.terminalEvent(.initialTabCreationFailed(worktreeID, _))`: the entry whose value is
      `.created(worktreeID, name)` becomes `.tabFailed(worktreeID, name)` (lookup by real id, as
      `bindWorktreeNewAck` binds the CLI ack). `.tabCreated` needs no arm: the router reads the tab
@@ -326,8 +328,9 @@ that is not being removed. Absent (old host) means false: the client shows no bu
 - Success: close the dialog, refresh `list`, open the new worktree and attach to `contentId`; without
   `contentId` open the worktree and offer "New tab".
 - Error: keep the dialog open with the name, show `message`; for `worktree_timeout`, a client-side
-  timeout (К3) or a lost connection (К2) say "Still creating on the Mac (or connection lost); it
-  will appear in the list." and do not retry.
+  timeout (К3) or a lost connection (К2) say "Still creating on the Mac, or the connection
+  was lost. If it succeeds it will appear in the list; if not, the Mac shows why. You can try again
+  with the same name." (К3a). No automatic retry.
 
 ## Task split
 
@@ -337,9 +340,12 @@ that is not being removed. Absent (old host) means false: the client shows no bu
   `worktreeCreation(pendingID:)`, `firstTerminalTab(of:)`, `canCreateWorktree`), `RemoteHostRouter`
   (`worktree.new`, waits, timeouts, cancel on disconnect, `replyError` code), `AppFeature`
   (`remoteWorktreeCreations`, `.remoteWorktreeNewRequested`, `.remoteWorktreeCreationConsumed`,
+  `.remoteWorktreeCreationAbandoned`,
   the outcome updates in the existing arms). Tests: router/source unit tests with `TestClock`
   (success with tab, success without tab after 10 s, `.tabFailed`, app failure message, timeout,
-  disconnect cancels the wait and consumes the entry), builder test for `canCreateWorktree`,
+  disconnect or timeout while creating marks the entry abandoned and the busy guard holds until
+  the outcome settles, then the entry is removed; disconnect after `.created` consumes it;
+  Mac cancel keeps `.creating` until the terminal action), builder test for `canCreateWorktree`,
   `AppFeature` `TestStore` tests for each outcome arm, the Mac-cancel case, unknown pending ids
   ignored, and consumption. Then `make test` and `make build-app`.
 - T2 protocol doc (`docs/remote-access-protocol.md`): new `### worktree.new` section after
