@@ -48,6 +48,26 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
   var rows: RemoteLenientInt?
   /// `conn.open` from the relay: the phone is on the Mac's network.
   var sameNetwork: Bool?
+  /// `worktree.new`: the repository to create the worktree in (`repos[].id`).
+  var repositoryId: RemoteLenientString?
+  /// `worktree.new`: the branch name (required, trimmed by the host).
+  var name: RemoteLenientString?
+}
+
+/// An optional string field that never fails the message: a value that is not
+/// a string decodes as an invalid value (`value == nil`), so the handler can
+/// answer it instead of the whole request being dropped. An absent key (or
+/// `null`) leaves the field itself nil.
+nonisolated struct RemoteLenientString: Decodable, Equatable, Sendable {
+  let value: String?
+
+  init(_ value: String?) {
+    self.value = value
+  }
+
+  init(from decoder: any Decoder) throws {
+    value = try? decoder.singleValueContainer().decode(String.self)
+  }
 }
 
 /// An optional integer field that never fails the message: a value that is not
@@ -374,6 +394,9 @@ nonisolated struct RemoteRepository: Encodable, Equatable, Sendable {
   /// Worktree ids the sidebar lists under this repository, in order; rows
   /// hoisted into Active / Pinned are left out. Empty until set by the source.
   var rowIds: [String] = []
+  /// Whether a client may send `worktree.new` for this repository: a git
+  /// repository (local or ssh) that is not being removed.
+  var canCreateWorktree = false
 }
 
 nonisolated struct RemoteWorktree: Encodable, Equatable, Sendable {
@@ -437,6 +460,37 @@ nonisolated struct RemoteTabNewMessage: Encodable, Equatable, Sendable {
   let worktreeId: String
   let tabId: String
   let contentId: String
+}
+
+/// The answer to `worktree.new`: the created worktree and, when its first
+/// terminal tab is in the layout, that tab and the content to attach to.
+/// `tabId` and `contentId` are omitted together when the worktree has no tab.
+nonisolated struct RemoteWorktreeNewMessage: Encodable, Equatable, Sendable {
+  var t = "worktree.new"
+  let id: Int?
+  let repositoryId: String
+  let worktreeId: String
+  let name: String
+  var tabId: String?
+  var contentId: String?
+
+  // Encode `id` as an explicit null so clients can match on it.
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(t, forKey: .t)
+    try container.encode(id, forKey: .id)
+    try container.encode(repositoryId, forKey: .repositoryId)
+    try container.encode(worktreeId, forKey: .worktreeId)
+    try container.encode(name, forKey: .name)
+    if let tabId, let contentId {
+      try container.encode(tabId, forKey: .tabId)
+      try container.encode(contentId, forKey: .contentId)
+    }
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case t, id, repositoryId, worktreeId, name, tabId, contentId
+  }
 }
 
 nonisolated enum RemoteJSON {
