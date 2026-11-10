@@ -12,9 +12,9 @@ import Testing
 @MainActor
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct RemoteAccessWorktreeNewTests {
-  private static let worktreeID = WorktreeID("/tmp/repo/feature-x")
-  private static let firstTab = RemoteWorktreeNewTab(tabId: "tab-1", contentId: "content-1")
-  fileprivate static let pendingID = WorktreeID("pending:remote-1")
+  private nonisolated static let worktreeID = WorktreeID("/tmp/repo/feature-x")
+  private nonisolated static let firstTab = RemoteWorktreeNewTab(tabId: "tab-1", contentId: "content-1")
+  fileprivate nonisolated static let pendingID = WorktreeID("pending:remote-1")
 
   // MARK: - Request
 
@@ -134,12 +134,12 @@ struct RemoteAccessWorktreeNewTests {
 
     /// The app's entry as a one-entry dictionary, for the `AppFeature` transitions.
     func apply(_ change: (inout [WorktreeID: AppFeature.RemoteWorktreeCreation]) -> Void) {
-      creation.withValue { value in
-        var creations: [WorktreeID: AppFeature.RemoteWorktreeCreation] = [:]
-        creations[RemoteAccessWorktreeNewTests.pendingID] = value
-        change(&creations)
-        value = creations[RemoteAccessWorktreeNewTests.pendingID]
-      }
+      // Not `withValue`: its closure is `@Sendable` and `change` is not; the tests are serial.
+      let pendingID = RemoteAccessWorktreeNewTests.pendingID
+      var creations: [WorktreeID: AppFeature.RemoteWorktreeCreation] = [:]
+      creations[pendingID] = creation.value
+      change(&creations)
+      creation.setValue(creations[pendingID])
     }
 
     nonisolated deinit {}
