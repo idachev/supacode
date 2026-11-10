@@ -142,6 +142,56 @@ struct RemoteAccessProtocolTests {
     #expect(RemoteHelloMessage.appLabel(shortVersion: "", build: "") == nil)
   }
 
+  @Test func appLabelCarriesTheBuildDateAndShaWhenKnown() {
+    let all = RemoteHelloMessage.appLabel(
+      shortVersion: "0.11.5", build: "154", buildDate: "2026-11-10 14:25:09", commit: "2e264f48")
+    #expect(all == "Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48")
+  }
+
+  @Test func appLabelLeavesOutAMissingDateOrSha() {
+    #expect(
+      RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "154", buildDate: nil, commit: "2e264f48")
+        == "Supacode 0.11.5 (154) · 2e264f48")
+    #expect(
+      RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "154", buildDate: "2026-11-10 14:25:09", commit: nil)
+        == "Supacode 0.11.5 (154) · 2026-11-10")
+    #expect(
+      RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "154", buildDate: "  ", commit: "")
+        == "Supacode 0.11.5 (154)")
+  }
+
+  @Test func appLabelTreatsTheStampPlaceholderAndAMalformedDateAsUnknown() {
+    #expect(
+      RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "154", buildDate: "n/a", commit: "unknown")
+        == "Supacode 0.11.5 (154)")
+    #expect(
+      RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "154", buildDate: "20261110", commit: "Unknown")
+        == "Supacode 0.11.5 (154)")
+    #expect(
+      RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "154", buildDate: nil, commit: "2e264f48-dirty")
+        == "Supacode 0.11.5 (154) · 2e264f48-dirty")
+  }
+
+  @Test func appLabelWithOnlyTheStampStillNamesTheApp() {
+    #expect(
+      RemoteHelloMessage.appLabel(shortVersion: nil, build: nil, buildDate: "2026-11-10 14:25:09", commit: "2e264f48")
+        == "Supacode · 2026-11-10 · 2e264f48")
+  }
+
+  @Test func appLabelWithNothingKnownIsNil() {
+    #expect(RemoteHelloMessage.appLabel(shortVersion: nil, build: nil, buildDate: nil, commit: nil) == nil)
+    #expect(RemoteHelloMessage.appLabel(shortVersion: " ", build: "", buildDate: "", commit: " ") == nil)
+    #expect(RemoteHelloMessage.appLabel(shortVersion: nil, build: nil, buildDate: "bad", commit: "unknown") == nil)
+  }
+
+  @Test func helloCarriesTheFullAppLabel() throws {
+    let app = RemoteHelloMessage.appLabel(
+      shortVersion: "0.11.5", build: "154", buildDate: "2026-11-10 14:25:09", commit: "2e264f48")
+    let hello = RemoteHelloMessage(host: "Office Mac", app: app)
+    let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
+    #expect(json["app"] as? String == "Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48")
+  }
+
   @Test func helloWithoutAnAppBuildOmitsTheField() throws {
     let hello = RemoteHelloMessage(host: "Office Mac", app: nil)
     let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
