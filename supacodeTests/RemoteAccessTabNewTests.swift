@@ -1,5 +1,6 @@
 import Clocks
 import ConcurrencyExtras
+import CoreGraphics
 import Foundation
 import SupacodeSettingsShared
 import Testing
