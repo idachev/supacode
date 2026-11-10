@@ -213,8 +213,8 @@ only another `default` socket. On the phone it shows as „Mac без име“ 
 **СВ2. A client without `host` is unbound.** `/client` without `host` binds to no host: the relay
 sends `{"t":"relay","hostOnline":false,"hosts":[…]}` without `host`, sends no `conn.open` anywhere,
 and answers any message from it with the usual `host offline` error. It gets every list update
-(ПР1). The phone uses it only when it has no valid selection (АН2) and reconnects with `?host=` once
-it picks.
+(ПР1). The phone uses it only when nothing is saved (АН2) and reconnects with `?host=` once it
+picks.
 
 Why: the simplest rule that serves the new phone's first start, and the relay keeps one routing path
 (bound host or none). There is no old phone to serve (ОТ2 revised).
@@ -366,10 +366,12 @@ selection is kept for when a new relay comes back.
 
 **АН2. Selection.** `SettingsStore` gets `selectedHostId: StateFlow<String?>` and
 `setSelectedHostId(String?)` (plain preferences, not secret). `RelayUrl.clientUrl(base, hostId)`
-appends `?host=<id>` when the id is set. The phone has no valid selection when none is saved, or when
-a `relay` message with `hosts != null` does not list the saved id (pruned, or the legacy `default`
-after its Mac upgraded). Then: exactly one host online → select it (АН3); otherwise open „Mac-ове“.
-With no saved id it connects without `host` (unbound, СВ2) only to read the list.
+appends `?host=<id>` when the id is set. A saved selection never changes by itself (owner ОП20).
+With nothing saved the phone connects without `host` (unbound, СВ2) to read the list: exactly one
+host online → select it (АН3); otherwise open „Mac-ове“. When a `relay` message with
+`hosts != null` does not list the saved id (pruned, or the legacy `default` while offline or after
+its Mac upgraded), the phone keeps the selection, shows the offline banner and opens „Mac-ове“; only
+the owner's pick changes it.
 
 **АН3. Switch.** `RelayClient.selectHost(id)`: save the id (`default` too), close the LAN session, close the relay
 socket (1000), reset `hostOnline` and `hostSession`, reconnect with the new URL. `RelayClient`
@@ -433,9 +435,9 @@ which it drops today) survive a key rotation. `phone-sim.mjs` gets `--host <id>`
   renamed name after `rename(to:)`.
 - **Android (JVM).** `ProtocolCodecTest`: `relay` with and without `hosts`/`host`, `HostInfo` without
   `name`, hello `hostId`. `RelayUrlTest`: `?host=` encoding, none when null. `RelayClientTest`:
-  `selectHost` reconnects with the new URL and resets `hostSession`; no valid selection with one online
-  host selects it, with several opens „Mac-ове“; saved id missing from `hosts` counts as no
-  selection; `hosts` missing vs empty; list-only
+  `selectHost` reconnects with the new URL and resets `hostSession`; nothing saved with one online host
+  selects it, with several opens „Mac-ове“; a saved id missing from `hosts` keeps the selection and
+  opens „Mac-ове“; `hosts` missing vs empty; list-only
   `relay` repeats do not send `hello`; old relay → single-host. `RelayLanTest`: `hello` with a foreign
   `hostId` starts no LAN. `AwaitingTrackerTest`: reset on switch.
 
@@ -465,6 +467,10 @@ at the `RelayClient` API named in АН3; ЗД6 may stub it until ЗД5 lands.
   `host` is unbound (СВ2).
 - **ОТ3 = ОП13.** Accepted: a hand edit of `hostName` applies on the next host start (СУ7).
 - **ДК2 = ОП15.** Approved: `gen-keys.mjs` keeps every existing key, which also stops it dropping `lan`.
+- **ОП18.** Accepted: a rename saved from a copy of Supacode that does not host applies on the next
+  host start, as a hand edit (ОП13, СУ7).
+- **ОП20.** A saved host selection never changes by itself: a saved id missing from the list opens
+  „Mac-ове“; automatic selection only when nothing is saved (АН2).
 
 ## Not confirmed
 
