@@ -1133,6 +1133,40 @@ final class GhosttySurfaceView: NSView, Identifiable {
         height: current.height - CGFloat(extraRows) * cell.height
       )
     }
+
+    /// The backing size a new surface needs to start at `limit` (exactly when
+    /// `exact`, else at most), from a live surface's backing size, grid and
+    /// cell size: with the same font and scale the new surface gets the same
+    /// cells and padding remainder. Nil while the cell metrics are unknown.
+    static func startBackingSize(current: CGSize, grid: Grid, cell: CGSize, limit: Grid, exact: Bool) -> CGSize? {
+      guard cell.width > 0, cell.height > 0 else { return nil }
+      return backingSize(current: current, grid: grid, cell: cell, limit: limit, exact: exact) ?? current
+    }
+  }
+
+  /// The geometry a new surface needs so its PTY starts at `grid`, measured on
+  /// this live surface's cell size, padding and scale; nil while its core
+  /// surface or cell metrics do not exist. Valid only for a surface that
+  /// starts with this one's font (`TerminalSurfaceRecipe.startGeometry`).
+  func startGeometry(for grid: TerminalStartGrid) -> ContentGeometry? {
+    guard let surface else { return nil }
+    let size = ghostty_surface_size(surface)
+    guard
+      let pixels = GridCap.startBackingSize(
+        current: CGSize(width: CGFloat(size.width_px), height: CGFloat(size.height_px)),
+        grid: (Int(size.columns), Int(size.rows)),
+        cell: CGSize(width: CGFloat(size.cell_width_px), height: CGFloat(size.cell_height_px)),
+        limit: (grid.columns, grid.rows),
+        exact: grid.exact
+      )
+    else { return nil }
+    return ContentGeometry.sized(pixelSize: pixels, scale: appliedContentScale)
+  }
+
+  /// The zoomed font size in points, 0 at the configured default; nil without
+  /// a core surface.
+  var zoomedFontSize: Float32? {
+    surface.map { ghostty_surface_font_size($0) }
   }
 
   /// Shrinks a surface that was never in a window to at most `maxColumns` ×

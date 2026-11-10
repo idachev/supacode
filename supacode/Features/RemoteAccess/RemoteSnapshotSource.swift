@@ -150,9 +150,11 @@ final class RemoteSnapshotSource {
   /// Opens one new terminal tab (the default shell, the worktree's directory)
   /// in a worktree through the terminal command the app's "new tab" action
   /// sends, in the background: the tab is not selected and the window keeps
-  /// its worktree. Returns the minted tab id (also its content id), or why
-  /// no tab was requested. The tab lands asynchronously; poll `contentID(ofTab:in:)`.
-  func requestNewTab(worktreeID raw: String) -> Result<UUID, RemoteTabNewRejection> {
+  /// its worktree. The terminal starts at `startGrid` when the worktree has a
+  /// live terminal to measure it on. Returns the minted tab id (also its
+  /// content id), or why no tab was requested. The tab lands asynchronously;
+  /// poll `contentID(ofTab:in:)`.
+  func requestNewTab(worktreeID raw: String, startGrid: TerminalStartGrid) -> Result<UUID, RemoteTabNewRejection> {
     let state = store.repositories
     var found: (worktree: Worktree, isArchived: Bool)?
     for repository in state.repositories {
@@ -175,7 +177,7 @@ final class RemoteSnapshotSource {
     terminalManager.handleCommand(
       .createTab(
         worktree, runSetupScriptIfNew: runSetupScript, id: tabID, focusing: false,
-        workingDirectory: Self.newTabDirectory(for: worktree)))
+        workingDirectory: Self.newTabDirectory(for: worktree), startGrid: startGrid))
     return .success(tabID)
   }
 
