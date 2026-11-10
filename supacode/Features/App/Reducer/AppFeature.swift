@@ -195,6 +195,9 @@ struct AppFeature {
     /// timeout action can't fire against a dialog that recycled the same fd.
     var confirmationGeneration: Int = 0
     var appLifecycleEventDebouncer = AppLifecycleEventDebouncer()
+    /// Remote `worktree.new` requests by their pending id, until the remote
+    /// host consumes the outcome (`.remoteWorktreeCreationConsumed`).
+    var remoteWorktreeCreations: [Worktree.ID: RemoteWorktreeCreation] = [:]
 
     init(
       repositories: RepositoriesFeature.State = .init(),
@@ -375,6 +378,71 @@ struct AppFeature {
     case agentResumeWakeRequested([ContentID])
     /// Wakes the next queued pane that is still pending.
     case agentResumeWakeTick
+    /// A remote client asked for a new worktree (`worktree.new`): create it
+    /// with this explicit branch name and pending id, as the Mac's own button would.
+    case remoteWorktreeNewRequested(repositoryID: Repository.ID, name: String, pendingID: Worktree.ID)
+    /// The remote host answered this creation, or stopped waiting on it after
+    /// its outcome settled; forget it.
+    case remoteWorktreeCreationConsumed(pendingID: Worktree.ID)
+    /// The remote host stopped waiting (timeout, phone gone) while the creation
+    /// still runs: keep the entry as the `worktree_busy` guard and drop it when
+    /// the outcome arrives.
+    case remoteWorktreeCreationAbandoned(pendingID: Worktree.ID)
+  }
+
+  /// Where one remote `worktree.new` stands. An entry moves only from
+  /// `.creating`; a settled entry is never overwritten (except `.created` →
+  /// `.tabFailed` when the first tab fails). A `.creating` entry is also the
+  /// remote `worktree_busy` guard for its repository and name.
+  nonisolated enum RemoteWorktreeCreation: Equatable, Sendable {
+    /// Still being created. `name` is the trimmed branch name that was
+    /// requested; `abandoned` once the remote host stopped waiting on it.
+    case creating(repositoryID: Repository.ID, name: String, abandoned: Bool)
+    case created(worktreeID: Worktree.ID, name: String)
+    /// Created, but its first terminal tab could not be hosted.
+    case tabFailed(worktreeID: Worktree.ID, name: String)
+    case failed(message: String)
+
+    /// The message a remote client gets when the Mac user cancels the creation.
+    static let cancelledMessage = "Worktree creation was cancelled on the Mac."
+
+    var isSettled: Bool {
+      if case .creating = self { return false }
+      return true
+    }
+
+    /// Moves a `.creating` entry to its outcome, or removes it when the remote
+    /// host abandoned it (nobody waits for the outcome). An unknown or settled
+    /// entry is left alone.
+    static func settle(
+      _ pendingID: Worktree.ID, as outcome: Self, in creations: inout [Worktree.ID: Self]
+    ) {
+      guard case .creating(_, _, let abandoned) = creations[pendingID] else { return }
+      creations[pendingID] = abandoned ? nil : outcome
+    }
+
+    /// Marks a `.creating` entry abandoned; a settled entry is removed instead
+    /// (the host only abandons a creation it believes still runs).
+    static func abandon(_ pendingID: Worktree.ID, in creations: inout [Worktree.ID: Self]) {
+      switch creations[pendingID] {
+      case .creating(let repositoryID, let name, _):
+        creations[pendingID] = .creating(repositoryID: repositoryID, name: name, abandoned: true)
+      case .some:
+        creations[pendingID] = nil
+      case nil:
+        break
+      }
+    }
+
+    /// Whether a creation of this repository and (case-insensitive) name is
+    /// still running, abandoned or not (`worktree_busy`).
+    static func isInFlight(repositoryID: String, name: String, in creations: [Worktree.ID: Self]) -> Bool {
+      let wanted = name.lowercased()
+      return creations.values.contains { creation in
+        guard case .creating(let repository, let creating, _) = creation else { return false }
+        return repository.rawValue == repositoryID && creating.lowercased() == wanted
+      }
+    }
   }
 
   nonisolated enum AgentResumeCancelID: Hashable, Sendable {
@@ -1623,11 +1691,16 @@ struct AppFeature {
       case .repositories(.delegate(.licenseSnapshotUpdated(let snapshot))):
         return .send(.license(.snapshotUpdated(snapshot)))
       case .repositories(.worktreeCreationRejected(let pendingID, let message, _)):
+        if let pendingID { settleRemoteWorktreeCreation(pendingID, as: .failed(message: message), state: &state) }
         return resolveCommandAcks(ok: false, error: message, state: &state) { match in
           if case .worktreeNew(let ackPendingID, _) = match { return ackPendingID == pendingID }
           return false
         }
       case .repositories(.remoteWorktreeCreationCompleted(let pendingID, let worktreeID)):
+        // The ssh path carries no name; it used the trimmed requested one as the branch.
+        if case .creating(_, let name, _) = state.remoteWorktreeCreations[pendingID] {
+          settleRemoteWorktreeCreation(pendingID, as: .created(worktreeID: worktreeID, name: name), state: &state)
+        }
         return resolveCommandAcks(
           ok: true, resourceID: Self.percentEncodedID(worktreeID.rawValue), state: &state
         ) { match in
@@ -1642,20 +1715,45 @@ struct AppFeature {
         return .none
       case .remoteAccess:
         return .none
+      case .remoteWorktreeNewRequested(let repositoryID, let name, let pendingID):
+        return requestRemoteWorktree(repositoryID: repositoryID, name: name, pendingID: pendingID, state: &state)
+      case .remoteWorktreeCreationConsumed(let pendingID):
+        state.remoteWorktreeCreations[pendingID] = nil
+        return .none
+      case .remoteWorktreeCreationAbandoned(let pendingID):
+        RemoteWorktreeCreation.abandon(pendingID, in: &state.remoteWorktreeCreations)
+        return .none
       case .repositories(.createRandomWorktreeSucceeded(let worktree, _, let pendingID)):
         // Bind this creation's ack (matched by its pending id) to the real
         // worktree id so its first tab resolves it.
         bindWorktreeNewAck(pendingID: pendingID, to: worktree.id, state: &state)
+        // Core runs before the repositories scope, so the cancel flag is still set here.
+        let cancelled = state.repositories.cancelRequestedPendingIDs.contains(pendingID)
+        settleRemoteWorktreeCreation(
+          pendingID,
+          as: cancelled
+            ? .failed(message: RemoteWorktreeCreation.cancelledMessage)
+            : .created(worktreeID: worktree.id, name: worktree.name),
+          state: &state)
         return .none
 
-      case .repositories(.createRandomWorktreeFailed(_, let message, let pendingID, _, _, _, _)):
+      case .repositories(.createRandomWorktreeFailed(let title, let message, let pendingID, _, _, _, _)):
+        // Core runs before the repositories scope, so a Mac cancel's flag is still set here.
+        let cancelledOnMac = state.repositories.cancelRequestedPendingIDs.contains(pendingID)
+        settleRemoteWorktreeCreation(
+          pendingID,
+          as: .failed(message: cancelledOnMac ? RemoteWorktreeCreation.cancelledMessage : "\(title): \(message)"),
+          state: &state)
         return resolveCommandAcks(ok: false, error: message, state: &state) { match in
           if case .worktreeNew(let ackPendingID, _) = match { return ackPendingID == pendingID }
           return false
         }
 
       case .repositories(.cliWorktreeAckCancelled(let pendingID)):
-        // The creation prompt was cancelled before it produced a worktree.
+        // The creation prompt was cancelled before it produced a worktree, or
+        // the Mac user cancelled the pending row. A remote entry stays
+        // `.creating` here: git may still run, so it settles (and stops
+        // guarding its name) only with the creation's terminal action.
         return resolveCommandAcks(
           ok: false, error: "Worktree creation cancelled.", state: &state
         ) { match in
@@ -2142,6 +2240,7 @@ struct AppFeature {
         }
 
       case .terminalEvent(.initialTabCreationFailed(let worktreeID, let message)):
+        markRemoteWorktreeTabFailed(worktreeID, state: &state)
         // The first tab could not be hosted: fail the worktree-new ack and
         // settle the creation-progress state so the worktree shows with no tabs
         // (a valid empty state to retry from).
@@ -4116,6 +4215,46 @@ struct AppFeature {
       sendSocketResponse(
         clientFD: ack.responseFD, ok: succeeded, error: error, resourceID: resourceID),
       .cancel(id: CancelID.commandAck(ack.responseFD, ack.token))
+    )
+  }
+
+  /// Moves a remote `worktree.new` entry out of `.creating` (`RemoteWorktreeCreation.settle`).
+  private func settleRemoteWorktreeCreation(
+    _ pendingID: Worktree.ID, as outcome: RemoteWorktreeCreation, state: inout State
+  ) {
+    RemoteWorktreeCreation.settle(pendingID, as: outcome, in: &state.remoteWorktreeCreations)
+  }
+
+  /// The first tab of a remotely created worktree failed: its entry (found by
+  /// the real worktree id, as `bindWorktreeNewAck` binds the CLI ack) becomes `.tabFailed`.
+  private func markRemoteWorktreeTabFailed(_ worktreeID: Worktree.ID, state: inout State) {
+    for (pendingID, creation) in state.remoteWorktreeCreations {
+      guard case .created(worktreeID: worktreeID, name: let name) = creation else { continue }
+      state.remoteWorktreeCreations[pendingID] = .tabFailed(worktreeID: worktreeID, name: name)
+    }
+  }
+
+  /// A remote `worktree.new`: an explicit branch name (never `.random`), the
+  /// repository's base ref and the global fetch setting, like the CLI's
+  /// explicit-branch path, so the Mac's New Worktree prompt is bypassed. The
+  /// Mac selects the new worktree (`background: false`), as its own button does.
+  private func requestRemoteWorktree(
+    repositoryID: Repository.ID, name: String, pendingID: Worktree.ID, state: inout State
+  ) -> Effect<Action> {
+    state.remoteWorktreeCreations[pendingID] = .creating(repositoryID: repositoryID, name: name, abandoned: false)
+    @Shared(.settingsFile) var settingsFile: SettingsFile
+    return .send(
+      .repositories(
+        .createWorktreeInRepository(
+          repositoryID: repositoryID,
+          nameSource: .explicit(name),
+          baseRefSource: .repositorySetting,
+          fetchOrigin: settingsFile.global.fetchOriginBeforeWorktreeCreation,
+          pendingID: pendingID,
+          background: false,
+          pin: false
+        )
+      )
     )
   }
 

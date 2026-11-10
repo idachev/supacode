@@ -149,6 +149,10 @@ extension AppFeature.Action {
     // The background wake queue touches only `agentResume`, never a snapshot input.
     case .agentResumeWakeRequested, .agentResumeWakeTick:
       return false
+    // Remote `worktree.new` bookkeeping touches only `remoteWorktreeCreations`;
+    // the creation itself flows through classified `.repositories` arms.
+    case .remoteWorktreeNewRequested, .remoteWorktreeCreationConsumed, .remoteWorktreeCreationAbandoned:
+      return false
     }
   }
 }

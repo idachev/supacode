@@ -46,6 +46,17 @@ struct RemoteAccessSnapshotSourceTests {
     #expect(tabs[1].agents.isEmpty)
   }
 
+  @Test func worktreeNewReportsTheFirstTabListWillShow() {
+    let first = tab("zsh")
+    let second = tab("logs")
+    let layout = layout([[first], [second]], focused: 1)
+    let runtime = ContentRuntime()
+    let listed = RemoteSnapshotSource.tabs(in: layout, runtime: runtime)
+    let reported = RemoteSnapshotSource.firstTerminalTab(in: layout, runtime: runtime)
+    #expect(reported == RemoteWorktreeNewTab(tabId: listed[0].id, contentId: listed[0].contentId))
+    #expect(reported?.contentId == first.content.id.rawValue.uuidString)
+  }
+
   @Test func focusedTabIsTheSelectedTabOfTheFocusedPane() {
     let first = tab("a")
     let second = tab("b")
