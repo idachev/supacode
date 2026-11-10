@@ -66,6 +66,13 @@ default one); the examples use `personal`.
    node scripts/phone-sim.mjs
    ```
 
+   Without `--host` the simulator is not bound to a Mac: it prints only the `HOSTS` list. Take the
+   `id` of your Mac from it and run again:
+
+   ```sh
+   node scripts/phone-sim.mjs --host <hostId>
+   ```
+
    Expect `"hostOnline":true` and the sidebar's sections.
 
 8. On the phone, open "Настройка", paste the connection key from
@@ -102,7 +109,8 @@ from its hardware, so a copied config does not make two Macs evict each other.
    ```
 
 2. Install Supacode under `/Applications` (only the installed app hosts) and start it.
-3. Set its name in Settings → Remote Access → "Mac name". Without it, the computer name is shown.
+3. The copied file carries the first Mac's `hostName`. Set a new name in Settings → Remote Access →
+   "Mac name", or delete the `hostName` key from the copy to show this Mac's computer name.
 4. On the phone, open „Mac-ове“ and pick the Mac.
 
 Do not run `node scripts/gen-keys.mjs --force` on the new Mac: it mints new keys, which stop every

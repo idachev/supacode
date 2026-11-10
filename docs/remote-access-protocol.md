@@ -87,7 +87,7 @@ goes only to clients bound to that host id.
 ```json
 {"t":"relay","hostOnline":true,"host":"3f9a0c1d2e4b5a69",
  "hosts":[{"id":"3f9a0c1d2e4b5a69","name":"Office Mac","online":true},
-          {"id":"default","online":false}]}
+          {"id":"a41b7c93d05e8f26","name":"Laptop","online":false}]}
 ```
 
 - `hostOnline`: whether the bound host is online. Without a bound host it is `false`.
@@ -104,6 +104,11 @@ goes only to clients bound to that host id.
 - The relay remembers hosts across restarts. An offline host not seen for 30 days is dropped from
   `hosts`, and at most 20 offline hosts are kept (the oldest go first). Online hosts are always
   listed. The legacy host `default` is listed only while it is online.
+- Choosing a host (client). A saved selection never changes by itself; only the owner's pick
+  changes it. With nothing saved, connect without `host`, read `hosts`, and select the host when
+  exactly one is online; otherwise show the list. When `hosts` is present but does not list the saved
+  id, keep the selection, show the host as offline and show the list. With a missing `hosts` (old
+  relay) keep the saved selection too.
 - A relay without multi-host support sends `relay` without `hosts` and ignores `id`, `name` and
   `host`. A client treats a missing `hosts` as "single host": no list, no `host` query. An empty
   `hosts` array is different: a new relay that knows no host yet.
