@@ -23,6 +23,7 @@ enum GitOperation: String {
   case supaignoreLookup = "supaignore_lookup"
   case worktreeCopyPlan = "worktree_copy_plan"
   case fileStatus = "file_status"
+  case worktreeChanges = "worktree_changes"
   case stageFile = "stage_file"
   case unstageFile = "unstage_file"
   case discardFile = "discard_file"
@@ -49,6 +50,62 @@ enum GitClientError: LocalizedError {
       }
       return "Git command failed: \(command)\n\(message)"
     }
+  }
+}
+
+/// What deleting a worktree would lose, as a remote `worktree.delete` checks
+/// it (`GitClient.worktreeChanges(at:)`): the counted `git status` paths and
+/// the commits a detached HEAD holds on no ref.
+nonisolated struct WorktreeDirtyState: Equatable, Sendable {
+  /// The paths `worktree_dirty` names at most.
+  static let listedPathLimit = 5
+
+  var paths: [String] = []
+  var detachedCommits = 0
+
+  var isDirty: Bool { !paths.isEmpty || detachedCommits > 0 }
+
+  /// The `worktree_dirty` message (`docs/remote-access-protocol.md`,
+  /// `### worktree.delete`); nil when clean. Both reasons are joined with `; `.
+  var message: String? {
+    var parts: [String] = []
+    if !paths.isEmpty {
+      let listed = paths.prefix(Self.listedPathLimit).joined(separator: ", ")
+      parts.append(
+        "the worktree has uncommitted changes, untracked or ignored files (\(paths.count)): \(listed); "
+          + "commit, stash or remove them on the Mac first")
+    }
+    if detachedCommits > 0 {
+      parts.append(
+        "the worktree's detached HEAD has \(detachedCommits) commits that are on no branch; "
+          + "create a branch for them on the Mac first")
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: "; ")
+  }
+
+  /// The paths of `git status --porcelain=v1 -z` output that count: every
+  /// entry (`XY path`) except an ignored one (`!!`) whose path ends in `/` (a
+  /// wholly ignored directory). A rename or copy entry carries its source as a
+  /// second NUL field, which is skipped.
+  static func countedPaths(porcelainV1Z data: Data) -> [String] {
+    let fields = data.split(separator: 0, omittingEmptySubsequences: true)
+    var paths: [String] = []
+    var index = fields.startIndex
+    while index < fields.endIndex {
+      let field = fields[index]
+      index += 1
+      let bytes = Array(field)
+      guard bytes.count > 3 else { continue }
+      // Lossy on purpose: one invalid byte must not hide the entry.
+      // swiftlint:disable optional_data_string_conversion
+      let status = String(decoding: bytes[0..<2], as: UTF8.self)
+      let path = String(decoding: bytes[3...], as: UTF8.self)
+      // swiftlint:enable optional_data_string_conversion
+      if status.contains("R") || status.contains("C") { index += 1 }
+      if status == "!!", path.hasSuffix("/") { continue }
+      paths.append(path)
+    }
+    return paths
   }
 }
 
@@ -1181,6 +1238,53 @@ struct GitClient {
       return nil
     }
     return GitStatusSnapshot.parse(porcelainV2: output)
+  }
+
+  /// What a remote `worktree.delete` would lose (`WorktreeDirtyState`): every
+  /// `git status --porcelain=v1 -z --untracked-files=all --ignored=matching`
+  /// entry except a wholly ignored directory, in the worktree and in every
+  /// initialized submodule (recursively), plus the commits a detached HEAD
+  /// holds that no branch, tag or remote ref reaches. Throws when git fails, so
+  /// the caller refuses instead of deleting unchecked. Runs over `shell` (ssh
+  /// for a remote worktree, with its remote path).
+  nonisolated func worktreeChanges(at worktreeURL: URL) async throws -> WorktreeDirtyState {
+    let path = worktreeURL.path(percentEncoded: false)
+    var paths = try await countedStatusPaths(at: path)
+    // Initialized submodules, recursively (foreach skips uninitialized ones):
+    // the same rule, each path prefixed with the submodule's display path.
+    let submodules = try await runGitData(
+      operation: .worktreeChanges,
+      arguments: ["-C", path, "submodule", "foreach", "--recursive", "--quiet", #"printf "%s\0" "$displaypath""#],
+      localePinned: true
+    )
+    for field in submodules.split(separator: 0, omittingEmptySubsequences: true) {
+      // swiftlint:disable:next optional_data_string_conversion
+      let displayPath = String(decoding: field, as: UTF8.self)
+      let submodulePath = worktreeURL.appending(path: displayPath).path(percentEncoded: false)
+      paths += try await countedStatusPaths(at: submodulePath).map { displayPath + "/" + $0 }
+    }
+    // Detached-HEAD commits: the worktree itself only.
+    let count = try await runGit(
+      operation: .worktreeChanges,
+      arguments: ["-C", path, "rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes"],
+      localePinned: true
+    )
+    return WorktreeDirtyState(
+      paths: paths, detachedCommits: Int(count.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
+  }
+
+  /// The counted `git status` paths of one working tree (`WorktreeDirtyState.countedPaths`).
+  nonisolated private func countedStatusPaths(at path: String) async throws -> [String] {
+    // Bytes, not the normalized string: the first entry may start with a space (` M path`).
+    let status = try await runGitData(
+      operation: .worktreeChanges,
+      arguments: [
+        "-C", path, "--no-optional-locks", "status", "--porcelain=v1", "-z",
+        "--untracked-files=all", "--ignored=matching",
+      ],
+      localePinned: true
+    )
+    return WorktreeDirtyState.countedPaths(porcelainV1Z: status)
   }
 
   // Mutations pin the C locale so a lock-contention failure classifies by its

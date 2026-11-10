@@ -715,7 +715,7 @@ extension RepositoriesFeature.Action {
       .requestArchiveWorktree, .requestArchiveWorktrees,
       .archiveWorktreeConfirmed,
       .requestDeleteSidebarItems, .deleteSidebarItemConfirmed,
-      .deleteWorktreeFailed,
+      .deleteWorktreeFailed, .deleteWorktreeAbortedDirty,
       .requestDeleteRepository, .requestRemoveFailedRepository,
       .presentAlert,
       .refreshGithubIntegrationAvailability,

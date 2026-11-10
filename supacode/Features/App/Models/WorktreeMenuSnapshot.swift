@@ -153,6 +153,11 @@ extension AppFeature.Action {
     // the creation itself flows through classified `.repositories` arms.
     case .remoteWorktreeNewRequested, .remoteWorktreeCreationConsumed, .remoteWorktreeCreationAbandoned:
       return false
+    // Remote `worktree.delete` bookkeeping touches only `remoteWorktreeDeletions`;
+    // the delete itself flows through classified `.repositories` arms.
+    case .remoteWorktreeDeleteRequested, .remoteWorktreeDeleteChecked, .remoteWorktreeDeleteConsumed,
+      .remoteWorktreeDeleteAbandoned:
+      return false
     }
   }
 }

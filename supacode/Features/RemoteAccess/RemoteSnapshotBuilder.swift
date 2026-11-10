@@ -24,6 +24,8 @@ nonisolated enum RemoteSnapshotBuilder {
     /// no row for it yet (it then sorts after the listed rows, in repository order).
     let sidebarIndex: Int?
     let tabs: [RemoteTab]
+    /// `RemoteWorktree.canDeleteWorktree`.
+    var canDeleteWorktree = false
   }
 
   static func build(repositories: [RepositoryInput]) -> [RemoteRepository] {
@@ -47,7 +49,8 @@ nonisolated enum RemoteSnapshotBuilder {
             focused: worktree.focused,
             title: worktree.title,
             working: worktree.tabs.contains(where: \.working),
-            tabs: worktree.tabs
+            tabs: worktree.tabs,
+            canDeleteWorktree: worktree.canDeleteWorktree
           )
         },
         canCreateWorktree: repository.canCreateWorktree

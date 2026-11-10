@@ -21,7 +21,8 @@ final class RemoteSnapshotSource {
   /// The full `list` payload: repositories plus the sidebar's sections.
   func listMessage(id: Int?) -> RemoteListMessage {
     var repos = repositories()
-    let structure = store.repositories.sidebarStructure
+    let state = store.withState(\.repositories)
+    let structure = state.sidebarStructure
     let hoisted = Set(structure.hoistedRowIDs.map(\.rawValue))
     var sidebarRows: [String: [String]] = [:]
     var sections: [RemoteSection] = []
@@ -54,11 +55,19 @@ final class RemoteSnapshotSource {
       repos[index].rowIds =
         sidebarRows[repos[index].id] ?? repos[index].worktrees.map(\.id).filter { !hoisted.contains($0) }
     }
-    return RemoteListMessage(id: id, repos: repos, sections: sections)
+    return RemoteListMessage(
+      id: id, repos: repos, sections: sections, loadFailures: Self.loadFailures(state.loadFailuresByID))
+  }
+
+  /// `list.loadFailures`: the repositories whose load failed, by id.
+  nonisolated static func loadFailures(_ failures: [Repository.ID: String]) -> [RemoteLoadFailure] {
+    failures.sorted { $0.key.rawValue < $1.key.rawValue }.map {
+      RemoteLoadFailure(repositoryId: $0.key.rawValue, message: $0.value)
+    }
   }
 
   func repositories() -> [RemoteRepository] {
-    let state = store.repositories
+    let (state, deletions) = store.withState { ($0.repositories, $0.remoteWorktreeDeletions) }
     @Shared(.settingsFile) var settingsFile: SettingsFile
     let groups = settingsFile.repositoryGroups
     let inputs = state.repositories.map { repository in
@@ -84,7 +93,15 @@ final class RemoteSnapshotSource {
             focused: worktree.id == state.selectedWorktreeID,
             title: item?.title,
             sidebarIndex: bucket?.items.index(forKey: worktree.id),
-            tabs: tabs(of: worktree.id)
+            tabs: tabs(of: worktree.id),
+            canDeleteWorktree: RemoteWorktreeDeleteRejection.check(
+              found: true,
+              isArchived: status.isArchived,
+              isGitRepository: repository.isGitRepository,
+              isBeingRemoved: state.removingRepositoryIDs[repository.id] != nil,
+              isMain: state.isMainWorktree(worktree),
+              lifecycleIsIdle: (state.sidebarItems[id: worktree.id]?.lifecycle ?? .idle) == .idle,
+              inFlight: deletions[worktree.id] != nil) == nil
           )
         },
         canCreateWorktree: Self.canCreateWorktree(
@@ -299,6 +316,58 @@ final class RemoteSnapshotSource {
         return sized ? contentID : nil
       }
     )
+  }
+
+  // MARK: - Delete worktree
+
+  /// Checks the worktree with the rule `list` offers `canDeleteWorktree` by and
+  /// hands the delete to the app (`.remoteWorktreeDeleteRequested`), whose
+  /// outcome is filed under the worktree id (`worktreeDeletion(_:)`).
+  func requestDeleteWorktree(
+    worktreeID raw: String
+  ) -> Result<RemoteWorktreeDeleteStart, RemoteWorktreeDeleteRejection> {
+    let (state, deletions) = store.withState { ($0.repositories, $0.remoteWorktreeDeletions) }
+    let start: RemoteWorktreeDeleteStart
+    switch RemoteWorktreeDeleteRejection.check(worktreeID: raw, in: state, inFlight: false) {
+    case .failure(let rejection): return .failure(rejection)
+    case .success(let checked): start = checked
+    }
+    // Any entry, abandoned or settled-but-unconsumed, still guards the worktree.
+    guard deletions[start.worktreeID] == nil else { return .failure(.busy) }
+    store.send(.remoteWorktreeDeleteRequested(worktreeID: start.worktreeID, repositoryID: start.repositoryID))
+    return .success(start)
+  }
+
+  /// Where a remote delete stands; nil once consumed (or never requested).
+  func worktreeDeletion(_ worktreeID: Worktree.ID) -> AppFeature.RemoteWorktreeDeletion? {
+    store.withState(\.remoteWorktreeDeletions)[worktreeID]
+  }
+
+  /// The router is done with this delete and its outcome has settled.
+  func consumeWorktreeDeletion(_ worktreeID: Worktree.ID) {
+    store.send(.remoteWorktreeDeleteConsumed(worktreeID: worktreeID))
+  }
+
+  /// The router stopped waiting while the delete still runs: the app keeps the
+  /// entry as the `worktree_busy` guard and drops it with the outcome.
+  func abandonWorktreeDeletion(_ worktreeID: Worktree.ID) {
+    store.send(.remoteWorktreeDeleteAbandoned(worktreeID: worktreeID))
+  }
+
+  // MARK: - Refresh worktrees
+
+  /// Reads the git load generation begun so far, then refreshes the way the
+  /// Mac's "Refresh Worktrees" does. The reply waits for a load whose result
+  /// lands past the returned generation (`loadGenerationCompleted()`).
+  func requestRefreshWorktrees() -> Int {
+    let started = store.withState(\.repositories.loadGeneration.started)
+    store.send(.refreshWorktreesRequested)
+    return started
+  }
+
+  /// The highest git load generation whose result landed.
+  func loadGenerationCompleted() -> Int {
+    store.withState(\.repositories.loadGeneration.completed)
   }
 
   private func tabs(of worktreeID: Worktree.ID) -> [RemoteTab] {

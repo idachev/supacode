@@ -198,6 +198,9 @@ struct AppFeature {
     /// Remote `worktree.new` requests by their pending id, until the remote
     /// host consumes the outcome (`.remoteWorktreeCreationConsumed`).
     var remoteWorktreeCreations: [Worktree.ID: RemoteWorktreeCreation] = [:]
+    /// Remote `worktree.delete` requests by worktree id, until the remote host
+    /// consumes the outcome (`.remoteWorktreeDeleteConsumed`).
+    var remoteWorktreeDeletions: [Worktree.ID: RemoteWorktreeDeletion] = [:]
 
     init(
       repositories: RepositoriesFeature.State = .init(),
@@ -388,6 +391,83 @@ struct AppFeature {
     /// still runs: keep the entry as the `worktree_busy` guard and drop it when
     /// the outcome arrives.
     case remoteWorktreeCreationAbandoned(pendingID: Worktree.ID)
+    /// A remote client asked to delete this worktree (`worktree.delete`); the
+    /// host already checked it. Runs the dirty check, then deletes it the way
+    /// the Mac's own delete does, keeping the local branch.
+    case remoteWorktreeDeleteRequested(worktreeID: Worktree.ID, repositoryID: Repository.ID)
+    /// The dirty check of a remote delete finished.
+    case remoteWorktreeDeleteChecked(worktreeID: Worktree.ID, result: RemoteWorktreeDeleteCheck)
+    /// The remote host answered this delete, or stopped waiting after it settled; forget it.
+    case remoteWorktreeDeleteConsumed(worktreeID: Worktree.ID)
+    /// The remote host stopped waiting while the delete still runs: keep the
+    /// entry as the `worktree_busy` guard and drop it when the delete ends.
+    case remoteWorktreeDeleteAbandoned(worktreeID: Worktree.ID)
+  }
+
+  /// The result of a remote delete's dirty check (`GitClientDependency.worktreeChanges`).
+  nonisolated enum RemoteWorktreeDeleteCheck: Equatable, Sendable {
+    case clean
+    /// The `worktree_dirty` message.
+    case dirty(message: String)
+    /// Git failed; the error's description.
+    case failed(message: String)
+  }
+
+  /// Where one remote `worktree.delete` stands. An entry moves only from
+  /// `.checking` / `.deleting`; a settled entry is never overwritten. Any entry
+  /// is the remote `worktree_busy` guard for its worktree.
+  nonisolated enum RemoteWorktreeDeletion: Equatable, Sendable {
+    /// The dirty check runs; `abandoned` once the remote host stopped waiting.
+    case checking(abandoned: Bool)
+    /// The app's delete runs (delete script, removal).
+    case deleting(abandoned: Bool)
+    case deleted
+    /// Refused or failed, with the `error` frame's `code` and `message`.
+    case failed(code: String, message: String)
+
+    var isSettled: Bool {
+      switch self {
+      case .checking, .deleting: false
+      case .deleted, .failed: true
+      }
+    }
+
+    var isAbandoned: Bool {
+      switch self {
+      case .checking(let abandoned), .deleting(let abandoned): abandoned
+      case .deleted, .failed: false
+      }
+    }
+
+    /// Moves an unsettled entry to its outcome (only a `.deleting` one when
+    /// `onlyWhileDeleting`), or removes it when the host abandoned it.
+    static func settle(
+      _ worktreeID: Worktree.ID, as outcome: Self, onlyWhileDeleting: Bool = true,
+      in deletions: inout [Worktree.ID: Self]
+    ) {
+      switch deletions[worktreeID] {
+      case .deleting(let abandoned):
+        deletions[worktreeID] = abandoned ? nil : outcome
+      case .checking(let abandoned) where !onlyWhileDeleting:
+        deletions[worktreeID] = abandoned ? nil : outcome
+      default:
+        break
+      }
+    }
+
+    /// Marks an unsettled entry abandoned; a settled entry is removed instead.
+    static func abandon(_ worktreeID: Worktree.ID, in deletions: inout [Worktree.ID: Self]) {
+      switch deletions[worktreeID] {
+      case .checking: deletions[worktreeID] = .checking(abandoned: true)
+      case .deleting: deletions[worktreeID] = .deleting(abandoned: true)
+      case .some: deletions[worktreeID] = nil
+      case nil: break
+      }
+    }
+
+    /// The message of a delete whose worktree left the roster without a delete result.
+    static let leftTheListMessage =
+      "the worktree left the list before it was deleted (removed outside Supacode, or its repository was removed)"
   }
 
   /// Where one remote `worktree.new` stands. An entry moves only from
@@ -469,6 +549,7 @@ struct AppFeature {
   @Dependency(SystemNotificationClient.self) private var systemNotificationClient
   @Dependency(TerminalClient.self) private var terminalClient
   @Dependency(WorktreeInfoWatcherClient.self) private var worktreeInfoWatcher
+  @Dependency(GitClientDependency.self) private var gitClient
   @Dependency(\.date.now) private var now
   @Dependency(\.continuousClock) private var clock
   @Dependency(\.uuid) private var uuid
@@ -715,6 +796,7 @@ struct AppFeature {
 
       case .repositories(.delegate(.repositoriesChanged(let repositories))):
         RepositoriesFeature.syncSidebar(&state.repositories)
+        settleRemoteWorktreeDeletionsOutside(repositories, state: &state)
         let archivedIDs = state.repositories.archivedWorktreeIDSet
         let allowed = Set(
           state.repositories.sidebarItems
@@ -1723,6 +1805,32 @@ struct AppFeature {
       case .remoteWorktreeCreationAbandoned(let pendingID):
         RemoteWorktreeCreation.abandon(pendingID, in: &state.remoteWorktreeCreations)
         return .none
+      case .remoteWorktreeDeleteRequested(let worktreeID, let repositoryID):
+        return requestRemoteWorktreeDelete(worktreeID: worktreeID, repositoryID: repositoryID, state: &state)
+      case .remoteWorktreeDeleteChecked(let worktreeID, let result):
+        return remoteWorktreeDeleteChecked(worktreeID: worktreeID, result: result, state: &state)
+      case .remoteWorktreeDeleteConsumed(let worktreeID):
+        state.remoteWorktreeDeletions[worktreeID] = nil
+        return .none
+      case .remoteWorktreeDeleteAbandoned(let worktreeID):
+        RemoteWorktreeDeletion.abandon(worktreeID, in: &state.remoteWorktreeDeletions)
+        return .none
+      case .repositories(.deleteWorktreeAbortedDirty(let worktreeID, let message)):
+        settleRemoteWorktreeDeletion(
+          worktreeID, as: .failed(code: RemoteWorktreeDeleteErrorCode.dirty, message: message), state: &state)
+        return .none
+      case .repositories(.deleteWorktreeApply(let worktreeID, let repositoryID)):
+        // Core runs before the repositories scope: this is the state its guard reads.
+        // A missing worktree ends that delete with only an alert, so settle it here.
+        if state.repositories.repositories[id: repositoryID]?.worktrees[id: worktreeID] == nil {
+          settleRemoteWorktreeDeletion(
+            worktreeID,
+            as: .failed(
+              code: RemoteWorktreeDeleteErrorCode.failed,
+              message: "The worktree could not be found. It may have already been removed."),
+            state: &state)
+        }
+        return .none
       case .repositories(.createRandomWorktreeSucceeded(let worktree, _, let pendingID)):
         // Bind this creation's ack (matched by its pending id) to the real
         // worktree id so its first tab resolves it.
@@ -1766,6 +1874,7 @@ struct AppFeature {
         // record, host or no host; roster prune cannot reach a hostless
         // layout without risking a merely-unloaded repository's records.
         let remoteHost = state.repositories.repositories[id: repositoryID]?.host
+        settleRemoteWorktreeDeletion(worktreeID, as: .deleted, state: &state)
         return .merge(
           resolveCommandAcks(ok: true, state: &state) { match in
             if case .worktreeRemoved(let ackWorktree) = match { return ackWorktree == worktreeID }
@@ -1862,6 +1971,10 @@ struct AppFeature {
         }
 
       case .repositories(.deleteWorktreeFailed(let message, let worktreeID)):
+        settleRemoteWorktreeDeletion(
+          worktreeID,
+          as: .failed(code: RemoteWorktreeDeleteErrorCode.failed, message: "Unable to delete worktree: \(message)"),
+          state: &state)
         return resolveCommandAcks(ok: false, error: message, state: &state) { match in
           if case .worktreeRemoved(let ackWorktree) = match { return ackWorktree == worktreeID }
           return false
@@ -1870,9 +1983,25 @@ struct AppFeature {
       case .repositories(.deleteScriptCompleted(let worktreeID, let exitCode, _)):
         // Exit 0 proceeds to removal (resolved by `.worktreeDeleted`); a failed or
         // cancelled delete has no removal to follow, so resolve the ack now.
-        guard exitCode != 0 else { return .none }
+        guard exitCode != 0 else {
+          // Exit 0 whose worktree is gone ends with only an alert (core reads the
+          // state the repositories reducer's own guard reads): settle it here.
+          if state.repositories.sidebarItems[id: worktreeID]?.lifecycle == .deletingScript,
+            state.repositories.repositoryID(containing: worktreeID) == nil
+          {
+            settleRemoteWorktreeDeletion(
+              worktreeID,
+              as: .failed(
+                code: RemoteWorktreeDeleteErrorCode.failed,
+                message: "The delete script completed, but the worktree could not be found."),
+              state: &state)
+          }
+          return .none
+        }
         let message =
           exitCode.map { "Delete script failed (exit code \($0))." } ?? "Delete cancelled."
+        settleRemoteWorktreeDeletion(
+          worktreeID, as: .failed(code: RemoteWorktreeDeleteErrorCode.failed, message: message), state: &state)
         return resolveCommandAcks(ok: false, error: message, state: &state) { match in
           if case .worktreeRemoved(let ackWorktree) = match { return ackWorktree == worktreeID }
           return false
@@ -4216,6 +4345,112 @@ struct AppFeature {
         clientFD: ack.responseFD, ok: succeeded, error: error, resourceID: resourceID),
       .cancel(id: CancelID.commandAck(ack.responseFD, ack.token))
     )
+  }
+
+  // MARK: - Remote worktree.delete
+
+  /// Moves a remote `worktree.delete` entry out of `.deleting` (`RemoteWorktreeDeletion.settle`).
+  private func settleRemoteWorktreeDeletion(
+    _ worktreeID: Worktree.ID, as outcome: RemoteWorktreeDeletion, state: inout State
+  ) {
+    RemoteWorktreeDeletion.settle(worktreeID, as: outcome, in: &state.remoteWorktreeDeletions)
+  }
+
+  /// The backstop: a checking or deleting entry whose worktree is in none of
+  /// `repositories` vanished without a delete result (a refresh after a CLI
+  /// delete, its repository removed or failing to load). A real delete set
+  /// `.deleted` in `.worktreeDeleted` before its own `repositoriesChanged`.
+  private func settleRemoteWorktreeDeletionsOutside(
+    _ repositories: IdentifiedArrayOf<Repository>, state: inout State
+  ) {
+    guard state.remoteWorktreeDeletions.values.contains(where: { !$0.isSettled }) else { return }
+    let roster = Set(repositories.flatMap { $0.worktrees.map(\.id) })
+    for (worktreeID, entry) in state.remoteWorktreeDeletions where !entry.isSettled && !roster.contains(worktreeID) {
+      RemoteWorktreeDeletion.settle(
+        worktreeID,
+        as: .failed(code: RemoteWorktreeDeleteErrorCode.failed, message: RemoteWorktreeDeletion.leftTheListMessage),
+        onlyWhileDeleting: false,
+        in: &state.remoteWorktreeDeletions)
+    }
+  }
+
+  /// A remote `worktree.delete` the host accepted: the dirty check first,
+  /// except for an orphan (no directory, nothing to lose), which the Mac also
+  /// deletes without its script.
+  private func requestRemoteWorktreeDelete(
+    worktreeID: Worktree.ID, repositoryID: Repository.ID, state: inout State
+  ) -> Effect<Action> {
+    guard let worktree = state.repositories.repositories[id: repositoryID]?.worktrees[id: worktreeID] else {
+      let unknown = RemoteWorktreeDeleteRejection.unknownWorktree
+      state.remoteWorktreeDeletions[worktreeID] = .failed(code: unknown.code, message: unknown.message)
+      return .none
+    }
+    state.remoteWorktreeDeletions[worktreeID] = .checking(abandoned: false)
+    if worktree.isMissing {
+      return startRemoteWorktreeDelete(worktreeID: worktreeID, repositoryID: repositoryID, state: &state)
+    }
+    // Host-aware, as `RepositoriesFeature.gitClient(for:)`: an ssh worktree is
+    // checked on its host, with its remote path.
+    let client = worktree.host.map { GitClientDependency.ssh(host: $0) } ?? gitClient
+    let directory = worktree.workingDirectory
+    return .run { send in
+      let result: RemoteWorktreeDeleteCheck
+      do {
+        let changes = try await client.worktreeChanges(directory)
+        result = changes.message.map { .dirty(message: $0) } ?? .clean
+      } catch {
+        result = .failed(message: error.localizedDescription)
+      }
+      await send(.remoteWorktreeDeleteChecked(worktreeID: worktreeID, result: result))
+    }
+  }
+
+  /// The dirty check's result: refuse, or re-check the delete rule on the
+  /// current state (the Mac may have started its own delete, archived the
+  /// worktree, or begun removing the repository meanwhile) and delete.
+  private func remoteWorktreeDeleteChecked(
+    worktreeID: Worktree.ID, result: RemoteWorktreeDeleteCheck, state: inout State
+  ) -> Effect<Action> {
+    guard case .checking = state.remoteWorktreeDeletions[worktreeID] else { return .none }
+    let failure: RemoteWorktreeDeletion?
+    switch result {
+    case .dirty(let message):
+      failure = .failed(code: RemoteWorktreeDeleteErrorCode.dirty, message: message)
+    case .failed(let message):
+      failure = .failed(
+        code: RemoteWorktreeDeleteErrorCode.failed, message: "could not check the worktree for changes: \(message)")
+    case .clean:
+      failure = nil
+    }
+    if let failure {
+      RemoteWorktreeDeletion.settle(
+        worktreeID, as: failure, onlyWhileDeleting: false, in: &state.remoteWorktreeDeletions)
+      return .none
+    }
+    // `inFlight: false`: this request's own entry is not another delete.
+    let recheck = RemoteWorktreeDeleteRejection.check(
+      worktreeID: worktreeID.rawValue, in: state.repositories, inFlight: false)
+    switch recheck {
+    case .failure(let refused):
+      RemoteWorktreeDeletion.settle(
+        worktreeID, as: .failed(code: refused.code, message: refused.message), onlyWhileDeleting: false,
+        in: &state.remoteWorktreeDeletions)
+      return .none
+    case .success(let start):
+      return startRemoteWorktreeDelete(worktreeID: start.worktreeID, repositoryID: start.repositoryID, state: &state)
+    }
+  }
+
+  /// The delete step: the Mac's own delete pipeline without its confirmation
+  /// (the client confirmed), in the background (no Mac focus change), never
+  /// deleting the local branch.
+  private func startRemoteWorktreeDelete(
+    worktreeID: Worktree.ID, repositoryID: Repository.ID, state: inout State
+  ) -> Effect<Action> {
+    let abandoned = state.remoteWorktreeDeletions[worktreeID]?.isAbandoned ?? false
+    state.remoteWorktreeDeletions[worktreeID] = .deleting(abandoned: abandoned)
+    return .send(
+      .repositories(.deleteSidebarItemConfirmed(worktreeID, repositoryID, background: true, keepBranch: true)))
   }
 
   /// Moves a remote `worktree.new` entry out of `.creating` (`RemoteWorktreeCreation.settle`).

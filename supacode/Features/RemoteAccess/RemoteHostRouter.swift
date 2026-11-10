@@ -6,7 +6,8 @@ import SupacodeSettingsShared
 nonisolated private let routerLogger = SupaLogger("RemoteAccess")
 
 /// Answers the phones behind the relay: `hello`, `list`, terminal
-/// `attach` / `detach` / `input` / `resize`, `tab.new`, `worktree.new` and `suggest`
+/// `attach` / `detach` / `input` / `resize`, `tab.new`, `worktree.new`,
+/// `worktree.delete`, `worktrees.refresh` and `suggest`
 /// (`docs/remote-access-protocol.md`). One instance per app, started at launch
 /// when `~/.config/supacode/remote-access.json` enables it.
 @MainActor
@@ -56,6 +57,9 @@ final class RemoteHostRouter {
   /// `worktree.new` waits in flight per phone, cancelled with the phone's
   /// connection (the creation itself goes on).
   private var worktreeNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
+  /// `worktree.delete` and `worktrees.refresh` waits in flight per phone,
+  /// cancelled with the phone's connection (the delete or refresh goes on).
+  private var worktreeDeleteWaits: [String: [UUID: Task<Void, Never>]] = [:]
   /// The `resize` in flight per terminal (waking it, then reading the PTY
   /// size); a newer `resize` of that terminal from any phone, or the
   /// requester's detach or end, cancels it (last request wins).
@@ -206,6 +210,7 @@ final class RemoteHostRouter {
   func lanClosed(_ connID: String) {
     cancelTabNewWaits(connID: connID)
     cancelWorktreeNewWaits(connID: connID)
+    cancelWorktreeDeleteWaits(connID: connID)
     detach(connID: connID)
     clients[connID] = nil
     lanSinks[connID] = nil
@@ -264,6 +269,7 @@ final class RemoteHostRouter {
     case "conn.close":
       cancelTabNewWaits(connID: connID)
       cancelWorktreeNewWaits(connID: connID)
+      cancelWorktreeDeleteWaits(connID: connID)
       detach(connID: connID)
       clients[connID] = nil
       sameNetwork.remove(connID)
@@ -288,8 +294,8 @@ final class RemoteHostRouter {
       suggest(connID: connID, message: message)
     case "tab.new":
       newTab(connID: connID, message: message)
-    case "worktree.new":
-      newWorktree(connID: connID, message: message)
+    case "worktree.new", "worktree.delete", "worktrees.refresh":
+      worktreeRequest(connID: connID, message: message)
     case "resize":
       resize(connID: connID, message: message)
     default:
@@ -795,6 +801,9 @@ final class RemoteHostRouter {
     for connID in worktreeNewWaits.keys where lanSinks[connID] == nil {
       cancelWorktreeNewWaits(connID: connID)
     }
+    for connID in worktreeDeleteWaits.keys where lanSinks[connID] == nil {
+      cancelWorktreeDeleteWaits(connID: connID)
+    }
     for connID in clients.keys where lanSinks[connID] == nil {
       detach(connID: connID)
       clients[connID] = nil
@@ -911,6 +920,92 @@ final class RemoteHostRouter {
   /// go on, and each keeps its `worktree_busy` guard until its outcome settles.
   private func cancelWorktreeNewWaits(connID: String) {
     guard let waits = worktreeNewWaits.removeValue(forKey: connID) else { return }
+    for wait in waits.values { wait.cancel() }
+  }
+
+  /// `worktree.new`, `worktree.delete` and `worktrees.refresh`.
+  private func worktreeRequest(connID: String, message: RemoteInboundMessage) {
+    switch message.t {
+    case "worktree.delete": deleteWorktree(connID: connID, message: message)
+    case "worktrees.refresh": refreshWorktrees(connID: connID, message: message)
+    default: newWorktree(connID: connID, message: message)
+    }
+  }
+
+  // MARK: - Delete worktree
+
+  /// Deletes a worktree the way the Mac's own "Delete Worktree…" does (after
+  /// a dirty check, keeping the local branch) and answers once the app
+  /// reported the outcome. Refusals the host can decide are answered at once.
+  private func deleteWorktree(connID: String, message: RemoteInboundMessage) {
+    let requestID = message.id
+    guard let raw = message.worktreeId, !raw.isEmpty else {
+      let missing = RemoteWorktreeDeleteRejection.missingWorktree
+      replyError(connID, id: requestID, missing.message, code: missing.code)
+      return
+    }
+    let start: RemoteWorktreeDeleteStart
+    switch source.requestDeleteWorktree(worktreeID: raw) {
+    case .failure(let rejection):
+      replyError(connID, id: requestID, rejection.message, code: rejection.code)
+      return
+    case .success(let started):
+      start = started
+    }
+    let source = self.source
+    let clock = self.clock
+    let worktreeID = start.worktreeID
+    let waitID = UUID()
+    let wait = Task { [weak self] in
+      // Consumes or abandons the app's entry on every exit, a cancelled wait included.
+      let outcome = await Self.awaitWorktreeDelete(
+        clock: clock,
+        deletion: { source.worktreeDeletion(worktreeID) },
+        consume: { source.consumeWorktreeDeletion(worktreeID) },
+        abandon: { source.abandonWorktreeDeletion(worktreeID) })
+      guard let self else { return }
+      self.worktreeDeleteWaits[connID]?[waitID] = nil
+      guard self.clients[connID] != nil,
+        let reply = Self.worktreeDeleteReply(for: outcome, start: start, requestID: requestID)
+      else { return }
+      switch reply {
+      case .deleted(let deleted): self.reply(connID, deleted)
+      case .error(let error): self.reply(connID, error)
+      }
+    }
+    worktreeDeleteWaits[connID, default: [:]][waitID] = wait
+  }
+
+  // MARK: - Refresh worktrees
+
+  /// Refreshes the worktrees the way the Mac's "Refresh Worktrees" does and
+  /// answers with a fresh `list` once a git load that began after the request
+  /// landed, or `refresh_timeout`.
+  private func refreshWorktrees(connID: String, message: RemoteInboundMessage) {
+    let requestID = message.id
+    let source = self.source
+    let clock = self.clock
+    let started = source.requestRefreshWorktrees()
+    let waitID = UUID()
+    let wait = Task { [weak self] in
+      let outcome = await Self.runWorktreesRefresh(
+        after: started, clock: clock, completed: { source.loadGenerationCompleted() })
+      guard let self else { return }
+      self.worktreeDeleteWaits[connID]?[waitID] = nil
+      guard self.clients[connID] != nil else { return }
+      switch outcome {
+      case .loaded: self.reply(connID, source.listMessage(id: requestID))
+      case .timedOut: self.reply(connID, Self.worktreesRefreshTimeoutError(requestID: requestID))
+      case .cancelled: return
+      }
+    }
+    worktreeDeleteWaits[connID, default: [:]][waitID] = wait
+  }
+
+  /// Stops this phone's `worktree.delete` and `worktrees.refresh` waits; they
+  /// send nothing. A delete goes on and keeps its `worktree_busy` guard until it settles.
+  private func cancelWorktreeDeleteWaits(connID: String) {
+    guard let waits = worktreeDeleteWaits.removeValue(forKey: connID) else { return }
     for wait in waits.values { wait.cancel() }
   }
 
