@@ -139,7 +139,8 @@ struct RemoteAccessWorktreeNewTests {
       var creations: [WorktreeID: AppFeature.RemoteWorktreeCreation] = [:]
       creations[pendingID] = creation.value
       change(&creations)
-      creation.setValue(creations[pendingID])
+      let updated = creations[pendingID]
+      creation.setValue(updated)
     }
 
     nonisolated deinit {}
