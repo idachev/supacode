@@ -151,7 +151,7 @@ extension AppFeature.Action {
       return false
     // Remote `worktree.new` bookkeeping touches only `remoteWorktreeCreations`;
     // the creation itself flows through classified `.repositories` arms.
-    case .remoteWorktreeNewRequested, .remoteWorktreeCreationConsumed:
+    case .remoteWorktreeNewRequested, .remoteWorktreeCreationConsumed, .remoteWorktreeCreationAbandoned:
       return false
     }
   }

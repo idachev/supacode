@@ -18,11 +18,6 @@ nonisolated struct RemoteWorktreeNewRequest: Equatable, Sendable {
   let repositoryID: String
   let name: String
 
-  /// One remote wait per repository and case-insensitive name (`worktree_busy`).
-  var inFlightKey: String {
-    repositoryID + "\n" + name.lowercased()
-  }
-
   /// The request, or why it is refused before the app sees it: `repositoryId`
   /// missing, not a string or empty; `name` missing, not a string, empty after
   /// trimming or over `maxNameBytes`.
@@ -172,16 +167,24 @@ extension RemoteHostRouter {
     return .created(worktreeID: worktreeID, name: name, tab: tab)
   }
 
-  /// `runWorktreeNew`, then `consume` on every exit (answered, timed out or
-  /// cancelled), so the app's entry for the creation never leaks.
+  /// `runWorktreeNew`, then on every exit (answered, timed out or cancelled)
+  /// `consume` once the creation's outcome has settled, or `abandon` while it
+  /// still runs: the app then keeps its `.creating` entry as the
+  /// `worktree_busy` guard and drops it when the outcome arrives, so the
+  /// entry never leaks and a retry after a reconnect is refused while it runs.
   static func awaitWorktreeNew(
     isSSH: Bool,
     clock: any Clock<Duration>,
     probes: RemoteWorktreeNewProbes,
-    consume: @MainActor () -> Void
+    consume: @MainActor () -> Void,
+    abandon: @MainActor () -> Void
   ) async -> RemoteWorktreeNewOutcome {
     let outcome = await runWorktreeNew(isSSH: isSSH, clock: clock, probes: probes)
-    consume()
+    if probes.creation()?.isSettled == false {
+      abandon()
+    } else {
+      consume()
+    }
     return outcome
   }
 

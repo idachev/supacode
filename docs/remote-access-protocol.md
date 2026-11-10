@@ -343,7 +343,7 @@ does, and gives the client the worktree's first terminal tab.
 | code | when | message |
 |---|---|---|
 | `worktree_invalid` | `repositoryId` missing, not a string, or unknown; `name` missing, not a string, empty after trimming, or over 200 bytes | e.g. `worktree.new needs a repositoryId`, `no such repository`, `worktree.new needs a branch name`, `the branch name is too long` |
-| `worktree_busy` | another `worktree.new` for the same repository and (case-insensitive) name is still waiting on this host | `a worktree with this branch is already being created` |
+| `worktree_busy` | a `worktree.new` for the same repository and (case-insensitive) name is still being created on this host (its client may have gone or timed out) | `a worktree with this branch is already being created` |
 | `worktree_unsupported` | a folder (non-git) entry; a repository being removed | `worktrees are only supported for git repositories`, `the repository is being removed` |
 | `worktree_failed` | any app-side failure: name checks, license, git error, guard rejection, cancelled on the Mac | `"<title>: <message>"` for a name/git failure (e.g. `Branch name already exists: Choose a different branch name and try again.`), the bare message for a rejection, `Worktree creation was cancelled on the Mac.` for a Mac cancel |
 | `worktree_timeout` | no outcome within 300 s (ssh 290 s) | `worktree creation is still running on the Mac; it will appear in the list when it finishes` |
@@ -367,9 +367,12 @@ Client contract:
   immediate. A client timeout of 320 s from sending is safe; after it the client treats the request
   like К2.
 - К3a Correlating a late result: errors carry only `id`, so the client keeps the `repositoryId`
-  and `name` it sent. Names are unique per repository (case-insensitive), so after a timeout or a
-  lost connection the client finds the worktree in a later `list` as the entry of that repository
-  whose `name` equals the sent name (case-insensitive).
+  and `name` it sent. After a timeout or a lost connection the outcome is unknown: if the creation
+  succeeds, the worktree shows in a later `list` as the entry of that repository whose `name`
+  equals the sent name (case-insensitive); if it fails late (git or copy error), it never shows and
+  only the Mac's alert reports it. A manual retry with the same name is safe: while the first
+  creation still runs the host answers `worktree_busy`; once it has succeeded, `worktree_failed`
+  "Branch name already exists"; once it has failed, the retry creates normally.
 - К4 Ids: `worktreeId` is the same string as `list`'s `repos[].worktrees[].id`. For a local
   worktree it is its working directory path; for an ssh repository it is the host authority plus
   the normalized remote path, on both sides.

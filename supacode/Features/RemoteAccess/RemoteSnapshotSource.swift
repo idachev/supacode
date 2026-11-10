@@ -244,9 +244,22 @@ final class RemoteSnapshotSource {
     store.remoteWorktreeCreations[pendingID]
   }
 
-  /// The router is done with this creation (answered, timed out or the phone left).
+  /// The router is done with this creation and its outcome has settled.
   func consumeWorktreeCreation(pendingID: Worktree.ID) {
     store.send(.remoteWorktreeCreationConsumed(pendingID: pendingID))
+  }
+
+  /// The router stopped waiting while the creation still runs: the app keeps
+  /// the entry as the `worktree_busy` guard and drops it with the outcome.
+  func abandonWorktreeCreation(pendingID: Worktree.ID) {
+    store.send(.remoteWorktreeCreationAbandoned(pendingID: pendingID))
+  }
+
+  /// Whether a remote creation of this repository and (case-insensitive) name
+  /// is still running, whether or not its phone still waits (`worktree_busy`).
+  func isWorktreeCreationInFlight(repositoryID: String, name: String) -> Bool {
+    AppFeature.RemoteWorktreeCreation.isInFlight(
+      repositoryID: repositoryID, name: name, in: store.remoteWorktreeCreations)
   }
 
   /// The first terminal tab of a worktree's layout, in `list` order

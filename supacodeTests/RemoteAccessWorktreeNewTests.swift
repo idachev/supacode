@@ -13,6 +13,7 @@ import Testing
 struct RemoteAccessWorktreeNewTests {
   private static let worktreeID = WorktreeID("/tmp/repo/feature-x")
   private static let firstTab = RemoteWorktreeNewTab(tabId: "tab-1", contentId: "content-1")
+  fileprivate static let pendingID = WorktreeID("pending:remote-1")
 
   // MARK: - Request
 
@@ -69,12 +70,15 @@ struct RemoteAccessWorktreeNewTests {
     #expect(RemoteWorktreeNewRejection.nameTooLong.code == "worktree_invalid")
   }
 
-  @Test func theInFlightKeyIgnoresCase() {
-    let lower = RemoteWorktreeNewRequest(repositoryID: "/r", name: "feature-x")
-    let upper = RemoteWorktreeNewRequest(repositoryID: "/r", name: "Feature-X")
-    let other = RemoteWorktreeNewRequest(repositoryID: "/other", name: "feature-x")
-    #expect(lower.inFlightKey == upper.inFlightKey)
-    #expect(lower.inFlightKey != other.inFlightKey)
+  @Test func aCreatingEntryIsTheBusyGuardIgnoringCase() {
+    typealias Creation = AppFeature.RemoteWorktreeCreation
+    let creations: [WorktreeID: Creation] = [
+      WorktreeID("pending:remote-a"): .creating(repositoryID: "/r", name: "feature-x", abandoned: true),
+      WorktreeID("pending:remote-b"): .created(worktreeID: WorktreeID("/r/done"), name: "done"),
+    ]
+    #expect(Creation.isInFlight(repositoryID: "/r", name: "Feature-X", in: creations))
+    #expect(!Creation.isInFlight(repositoryID: "/other", name: "feature-x", in: creations))
+    #expect(!Creation.isInFlight(repositoryID: "/r", name: "done", in: creations))
     #expect(RemoteWorktreeNewRejection.busy.code == "worktree_busy")
     #expect(RemoteWorktreeNewRejection.busy.message == "a worktree with this branch is already being created")
   }
@@ -117,13 +121,25 @@ struct RemoteAccessWorktreeNewTests {
 
   /// Test doubles for what the wait reads from the app.
   private final class Probes: Sendable {
-    let creation = LockIsolated<AppFeature.RemoteWorktreeCreation?>(.creating(name: "feature-x"))
+    let creation = LockIsolated<AppFeature.RemoteWorktreeCreation?>(
+      .creating(repositoryID: "/tmp/repo", name: "feature-x", abandoned: false))
     let firstTab = LockIsolated<RemoteWorktreeNewTab?>(nil)
     let inRoster = LockIsolated(false)
     let openRejection = LockIsolated<RemoteTabNewRejection?>(nil)
     let opened = LockIsolated<[UUID]>([])
     let content = LockIsolated<UUID?>(nil)
     let consumed = LockIsolated(0)
+    let abandoned = LockIsolated(0)
+
+    /// The app's entry as a one-entry dictionary, for the `AppFeature` transitions.
+    func apply(_ change: (inout [WorktreeID: AppFeature.RemoteWorktreeCreation]) -> Void) {
+      creation.withValue { value in
+        var creations: [WorktreeID: AppFeature.RemoteWorktreeCreation] = [:]
+        creations[RemoteAccessWorktreeNewTests.pendingID] = value
+        change(&creations)
+        value = creations[RemoteAccessWorktreeNewTests.pendingID]
+      }
+    }
 
     nonisolated deinit {}
 
@@ -148,7 +164,15 @@ struct RemoteAccessWorktreeNewTests {
   > {
     Task { @MainActor in
       await RemoteHostRouter.awaitWorktreeNew(
-        isSSH: isSSH, clock: clock, probes: probes.probes, consume: { probes.consumed.withValue { $0 += 1 } })
+        isSSH: isSSH, clock: clock, probes: probes.probes,
+        consume: {
+          probes.consumed.withValue { $0 += 1 }
+          probes.creation.setValue(nil)
+        },
+        abandon: {
+          probes.abandoned.withValue { $0 += 1 }
+          probes.apply { AppFeature.RemoteWorktreeCreation.abandon(Self.pendingID, in: &$0) }
+        })
     }
   }
 
@@ -226,7 +250,10 @@ struct RemoteAccessWorktreeNewTests {
     await clock.advance(by: .seconds(300))
     let outcome = await wait.value
     #expect(outcome == .timedOut)
-    #expect(probes.consumed.value == 1)
+    // Still running: abandoned, not consumed, so it keeps guarding its name.
+    #expect(probes.consumed.value == 0)
+    #expect(probes.abandoned.value == 1)
+    #expect(probes.creation.value == .creating(repositoryID: "/tmp/repo", name: "feature-x", abandoned: true))
     #expect(
       RemoteHostRouter.worktreeNewReply(for: outcome, repositoryID: "/r", requestID: nil)
         == .error(
@@ -248,16 +275,27 @@ struct RemoteAccessWorktreeNewTests {
     }
   }
 
-  @Test func aDisconnectCancelsTheWaitAndStillConsumesTheEntry() async {
+  @Test func aDisconnectCancelsTheWaitButTheGuardHoldsUntilTheOutcome() async {
+    typealias Creation = AppFeature.RemoteWorktreeCreation
     let clock = TestClock()
     let probes = Probes()
     let wait = start(probes, clock: clock)
     await Task.megaYield()
+    await clock.advance(by: .seconds(5))
     wait.cancel()
     let outcome = await wait.value
     #expect(outcome == .cancelled)
-    #expect(probes.consumed.value == 1)
     #expect(RemoteHostRouter.worktreeNewReply(for: outcome, repositoryID: "/r", requestID: 7) == nil)
+    #expect(probes.consumed.value == 0)
+    #expect(probes.abandoned.value == 1)
+    // Reconnect and retry the same name (any case) while the first creation runs: worktree_busy.
+    var creations: [WorktreeID: Creation] = [:]
+    creations[Self.pendingID] = probes.creation.value
+    #expect(Creation.isInFlight(repositoryID: "/tmp/repo", name: "Feature-X", in: creations))
+    // The outcome arrives: the abandoned entry is dropped and the name is free again.
+    Creation.settle(Self.pendingID, as: .created(worktreeID: Self.worktreeID, name: "feature-x"), in: &creations)
+    #expect(creations.isEmpty)
+    #expect(!Creation.isInFlight(repositoryID: "/tmp/repo", name: "Feature-X", in: creations))
   }
 
   @Test func aDisconnectDuringTheTabWaitIsCancelledToo() async {
@@ -268,7 +306,9 @@ struct RemoteAccessWorktreeNewTests {
     await Task.megaYield()
     wait.cancel()
     #expect(await wait.value == .cancelled)
+    // Already settled: consumed, nothing left to guard.
     #expect(probes.consumed.value == 1)
+    #expect(probes.abandoned.value == 0)
   }
 
   // MARK: - ssh

@@ -56,9 +56,6 @@ final class RemoteHostRouter {
   /// `worktree.new` waits in flight per phone, cancelled with the phone's
   /// connection (the creation itself goes on).
   private var worktreeNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
-  /// `RemoteWorktreeNewRequest.inFlightKey` of every `worktree.new` wait in
-  /// flight, so a duplicate gets `worktree_busy` at once.
-  private var worktreeNewInFlight: Set<String> = []
   /// The `resize` in flight per terminal (waking it, then reading the PTY
   /// size); a newer `resize` of that terminal from any phone, or the
   /// requester's detach or end, cancels it (last request wins).
@@ -871,8 +868,8 @@ final class RemoteHostRouter {
     case .success(let resolved):
       request = resolved
     }
-    let key = request.inFlightKey
-    guard !worktreeNewInFlight.contains(key) else {
+    // The app's `.creating` entry is the guard: it outlives this phone's wait.
+    guard !source.isWorktreeCreationInFlight(repositoryID: request.repositoryID, name: request.name) else {
       let busy = RemoteWorktreeNewRejection.busy
       replyError(connID, id: requestID, busy.message, code: busy.code)
       return
@@ -885,19 +882,18 @@ final class RemoteHostRouter {
     case .success(let started):
       start = started
     }
-    worktreeNewInFlight.insert(key)
     let grid = RemoteTabNewGrid.resolve(cols: message.cols, rows: message.rows, fallback: Self.newTabGrid)
     let source = self.source
     let clock = self.clock
     let probes = source.worktreeNewProbes(pendingID: start.pendingID, grid: grid)
     let waitID = UUID()
     let wait = Task { [weak self] in
-      // Consumes the app's entry on every exit, a cancelled wait included.
+      // Consumes or abandons the app's entry on every exit, a cancelled wait included.
       let outcome = await Self.awaitWorktreeNew(
         isSSH: start.isSSH, clock: clock, probes: probes,
-        consume: { source.consumeWorktreeCreation(pendingID: start.pendingID) })
+        consume: { source.consumeWorktreeCreation(pendingID: start.pendingID) },
+        abandon: { source.abandonWorktreeCreation(pendingID: start.pendingID) })
       guard let self else { return }
-      self.worktreeNewInFlight.remove(key)
       self.worktreeNewWaits[connID]?[waitID] = nil
       guard self.clients[connID] != nil,
         let reply = Self.worktreeNewReply(for: outcome, repositoryID: request.repositoryID, requestID: requestID)
@@ -910,8 +906,8 @@ final class RemoteHostRouter {
     worktreeNewWaits[connID, default: [:]][waitID] = wait
   }
 
-  /// Stops this phone's `worktree.new` waits; each still consumes its entry
-  /// and frees its name, but sends nothing. The creations go on.
+  /// Stops this phone's `worktree.new` waits; they send nothing. The creations
+  /// go on, and each keeps its `worktree_busy` guard until its outcome settles.
   private func cancelWorktreeNewWaits(connID: String) {
     guard let waits = worktreeNewWaits.removeValue(forKey: connID) else { return }
     for wait in waits.values { wait.cancel() }

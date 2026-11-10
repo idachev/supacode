@@ -29,7 +29,8 @@ struct AppFeatureRemoteWorktreeTests {
     await store.send(
       .remoteWorktreeNewRequested(repositoryID: "/tmp/missing", name: "feature-x", pendingID: pendingID)
     ) {
-      $0.remoteWorktreeCreations[pendingID] = .creating(name: "feature-x")
+      $0.remoteWorktreeCreations[pendingID] = .creating(
+        repositoryID: "/tmp/missing", name: "feature-x", abandoned: false)
     }
     await store.receive({ action in
       guard
@@ -105,9 +106,28 @@ struct AppFeatureRemoteWorktreeTests {
     }
     await store.send(.repositories(.cancelPendingWorktree(pendingID)))
     await store.receive(\.repositories.cliWorktreeAckCancelled)
-    #expect(store.state.remoteWorktreeCreations[pendingID] == .failed(message: Self.cancelled))
+    // Git may still run: the entry keeps guarding the name until the terminal action.
+    #expect(
+      store.state.remoteWorktreeCreations[pendingID]
+        == .creating(repositoryID: "/tmp/repo", name: "feature-x", abandoned: false))
     await store.send(
       .repositories(.createRandomWorktreeSucceeded(created, repositoryID: "/tmp/repo", pendingID: pendingID)))
+    #expect(store.state.remoteWorktreeCreations[pendingID] == .failed(message: Self.cancelled))
+    await store.finish(timeout: .seconds(30))
+    await store.skipReceivedActions(strict: false)
+  }
+
+  @Test(.dependencies) func aMacCancelEndingInAGitFailureReportsTheCancel() async {
+    let store = makeStore(creating: true, pendingRow: true) {
+      $0.gitClient.removeWorktree = { worktree, _ in worktree.workingDirectory }
+    }
+    await store.send(.repositories(.cancelPendingWorktree(pendingID)))
+    await store.send(
+      .repositories(
+        .createRandomWorktreeFailed(
+          title: "Unable to create worktree", message: "interrupted",
+          pendingID: pendingID, previousSelection: nil, repositoryID: "/tmp/repo", name: nil,
+          baseDirectory: URL(fileURLWithPath: "/tmp/repo"))))
     #expect(store.state.remoteWorktreeCreations[pendingID] == .failed(message: Self.cancelled))
     await store.finish(timeout: .seconds(30))
     await store.skipReceivedActions(strict: false)
@@ -159,6 +179,33 @@ struct AppFeatureRemoteWorktreeTests {
     await store.finish(timeout: .seconds(30))
   }
 
+  @Test(.dependencies) func anAbandonedCreationKeepsGuardingAndIsDroppedByItsOutcome() async {
+    let store = makeStore(creating: true)
+    await store.send(.remoteWorktreeCreationAbandoned(pendingID: pendingID)) {
+      $0.remoteWorktreeCreations[pendingID] = .creating(
+        repositoryID: "/tmp/repo", name: "feature-x", abandoned: true)
+    }
+    #expect(
+      AppFeature.RemoteWorktreeCreation.isInFlight(
+        repositoryID: "/tmp/repo", name: "FEATURE-x", in: store.state.remoteWorktreeCreations))
+    await store.send(
+      .repositories(.createRandomWorktreeSucceeded(created, repositoryID: "/tmp/repo", pendingID: pendingID)))
+    #expect(store.state.remoteWorktreeCreations.isEmpty)
+    await store.finish(timeout: .seconds(30))
+  }
+
+  @Test(.dependencies) func anAbandonedSSHCreationIsDroppedByItsCompletionOrFailure() async {
+    let store = makeStore(creating: true, abandoned: true)
+    await store.send(.repositories(.remoteWorktreeCreationCompleted(pendingID: pendingID, worktreeID: created.id)))
+    #expect(store.state.remoteWorktreeCreations.isEmpty)
+    let failing = makeStore(creating: true, abandoned: true)
+    await failing.send(
+      .repositories(.worktreeCreationRejected(pendingID: pendingID, message: "boom", licenseRequired: false)))
+    #expect(failing.state.remoteWorktreeCreations.isEmpty)
+    await store.finish(timeout: .seconds(30))
+    await failing.finish(timeout: .seconds(30))
+  }
+
   // MARK: - Helpers
 
   private func makeRepositoriesState() -> RepositoriesFeature.State {
@@ -185,6 +232,7 @@ struct AppFeatureRemoteWorktreeTests {
   private func makeStore(
     repositories: RepositoriesFeature.State? = nil,
     creating: Bool = false,
+    abandoned: Bool = false,
     pendingRow: Bool = false,
     _ extraDependencies: @escaping (inout DependencyValues) -> Void = { _ in }
   ) -> TestStoreOf<AppFeature> {
@@ -199,7 +247,10 @@ struct AppFeatureRemoteWorktreeTests {
       ]
     }
     var initial = AppFeature.State(repositories: repositoriesState, settings: SettingsFeature.State())
-    if creating { initial.remoteWorktreeCreations[pendingID] = .creating(name: "feature-x") }
+    if creating {
+      initial.remoteWorktreeCreations[pendingID] = .creating(
+        repositoryID: "/tmp/repo", name: "feature-x", abandoned: abandoned)
+    }
     let store = TestStore(initialState: initial) {
       AppFeature()
     } withDependencies: {
