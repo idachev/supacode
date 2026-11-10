@@ -3011,13 +3011,13 @@ struct RepositoriesFeatureTests {
 
   /// Drives one explicit `feature-x` creation through the real effect, with the
   /// worktree base under `tempRoot` and a stream that prints `streamLines` then
-  /// fails. Returns the failure's cleanup name and every path handed to
-  /// `removeWorktree`.
+  /// fails. Returns the failure's cleanup name, every path handed to
+  /// `removeWorktree` and every branch handed to `deleteBranch`.
   private func runFailingFeatureXCreation(
     tempRoot: URL,
     streamLines: [String],
     placement: WorktreePlacementOverride? = nil
-  ) async -> (name: String?, removedPaths: [String]) {
+  ) async -> FailingCreationResult {
     let repoRoot = "/tmp/repo"
     let repository = makeRepository(id: repoRoot, worktrees: [makeWorktree(id: repoRoot, name: "main")])
     @Shared(.settingsFile) var settingsFile
@@ -3026,6 +3026,7 @@ struct RepositoriesFeatureTests {
     defer { $settingsFile.withLock { $0.global.defaultWorktreeBaseDirectoryPath = previousBasePath } }
     let removedPaths = LockIsolated<[String]>([])
     let failureName = LockIsolated<String??>(.none)
+    let deletedBranches = LockIsolated<[String]>([])
     let store = TestStore(initialState: makeState(repositories: [repository])) {
       RepositoriesFeature()
     } withDependencies: {
@@ -3049,6 +3050,7 @@ struct RepositoriesFeatureTests {
         removedPaths.withValue { $0.append(workingDirectory.path(percentEncoded: false)) }
         return workingDirectory
       }
+      $0.gitClient.deleteBranch = { branch, _ in deletedBranches.withValue { $0.append(branch) } }
       $0.gitClient.worktrees = { _ in [] }
     }
     store.exhaustivity = .off
@@ -3068,7 +3070,14 @@ struct RepositoriesFeatureTests {
       return true
     })
     await store.finish()
-    return (failureName.value ?? nil, removedPaths.value)
+    return FailingCreationResult(
+      name: failureName.value ?? nil, removedPaths: removedPaths.value, deletedBranches: deletedBranches.value)
+  }
+
+  private struct FailingCreationResult {
+    let name: String?
+    let removedPaths: [String]
+    let deletedBranches: [String]
   }
 
   private static let ownedFeatureXLines = [
@@ -3092,6 +3101,7 @@ struct RepositoriesFeatureTests {
     let result = await runFailingFeatureXCreation(tempRoot: tempRoot, streamLines: Self.ownedFeatureXLines)
 
     #expect(result.name == "feature-x")
+    #expect(result.deletedBranches.isEmpty)
     #expect(
       result.removedPaths
         == [
@@ -3116,6 +3126,7 @@ struct RepositoriesFeatureTests {
     )
     #expect(branchTaken.name == nil)
     #expect(branchTaken.removedPaths.isEmpty)
+    #expect(branchTaken.deletedBranches.isEmpty)
 
     let branchExists = await runFailingFeatureXCreation(
       tempRoot: tempRoot,
@@ -3123,6 +3134,48 @@ struct RepositoriesFeatureTests {
     )
     #expect(branchExists.name == nil)
     #expect(branchExists.removedPaths.isEmpty)
+    #expect(branchExists.deletedBranches.isEmpty)
+  }
+
+  @Test(.dependencies) func createWorktreeStreamFailureAfterItsOwnBranchDeletesOnlyTheBranch() async {
+    // Git made this creation's branch and then failed (a failed checkout, or a
+    // path another process took); git removes its own half-made directory, so
+    // the cleanup drops the branch and never touches the directory.
+    let tempRoot = FileManager.default.temporaryDirectory
+      .appending(path: "supacode-failed-cleanup-\(UUID().uuidString)", directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+    let checkoutFailed = await runFailingFeatureXCreation(
+      tempRoot: tempRoot,
+      streamLines: [
+        "Preparing worktree (new branch 'feature-x')",
+        "error: external filter 'git-lfs filter-process' failed",
+        "fatal: a.bin: smudge filter lfs failed",
+      ]
+    )
+    #expect(checkoutFailed.name == nil)
+    #expect(checkoutFailed.removedPaths.isEmpty)
+    #expect(checkoutFailed.deletedBranches == ["feature-x"])
+
+    let pathTaken = await runFailingFeatureXCreation(
+      tempRoot: tempRoot,
+      streamLines: [
+        "Preparing worktree (new branch 'feature-x')",
+        "fatal: '/somewhere/feature-x' already exists",
+      ]
+    )
+    #expect(pathTaken.name == nil)
+    #expect(pathTaken.removedPaths.isEmpty)
+    #expect(pathTaken.deletedBranches == ["feature-x"])
+
+    let refLocked = await runFailingFeatureXCreation(
+      tempRoot: tempRoot,
+      streamLines: [
+        "Preparing worktree (new branch 'feature-x')",
+        "fatal: cannot lock ref 'refs/heads/feature-x': Unable to create 'x.lock': File exists.",
+      ]
+    )
+    #expect(refLocked.deletedBranches.isEmpty)
   }
 
   @Test(.dependencies) func createWorktreeStreamFailureCleansUpThePlacementOverrideDirectory() async {
