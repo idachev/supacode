@@ -179,7 +179,9 @@ owner pick another. Such a client is never re-bound.
 disconnect the relay writes `host:<hostId>` → `{"name"?: string, "lastSeen": <ms>}` (SQLite-backed
 storage, already the class's backend; the async `ctx.storage` or the sync `ctx.storage.kv` API, the
 implementer's choice). Offline hosts not seen for 30 days are pruned when the list is built; at
-most 20 entries are kept (the oldest offline ones go first).
+most 20 entries are kept (the oldest offline ones go first). The legacy id `default` is listed only
+while it is online and is never kept offline, so a Mac that upgrades from a legacy build does not
+leave a „Mac без име“ ghost for 30 days.
 
 Why: a list built only from open sockets cannot show "offline", which ТЛ1 asks for. The phone cannot
 know Macs it never saw. Storage writes happen only on host events, never per message.
@@ -189,8 +191,9 @@ renames of offline ones); in-memory only (lost when the object hibernates or res
 
 **РЛ6. Request validation in the Worker.** After the key check and before the upgrade, the Worker
 rejects with `400 bad host id` a `/host?id=` or `/client?host=` value that does not match
-`^[A-Za-z0-9_-]{1,64}$`, and a `name` longer than 256 characters before decoding. A missing
-parameter is valid (legacy, auto). A 400 does not count as a failed key in `GuardDO`.
+`^[A-Za-z0-9_-]{1,64}$`. `name` is never a reason to reject: the relay decodes it, normalizes and
+cuts it (ИД4), so a long or Cyrillic name cannot lock a host out with retries. A missing parameter is
+valid (legacy, auto). A 400 does not count as a failed key in `GuardDO`.
 
 ### Compatibility and rollout
 
@@ -320,7 +323,8 @@ and keeps mode 0600 (today's code, `RemoteAccessSettingsClient.swift:97-117`).
   the last saved `file.hostName ?? ""`) and no save runs, so the 2 s poll never overwrites typing.
 - `hostNameSubmitted`: trim; when equal to the saved value, do nothing; else write (blank removes the
   key), then `renameHost(displayName(draft, computerName))`, then `hostNameSaved`. Ignored when
-  `!file.isConfigured`. Failure sets `errorMessage` and keeps the draft.
+  `!file.isConfigured`. While a toggle apply runs (`isApplying`) the submit waits and runs after it,
+  so two writes of the same file never race. Failure sets `errorMessage` and keeps the draft.
 - Tests (TestStore, `supacodeTests/RemoteAccessSettingsTests.swift`): refresh during typing keeps the
   draft; submit unchanged writes nothing; submit new name writes and renames once; blank removes the
   key and renames to the computer name; write failure shows the error and does not rename; submit
@@ -345,7 +349,10 @@ mode: no host list, no switcher, no `host` query.
 **АН2. Selection.** `SettingsStore` gets `selectedHostId: StateFlow<String?>` and
 `setSelectedHostId(String?)` (plain preferences, not secret). `RelayUrl.clientUrl(base, hostId)`
 appends `?host=<id>` when the id is set. With no saved id the phone connects as an auto client and
-saves `host` from the first `relay` message that has `hosts` and `hostOnline:true`.
+saves `host` from the first `relay` message that has `hosts` and `hostOnline:true`, then reconnects
+with `?host=<saved>` so the relay can no longer re-bind it (СВ2). It never saves `default`: with only
+a legacy Mac it stays an auto client, so it follows that Mac when it upgrades. Whenever a `relay`
+message's `host` differs from a saved selection, the phone reconnects with `?host=<saved>`.
 
 **АН3. Switch.** `RelayClient.selectHost(id)`: save the id, close the LAN session, close the relay
 socket (1000), reset `hostOnline` and `hostSession`, reconnect with the new URL. `RelayClient`
@@ -366,7 +373,8 @@ list „Relay-ят още не познава друг Mac.“; bound host offli
 **АН6. Alerts.** Only the bound host alerts, because the phone's one socket carries only that host.
 On a switch, cancel the posted awaiting notifications and reset `AwaitingTracker`. The notification
 intent carries `EXTRA_HOST_ID` next to `EXTRA_CONTENT_ID`; the notification id is
-`(hostId + contentId).hashCode()`. Tapping a notification of another host switches to it, then opens
+`(hostId + contentId).hashCode()`. A switch cancels the old host's notifications, so the `hostId`
+extra is a safety net: tapping a notification of another host switches to it, then opens
 the terminal. Rejected for now: one socket per known host in `AgentWatchService` to alert from every
 Mac. The relay allows it unchanged (each socket binds on its own), so it can come later.
 
