@@ -46,6 +46,21 @@ struct RemoteAccessHelloWaitTests {
     #expect(router.helloMessage(for: "c1") == RemoteHelloMessage(host: expected))
   }
 
+  @MainActor
+  @Test func helloCarriesTheInjectedAppLabel() {
+    let router = RemoteHostRouter(
+      source: RemoteSnapshotSource(
+        store: Store(initialState: AppFeature.State()) { EmptyReducer<AppFeature.State, AppFeature.Action>() },
+        terminalManager: WorktreeTerminalManager(runtime: GhosttyRuntime())
+      ),
+      hostName: "iMac",
+      hostID: "5ff84c3b79a7faaa",
+      appLabel: "Supacode 0.11.5 (154)"
+    )
+    defer { router.stop() }
+    #expect(router.helloMessage(for: "c1").app == "Supacode 0.11.5 (154)")
+  }
+
   @Test func onlySameNetworkPhonesWaitAndOnlyWhileTheLANStarts() {
     #expect(RemoteHostRouter.helloWaitsForLAN(sameNetwork: true, lanStarting: true))
     #expect(!RemoteHostRouter.helloWaitsForLAN(sameNetwork: true, lanStarting: false))
