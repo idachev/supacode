@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import ConcurrencyExtras
 import Dependencies
 import DependenciesTestSupport
 import Foundation
@@ -116,6 +117,38 @@ struct WorktreeTerminalManagerAckTests {
     // The documented invariant: the initial surface ID equals the tab ID.
     let layout = harness.store.withState { $0.terminals.layouts[id: harness.worktree.id]?.layout }
     #expect(layout?.pane(containingTab: TabID(rawValue: id))?.tabs[id: TabID(rawValue: id)]?.content.id.rawValue == id)
+  }
+
+  /// ТД1: a remote `tab.new`'s grid reaches the content builder while the
+  /// content is provisioned (its first spawn), not after; plain creates and
+  /// later spawns see none.
+  @Test(.dependencies) func aStartGridIsOfferedToTheFirstSpawnOnly() async {
+    let managerBox = LockIsolated<WorktreeTerminalManager?>(nil)
+    let offered = LockIsolated<[ContentID: TerminalStartGrid]>([:])
+    let spawned = LockIsolated<[ContentID]>([])
+    let harness = makeHarness(
+      factory: LayoutContentFactory { request in
+        spawned.withValue { $0.append(request.contentID) }
+        if let grid = managerBox.value?.startGrid(for: request.contentID) {
+          offered.withValue { $0[request.contentID] = grid }
+        }
+        return InertTabContent(id: request.contentID, state: request.content)
+      })
+    managerBox.setValue(harness.manager)
+    let pump = CreationEvents(harness.manager)
+    let grid = TerminalStartGrid(columns: 80, rows: 24, exact: true)
+    let sized = UUID()
+    harness.manager.handleCommand(
+      .createTab(harness.worktree, runSetupScriptIfNew: false, id: sized, focusing: false, startGrid: grid))
+    _ = await pump.next(2)
+    let plain = UUID()
+    harness.manager.handleCommand(.createTab(harness.worktree, runSetupScriptIfNew: false, id: plain, focusing: false))
+    _ = await pump.next(2)
+
+    #expect(spawned.value.contains(ContentID(rawValue: sized)))
+    #expect(spawned.value.contains(ContentID(rawValue: plain)))
+    #expect(offered.value == [ContentID(rawValue: sized): grid])
+    #expect(harness.manager.startGrid(for: ContentID(rawValue: sized)) == nil)
   }
 
   @Test(.dependencies) func createWithoutAStoreDrainsTheAckAsFailure() async {

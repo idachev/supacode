@@ -16,6 +16,9 @@ final class WorktreeTerminalManager {
   @ObservationIgnored private let surfaceBindingActionPerformer: ((GhosttySurfaceView, String) -> Void)?
   private(set) var socketServer: AgentHookSocketServer?
   private var hosts: [Worktree.ID: WorktreeContentHost] = [:]
+  /// Start grids of tabs being created right now (a remote `tab.new`), keyed by
+  /// content; the content builder reads one on the synchronous first spawn.
+  @ObservationIgnored private var startGrids: [ContentID: TerminalStartGrid] = [:]
   /// The windowed-pane windows, reconciled after every layout change.
   @ObservationIgnored let paneWindows = PaneWindowManager()
   /// The app store; topology commands route into `TerminalsFeature` through it.
@@ -327,7 +330,8 @@ final class WorktreeTerminalManager {
     customTitle: String?,
     focusing: Bool,
     anchor: UUID? = nil,
-    workingDirectory: String? = nil
+    workingDirectory: String? = nil,
+    startGrid: TerminalStartGrid? = nil
   ) {
     Task {
       createTabAsync(
@@ -338,7 +342,8 @@ final class WorktreeTerminalManager {
         customTitle: customTitle,
         focusing: focusing,
         anchor: anchor,
-        workingDirectory: workingDirectory
+        workingDirectory: workingDirectory,
+        startGrid: startGrid
       )
     }
   }
@@ -346,12 +351,10 @@ final class WorktreeTerminalManager {
   // swiftlint:disable:next cyclomatic_complexity
   private func handleTabCommand(_ command: TerminalClient.Command) -> Bool {
     switch command {
-    case .createTab(
-      let worktree, let runSetupScriptIfNew, let id, let title, let focusing, let anchor, let workingDirectory
-    ):
+    case .createTab(let worktree, let setup, let id, let title, let focusing, let anchor, let directory, let grid):
       scheduleTabCreation(
-        in: worktree, runSetupScriptIfNew: runSetupScriptIfNew, input: nil,
-        tabID: id, customTitle: title, focusing: focusing, anchor: anchor, workingDirectory: workingDirectory)
+        in: worktree, runSetupScriptIfNew: setup, input: nil, tabID: id, customTitle: title, focusing: focusing,
+        anchor: anchor, workingDirectory: directory, startGrid: grid)
     case .createTabWithInput(
       let worktree, let input, let runSetupScriptIfNew, let id, let title, let focusing, let anchor
     ):
@@ -1010,7 +1013,8 @@ final class WorktreeTerminalManager {
     focusing: Bool = true,
     anchor: UUID? = nil,
     isInitialTab: Bool = false,
-    workingDirectory: String? = nil
+    workingDirectory: String? = nil,
+    startGrid: TerminalStartGrid? = nil
   ) {
     let host = host(for: worktree) { runSetupScriptIfNew }
     // Mint upfront so a title-only request still has a rename target, keeping
@@ -1043,7 +1047,12 @@ final class WorktreeTerminalManager {
       select: focusing,
       inheritedFrom: inheritedFrom
     )
+    // The layout provisions the content synchronously, so the grid is only
+    // offered for this one spawn.
+    // `spec.contentID` is optional; this path always mints it from `mintedID`.
+    startGrids[ContentID(rawValue: mintedID)] = startGrid
     sendLayout(worktree.id, .newTab(inPane: paneID, spec: spec))
+    startGrids[ContentID(rawValue: mintedID)] = nil
     if let customTitle {
       sendLayout(worktree.id, .renameTab(id: TabID(rawValue: mintedID), title: customTitle))
     }
@@ -2044,6 +2053,12 @@ final class WorktreeTerminalManager {
     // every pane, so report "no resume" (nil) and leave the gate as it is.
     let spawnsThroughZmx = zmxClient.executableURL() != nil
     emit(.agentResumeLivenessCaptured(liveSessionNames: spawnsThroughZmx ? agentResumeGate?.liveSessionNames : nil))
+  }
+
+  /// The grid a content being created must start at (a remote `tab.new`); nil
+  /// outside its creation or when none was asked.
+  func startGrid(for id: ContentID) -> TerminalStartGrid? {
+    startGrids[id]
   }
 
   /// Spends the content's one resume slot for this process. The content

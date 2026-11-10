@@ -1,5 +1,6 @@
 import Clocks
 import ConcurrencyExtras
+import CoreGraphics
 import Foundation
 import SupacodeSettingsShared
 import Testing
@@ -73,6 +74,76 @@ struct RemoteAccessTabNewTests {
     #expect(resolve(501, 201) == RemoteTabNewGrid(columns: 500, rows: 200, exact: true))
     #expect(resolve(0, -3) == RemoteTabNewGrid(columns: 20, rows: 5, exact: true))
     #expect(resolve(10_000, 10_000) == RemoteTabNewGrid(columns: 500, rows: 200, exact: true))
+  }
+
+  // MARK: - Start grid at creation (ТД1)
+
+  @Test func theResolvedGridIsTheTerminalsStartGrid() throws {
+    #expect(
+      try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":80,"rows":24}"#).startGrid
+        == TerminalStartGrid(columns: 80, rows: 24, exact: true))
+    #expect(
+      try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w"}"#).startGrid
+        == TerminalStartGrid(columns: 120, rows: 40, exact: false))
+  }
+
+  @Test func aStartGridIsMeasuredOnTheSourcesCellsAndPadding() {
+    // A source of 250 × 70 cells of 8 × 16 px plus a 6 px padding remainder.
+    let current = CGSize(width: 250 * 8 + 6, height: 70 * 16 + 6)
+    let cell = CGSize(width: 8, height: 16)
+    let exact = GhosttySurfaceView.GridCap.startBackingSize(
+      current: current, grid: (250, 70), cell: cell, limit: (80, 24), exact: true)
+    #expect(exact == CGSize(width: 80 * 8 + 6, height: 24 * 16 + 6))
+    let grown = GhosttySurfaceView.GridCap.startBackingSize(
+      current: current, grid: (250, 70), cell: cell, limit: (300, 90), exact: true)
+    #expect(grown == CGSize(width: 300 * 8 + 6, height: 90 * 16 + 6))
+    // The default cap only shrinks: a source already inside it starts as is.
+    let capped = GhosttySurfaceView.GridCap.startBackingSize(
+      current: current, grid: (250, 70), cell: cell, limit: (120, 40), exact: false)
+    #expect(capped == CGSize(width: 120 * 8 + 6, height: 40 * 16 + 6))
+    let small = CGSize(width: 100 * 8 + 6, height: 30 * 16 + 6)
+    let fitting = GhosttySurfaceView.GridCap.startBackingSize(
+      current: small, grid: (100, 30), cell: cell, limit: (120, 40), exact: false)
+    #expect(fitting == small)
+    let same = GhosttySurfaceView.GridCap.startBackingSize(
+      current: small, grid: (100, 30), cell: cell, limit: (100, 30), exact: true)
+    #expect(same == small)
+  }
+
+  @Test func aSourceWithoutCellMetricsGivesNoStartSize() {
+    let unmeasured = GhosttySurfaceView.GridCap.startBackingSize(
+      current: CGSize(width: 3200, height: 1800), grid: (0, 0), cell: .zero, limit: (80, 24), exact: true)
+    #expect(unmeasured == nil)
+  }
+
+  @Test func aStartGeometryKeepsExactPixelsAndRejectsAbsurdOnes() {
+    let geometry = ContentGeometry.sized(pixelSize: CGSize(width: 646, height: 390), scale: 2)
+    #expect(geometry?.pixelSize == CGSize(width: 646, height: 390))
+    #expect(geometry?.scale == 2)
+    #expect(ContentGeometry.sized(pixelSize: CGSize(width: 0, height: 390), scale: 2) == nil)
+    #expect(ContentGeometry.sized(pixelSize: CGSize(width: 646, height: 390), scale: 0) == nil)
+    #expect(ContentGeometry.sized(pixelSize: CGSize(width: 40_000, height: 390), scale: 2) == nil)
+    #expect(ContentGeometry.sized(pixelSize: CGSize(width: CGFloat.infinity, height: 390), scale: 2) == nil)
+  }
+
+  @Test func onlyASurfaceWithTheSourcesFontIsMeasuredOnIt() {
+    // Inherits the source's font (window-inherit-font-size).
+    #expect(
+      TerminalSurfaceRecipe.sharesSourceFont(fontFromSource: true, plannedFontSize: 15, sourceZoomedFontSize: 15))
+    #expect(
+      TerminalSurfaceRecipe.sharesSourceFont(fontFromSource: true, plannedFontSize: 13, sourceZoomedFontSize: 0))
+    // Both at the configured default.
+    #expect(
+      TerminalSurfaceRecipe.sharesSourceFont(fontFromSource: false, plannedFontSize: nil, sourceZoomedFontSize: 0))
+    // The source is zoomed, the new surface is not.
+    #expect(
+      !TerminalSurfaceRecipe.sharesSourceFont(fontFromSource: false, plannedFontSize: nil, sourceZoomedFontSize: 18))
+    // A remembered zoom the source may not have.
+    #expect(
+      !TerminalSurfaceRecipe.sharesSourceFont(fontFromSource: false, plannedFontSize: 18, sourceZoomedFontSize: 0))
+    // No live source.
+    #expect(
+      !TerminalSurfaceRecipe.sharesSourceFont(fontFromSource: true, plannedFontSize: 15, sourceZoomedFontSize: nil))
   }
 
   @Test func aLocalWorktreeTabStartsInTheWorktreeDirectory() {

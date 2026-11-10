@@ -144,7 +144,12 @@ Every request may carry a numeric `id`; the response repeats it.
 ### hello
 
 - client → host `{"t":"hello","v":1}`
-- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"}}`
+- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"},"app":"Supacode 0.11.5 (154)"}`
+- `app` (optional string) is the app build the host runs: `"Supacode <CFBundleShortVersionString>
+  (<CFBundleVersion>)"`, e.g. `"app":"Supacode 0.11.5 (154)"`. If one of the two keys is missing, the
+  label carries what exists (`"Supacode 0.11.5"`); the field is omitted rather than sent empty. It
+  is in the `hello` reply over the relay and over LAN. Optional; omitted by hosts before this
+  change. Clients ignore unknown fields, so old clients are unaffected.
 - `host` is the configured host name, or the Mac's computer name when none is set. `hostId` is
   omitted when the host has none (a legacy host). A client that selected a host ignores `lan` when
   `hostId` is present and differs from that host (see "LAN shortcut").
@@ -229,13 +234,30 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 - `cols` and `rows` are integers within the 64-bit range; the host clamps them to 20…500 columns and 5…200 rows. A
   missing `cols` or `rows`, or one that is not an integer, makes the host ignore the request
   (it logs it).
-- No direct reply. When the grid changed, every client attached to that content gets the usual
-  `{"t":"size","contentId":"…","cols":…,"rows":…}`.
+- Replies (a valid request for the attached content gets one of these). Every `size` is the size
+  the session's PTY really has (what the `out` stream renders at), read after the change:
+  - The PTY takes the size (within about 3 s): every client attached to that content gets
+    `{"t":"size","contentId":"…","cols":…,"rows":…}` with that size, even when it already had it.
+  - The grid already has that size: the same `size`, at once.
+  - The terminal has no live surface on the Mac (its tab was hidden long enough to hibernate, or
+    has not been shown since Supacode started; `attach` still works then): the host starts it in
+    the background, off screen, and applies the size once the terminal is ready, within about
+    6 s; then `size` as above. The Mac does not switch to the tab.
+  - The PTY keeps another size: a `size` with the size it has, then an `error` as below. A later
+    change of the PTY still arrives as the usual `size`.
+  - The host cannot apply it (the tab is gone, the terminal did not start, it was not ready in
+    time, or the PTY size cannot be read): the requesting client gets
+    `{"t":"error","id":null,"message":"…","code":"resize_failed","contentId":"…"}`
+    (`id` echoes the request's `id` when it had one; `message` is a short English reason).
+  - A newer `resize` of the same terminal from any client, or the requester's `detach` or `attach`
+    of another content, cancels a pending one; the cancelled request gets no reply of its own (the
+    newer one's `size` reaches every attached client).
 - The requested size holds until the Mac's own pane for that tab changes layout (a window
   resize, the pane shown or hidden, a split change, zoom); then the pane's size returns and
   the clients get `size`. A later `resize` from any client wins again (last request wins).
 - Old hosts answer an unknown `t` with an `error` and send no `size`; the resize simply has no
-  effect.
+  effect. Hosts before `resize_failed` send nothing when a resize cannot be applied, and nothing
+  for a resize to the current size.
 
 ### tab.new
 
@@ -267,6 +289,9 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 ### errors
 
 - host → client `{"t":"error","id":<request id or null>,"message":"…"}`.
+- Optional fields, omitted when absent: `code`, a machine-readable reason (today only
+  `resize_failed`), and `contentId`, the terminal the error is about (for requests without an `id`).
+  Clients must ignore codes they do not know and fall back to `message`.
 
 ## LAN shortcut
 

@@ -107,11 +107,17 @@ final class RemoteSnapshotSource {
     return content?.capUnmountedGrid(maxColumns: columns, maxRows: rows, exact: exact) ?? false
   }
 
-  /// Sets an existing terminal's grid for a client's `resize`. False while the
-  /// terminal has no live surface (hibernated) or its cell metrics are unknown.
-  func resizeGrid(contentID: UUID, columns: Int, rows: Int) -> Bool {
+  /// One try at setting an existing terminal's grid for a client's `resize`.
+  /// `.noSurface` while the terminal has no live surface (never started since
+  /// launch, or hibernated); the router then wakes it (`wake(contentID:)`).
+  func resizeGrid(contentID: UUID, columns: Int, rows: Int) -> RemoteResizeAttempt {
     let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
-    return content?.applyRequestedGrid(columns: columns, rows: rows) ?? false
+    switch content?.applyRequestedGrid(columns: columns, rows: rows) {
+    case .applied: return .applied
+    case .unchanged: return .unchanged
+    case .notReady: return .notReady
+    case nil: return content?.sessionFailedToStart == true ? .failedToStart : .noSurface
+    }
   }
 
   /// Whether the terminal refuses input (a completed blocking script's parked
@@ -150,9 +156,11 @@ final class RemoteSnapshotSource {
   /// Opens one new terminal tab (the default shell, the worktree's directory)
   /// in a worktree through the terminal command the app's "new tab" action
   /// sends, in the background: the tab is not selected and the window keeps
-  /// its worktree. Returns the minted tab id (also its content id), or why
-  /// no tab was requested. The tab lands asynchronously; poll `contentID(ofTab:in:)`.
-  func requestNewTab(worktreeID raw: String) -> Result<UUID, RemoteTabNewRejection> {
+  /// its worktree. The terminal starts at `startGrid` when the worktree has a
+  /// live terminal to measure it on. Returns the minted tab id (also its
+  /// content id), or why no tab was requested. The tab lands asynchronously;
+  /// poll `contentID(ofTab:in:)`.
+  func requestNewTab(worktreeID raw: String, startGrid: TerminalStartGrid) -> Result<UUID, RemoteTabNewRejection> {
     let state = store.repositories
     var found: (worktree: Worktree, isArchived: Bool)?
     for repository in state.repositories {
@@ -175,7 +183,7 @@ final class RemoteSnapshotSource {
     terminalManager.handleCommand(
       .createTab(
         worktree, runSetupScriptIfNew: runSetupScript, id: tabID, focusing: false,
-        workingDirectory: Self.newTabDirectory(for: worktree)))
+        workingDirectory: Self.newTabDirectory(for: worktree), startGrid: startGrid))
     return .success(tabID)
   }
 

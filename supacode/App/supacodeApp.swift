@@ -434,6 +434,9 @@ struct SupacodeApp: App {
       },
       claimAgentResume: { [weak terminalManager] in
         terminalManager?.claimAgentResume($0) ?? false
+      },
+      startGrid: { [weak terminalManager] request in
+        terminalManager?.startGrid(for: request.contentID)
       }
     ).factory()
   }

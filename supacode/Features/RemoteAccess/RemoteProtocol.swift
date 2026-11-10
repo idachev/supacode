@@ -87,6 +87,12 @@ nonisolated struct RemoteTabNewGrid: Equatable, Sendable {
       rows: min(max(rowCount, rowRange.lowerBound), rowRange.upperBound),
       exact: true)
   }
+
+  /// The grid the new terminal starts at, so its PTY and zmx session are born
+  /// at this size instead of being resized after.
+  var startGrid: TerminalStartGrid {
+    TerminalStartGrid(columns: columns, rows: rows, exact: exact)
+  }
 }
 
 /// A client's `resize` of the terminal it is attached to, checked and clamped
@@ -97,6 +103,7 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
   let rows: Int
 
   /// Why a `resize` is ignored (logged on the host; the client gets no reply).
+  /// A valid request the host cannot apply is answered instead (`Failure`).
   nonisolated enum Ignored: Error, Equatable {
     case notAttached
     case invalidSize
@@ -121,6 +128,109 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
   }
 }
 
+/// One try at applying a `resize` to a terminal (`RemoteSnapshotSource.resizeGrid`).
+nonisolated enum RemoteResizeAttempt: Equatable, Sendable {
+  /// The grid changes to the requested size; the PTY follows asynchronously.
+  case applied
+  /// The grid already has the requested size.
+  case unchanged
+  /// The surface exists but its cell metrics do not yet; try again.
+  case notReady
+  /// No live surface (never started since launch, or hibernated); wake it first.
+  case noSurface
+  /// No live surface, and the last start of the session failed.
+  case failedToStart
+}
+
+/// How the app side of a valid `resize` ended: the grid changed, already had
+/// that size, or the size cannot be applied (the requester gets an `error`
+/// with `code` `resize_failed`). The reply then follows the session PTY
+/// (`RemoteResizeConfirmation`).
+nonisolated enum RemoteResizeResult: Equatable, Sendable {
+  case applied
+  case unchanged
+  case failed(Failure)
+
+  /// The `code` of the `error` a failed `resize` gets.
+  static let errorCode = "resize_failed"
+
+  nonisolated enum Failure: Error, Equatable, Sendable {
+    /// No worktree lists the content any more.
+    case contentGone
+    /// The terminal had no live surface and could not be started.
+    case wakeFailed
+    /// The surface did not report cell metrics within `RemoteHostRouter.resizeReadyTimeout`.
+    case notReady
+    /// The app's grid changed but the session PTY kept another size.
+    case sessionKeptItsSize
+    /// The session PTY's size could not be read.
+    case sizeUnreadable
+
+    /// The `message` of the `error` frame.
+    var message: String {
+      switch self {
+      case .contentGone: "the terminal is gone"
+      case .wakeFailed: "the terminal did not start on the Mac"
+      case .notReady: "the terminal was not ready on the Mac in time"
+      case .sessionKeptItsSize: "the terminal session did not take the new size"
+      case .sizeUnreadable: "could not read the terminal session's size"
+      }
+    }
+  }
+}
+
+/// Whether the session PTY took a `resize`'s grid (`RemoteHostRouter.confirmResize`).
+nonisolated enum RemoteResizeConfirmation: Equatable, Sendable {
+  case matched
+  /// The PTY has another size: the last one read.
+  case mismatch(columns: Int, rows: Int)
+  /// No read of the PTY size succeeded.
+  case unreadable
+}
+
+/// The `resize` in flight per terminal, so a newer request of the same
+/// terminal from any phone cancels an older one before it is applied (an older
+/// wait's retry would otherwise put its size back over the newer one).
+nonisolated struct RemoteResizeWaits {
+  private struct Wait {
+    let connID: String
+    let token: UUID
+    let task: Task<Void, Never>
+  }
+
+  private var byContent: [UUID: Wait] = [:]
+
+  /// Records `task` as the wait for `contentID`, cancelling the one it replaces.
+  mutating func start(contentID: UUID, connID: String, token: UUID, task: Task<Void, Never>) {
+    cancel(contentID: contentID)
+    byContent[contentID] = Wait(connID: connID, token: token, task: task)
+  }
+
+  /// Cancels the wait for `contentID`, whichever phone asked for it.
+  mutating func cancel(contentID: UUID) {
+    byContent.removeValue(forKey: contentID)?.task.cancel()
+  }
+
+  /// Cancels the waits `connID` asked for (it detached or left).
+  mutating func cancel(connID: String) {
+    for (contentID, wait) in byContent where wait.connID == connID {
+      wait.task.cancel()
+      byContent[contentID] = nil
+    }
+  }
+
+  /// Forgets a finished wait, unless a newer one replaced it.
+  mutating func finished(contentID: UUID, token: UUID) {
+    guard byContent[contentID]?.token == token else { return }
+    byContent[contentID] = nil
+  }
+
+  /// The phone whose wait for `contentID` is in flight.
+  func pendingConnID(contentID: UUID) -> String? {
+    byContent[contentID]?.connID
+  }
+}
+
 // MARK: - Outbound payloads
 
 nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
@@ -132,6 +242,30 @@ nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
   var hostId: String?
   /// Where a phone on the Mac's network can try the LAN shortcut; omitted otherwise.
   var lan: RemoteLANCandidate?
+  /// The app build the host runs, `Supacode <version> (<build>)`; omitted when the bundle has neither key.
+  var app: String?
+
+  /// `Supacode 0.11.5 (154)`; with one key missing, what exists (`Supacode 0.11.5`); nil when both
+  /// are missing or blank, so an empty string is never sent.
+  static func appLabel(shortVersion: String?, build: String?) -> String? {
+    let version = shortVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let build = build?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    switch (version.isEmpty, build.isEmpty) {
+    case (false, false): return "Supacode \(version) (\(build))"
+    case (false, true): return "Supacode \(version)"
+    case (true, false): return "Supacode (\(build))"
+    case (true, true): return nil
+    }
+  }
+
+  /// The label of the running app, read from `Bundle.main`'s Info.plist.
+  static func currentAppLabel() -> String? {
+    let info = Bundle.main.infoDictionary
+    return appLabel(
+      shortVersion: info?["CFBundleShortVersionString"] as? String,
+      build: info?["CFBundleVersion"] as? String
+    )
+  }
 }
 
 /// The host → relay rename control frame's body (ИД3), sent on `controlConnID`.
@@ -154,6 +288,10 @@ nonisolated struct RemoteErrorMessage: Encodable, Equatable, Sendable {
   var t = "error"
   let id: Int?
   let message: String
+  /// A machine-readable reason (e.g. `resize_failed`); omitted when none.
+  var code: String?
+  /// The terminal the error is about, for messages without an `id` (`resize`); omitted when none.
+  var contentId: String?
 
   // Encode `id` as an explicit null so clients can match on it.
   func encode(to encoder: any Encoder) throws {
@@ -161,10 +299,12 @@ nonisolated struct RemoteErrorMessage: Encodable, Equatable, Sendable {
     try container.encode(t, forKey: .t)
     try container.encode(id, forKey: .id)
     try container.encode(message, forKey: .message)
+    try container.encodeIfPresent(code, forKey: .code)
+    try container.encodeIfPresent(contentId, forKey: .contentId)
   }
 
   private enum CodingKeys: String, CodingKey {
-    case t, id, message
+    case t, id, message, code, contentId
   }
 }
 

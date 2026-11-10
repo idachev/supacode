@@ -191,10 +191,11 @@ final class TerminalContent: TabContent {
   }
 
   /// Sets the grid to exactly `columns` × `rows` for a remote client's
-  /// `resize`; the Mac pane's size returns at its next layout change. Returns
-  /// false while there is no live surface or its cell metrics are unknown.
-  func applyRequestedGrid(columns: Int, rows: Int) -> Bool {
-    surfaceView?.applyRequestedGrid(columns: columns, rows: rows) ?? false
+  /// `resize`; the Mac pane's size returns at its next layout change. Nil while
+  /// there is no live surface (never started since launch, or hibernated): the
+  /// caller wakes the tab and tries again.
+  func applyRequestedGrid(columns: Int, rows: Int) -> GhosttySurfaceView.RequestedGridOutcome? {
+    surfaceView?.applyRequestedGrid(columns: columns, rows: rows)
   }
 
   // Hibernated terminals have no live surface, so nothing is interruptible.
