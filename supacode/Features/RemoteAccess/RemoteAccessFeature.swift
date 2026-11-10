@@ -35,6 +35,16 @@ struct RemoteAccessFeature {
     /// The trimmed name submitted during another write; saved when it ends, latest wins.
     var pendingHostName: String?
 
+    /// Takes a file status read from disk. The field follows the file's name
+    /// only while it holds the saved name and no save runs, so a read never
+    /// overwrites typing and a clean field never goes stale.
+    mutating func adopt(_ newFile: RemoteAccessFileStatus) {
+      if !isSavingHostName, hostNameDraft == (file.hostName ?? "") {
+        hostNameDraft = newFile.hostName ?? ""
+      }
+      file = newFile
+    }
+
     /// The name the file will hold once the running and waiting saves end.
     var targetHostName: String {
       pendingHostName ?? hostNameInFlight ?? (file.hostName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,12 +95,7 @@ struct RemoteAccessFeature {
           file.enabled = state.file.enabled
           file.lan = state.file.lan
         }
-        // The poll follows the file only while the field holds the saved name,
-        // so it never overwrites typing.
-        if !state.isSavingHostName, state.hostNameDraft == (state.file.hostName ?? "") {
-          state.hostNameDraft = file.hostName ?? ""
-        }
-        state.file = file
+        state.adopt(file)
         state.host = host
         return .none
 
@@ -108,7 +113,7 @@ struct RemoteAccessFeature {
         state.isApplying = false
         state.host = host
         if !state.isApplyPending {
-          state.file = file
+          state.adopt(file)
         }
         return startPendingWrite(&state)
 
@@ -148,7 +153,7 @@ struct RemoteAccessFeature {
           file.enabled = state.file.enabled
           file.lan = state.file.lan
         }
-        state.file = file
+        state.adopt(file)
         return startPendingWrite(&state)
 
       case .hostNameSaveFailed(let message):

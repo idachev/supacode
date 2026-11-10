@@ -209,6 +209,34 @@ struct RemoteAccessSettingsTests {
     }
   }
 
+  @Test func aFileReadAfterAToggleApplyMovesACleanDraftAlong() async {
+    let clock = TestClock()
+    let onDisk = LockIsolated(Self.configuredFile(hostName: "Office"))
+    let store = TestStore(initialState: Self.state(hostName: "Office", draft: "Office")) {
+      RemoteAccessFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0[RemoteAccessClient.self].writeFlags = { _, _ in try await clock.sleep(for: .seconds(1)) }
+      $0[RemoteAccessClient.self].fileStatus = { onDisk.value }
+      $0[RemoteAccessClient.self].hostStatus = { Self.running }
+    }
+    await store.send(.lanToggled(false)) {
+      $0.file.lan = false
+      $0.isApplying = true
+    }
+    // The flags reach the disk and a hand edit renames the Mac while the apply runs.
+    onDisk.withValue {
+      $0.lan = false
+      $0.hostName = "Desk"
+    }
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.applyFinished) {
+      $0.isApplying = false
+      $0.file.hostName = "Desk"
+      $0.hostNameDraft = "Desk"
+    }
+  }
+
   @Test func submittingTheSavedNameWritesNothing() async {
     let writes = LockIsolated(0)
     let store = TestStore(initialState: Self.state(hostName: "Office", draft: " Office ")) {
