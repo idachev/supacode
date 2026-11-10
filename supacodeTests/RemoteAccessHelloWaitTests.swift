@@ -19,7 +19,8 @@ struct RemoteAccessHelloWaitTests {
         terminalManager: WorktreeTerminalManager(runtime: GhosttyRuntime())
       ),
       hostName: "iMac",
-      hostID: "5ff84c3b79a7faaa"
+      hostID: "5ff84c3b79a7faaa",
+      appLabel: nil
     )
     defer { router.stop() }
     #expect(router.helloMessage(for: "c1") == RemoteHelloMessage(host: "iMac", hostId: "5ff84c3b79a7faaa"))
@@ -36,7 +37,8 @@ struct RemoteAccessHelloWaitTests {
         terminalManager: WorktreeTerminalManager(runtime: GhosttyRuntime())
       ),
       hostName: "Office Mac",
-      hostID: nil
+      hostID: nil,
+      appLabel: nil
     )
     defer { router.stop() }
     router.rename(to: " ")

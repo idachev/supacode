@@ -132,6 +132,30 @@ nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
   var hostId: String?
   /// Where a phone on the Mac's network can try the LAN shortcut; omitted otherwise.
   var lan: RemoteLANCandidate?
+  /// The app build the host runs, `Supacode <version> (<build>)`; omitted when the bundle has neither key.
+  var app: String?
+
+  /// `Supacode 0.11.5 (154)`; with one key missing, what exists (`Supacode 0.11.5`); nil when both
+  /// are missing or blank, so an empty string is never sent.
+  static func appLabel(shortVersion: String?, build: String?) -> String? {
+    let version = shortVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let build = build?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    switch (version.isEmpty, build.isEmpty) {
+    case (false, false): return "Supacode \(version) (\(build))"
+    case (false, true): return "Supacode \(version)"
+    case (true, false): return "Supacode (\(build))"
+    case (true, true): return nil
+    }
+  }
+
+  /// The label of the running app, read from `Bundle.main`'s Info.plist.
+  static func currentAppLabel() -> String? {
+    let info = Bundle.main.infoDictionary
+    return appLabel(
+      shortVersion: info?["CFBundleShortVersionString"] as? String,
+      build: info?["CFBundleVersion"] as? String
+    )
+  }
 }
 
 /// The host → relay rename control frame's body (ИД3), sent on `controlConnID`.

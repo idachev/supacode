@@ -71,6 +71,8 @@ final class RemoteHostRouter {
   private(set) var hostName: String
   /// This Mac's relay id (ИД1), sent in `hello` so a phone can tell its Macs apart.
   let hostID: String?
+  /// The app build every `hello` reports (`RemoteHelloMessage.appLabel`); nil omits the field.
+  private let appLabel: String?
   /// The missing-hardware-UUID warning goes out once per process, not per start.
   private static var warnedMissingHostID = false
 
@@ -78,11 +80,13 @@ final class RemoteHostRouter {
     source: RemoteSnapshotSource,
     hostName: String,
     hostID: String?,
+    appLabel: String? = RemoteHelloMessage.currentAppLabel(),
     clock: any Clock<Duration> = ContinuousClock()
   ) {
     self.source = source
     self.hostName = hostName
     self.hostID = hostID
+    self.appLabel = appLabel
     self.clock = clock
   }
 
@@ -282,9 +286,9 @@ final class RemoteHostRouter {
     reply(connID, helloMessage(for: connID))
   }
 
-  /// The `hello` answer for one phone: name, id and, for a same-network phone, `lan`.
+  /// The `hello` answer for one phone: name, id, app build and, for a same-network phone, `lan`.
   func helloMessage(for connID: String) -> RemoteHelloMessage {
-    RemoteHelloMessage(host: hostName, hostId: hostID, lan: lanCandidate(for: connID))
+    RemoteHelloMessage(host: hostName, hostId: hostID, lan: lanCandidate(for: connID), app: appLabel)
   }
 
   /// Answers a same-network phone's `hello` once the LAN start ends, or after
