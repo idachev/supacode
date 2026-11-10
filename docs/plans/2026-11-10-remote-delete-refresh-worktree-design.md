@@ -187,7 +187,7 @@ Line numbers are `supacode/Features/...` unless the path says otherwise.
 | `worktree_invalid` | `worktree.delete needs a worktreeId`, `no such worktree` | `worktreeId` missing or empty; unknown, archived (ОВ12), or a pending (`pending:…`) id |
 | `worktree_unsupported` | `the main worktree cannot be deleted`, `folders cannot be deleted from the remote`, `the repository is being removed` | main worktree; folder (non-git) entry; repository in `removingRepositoryIDs` |
 | `worktree_busy` | `the worktree is busy (being created, archived or deleted)` | row lifecycle not `.idle` (setup script running, archiving, deleting, delete script running), or a remote delete of it is still in flight; also when the re-check after the dirty check finds this (D4) |
-| `worktree_dirty` | `the worktree has uncommitted changes, untracked or ignored files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` (ignored directories are not listed) | the dirty check (D4) found at least one status entry, or commits on a detached HEAD that no branch, tag or remote ref holds (message then: `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first`) |
+| `worktree_dirty` | `the worktree has uncommitted changes, untracked or ignored files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` (ignored directories are not listed) | the dirty check found at least one counted status record (the worktree or any initialized submodule, recursively), or commits on a detached HEAD that no branch, tag or remote ref holds (message then: `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first`). Sent either **before** the delete (the first check; nothing ran) or **after a delete script ran** (the re-check before removal; the script's effects stay, the worktree stays, row `.idle`) (D4) |
 | `worktree_failed` | `Delete script failed (exit code N).`, `Delete cancelled.`, `Unable to delete worktree: <git message>`, `The worktree could not be found. It may have already been removed.`, `could not check the worktree for changes: <error>`, `the worktree left the list before it was deleted (removed outside Supacode, or its repository was removed)` | the app reported a failure, the check failed, or the worktree vanished without a delete result |
 | `worktree_timeout` | `the delete is still running on the Mac; the worktree may disappear from the list later` | no outcome within `worktreeDeleteTimeout` (300 s) |
 | `refresh_timeout` | `the refresh is still running on the Mac; send list again later` | `worktrees.refresh`: no load finished within 60 s |
@@ -284,7 +284,16 @@ D4. AppFeature (core, next to the `worktree.new` arms; core runs before the repo
       - every other entry counts: staged or unstaged changes to tracked files, conflicts (`UU` …),
         untracked files (`??`). (`-z` keeps rename entries as two NUL fields; the second field is
         skipped, not counted twice.)
-      Dirty = at least one counted entry, or detached commits (below).
+      - Initialized submodules (main decision on Codex r3 F1), recursively: list them with
+        `git -C <path> submodule foreach --recursive --quiet 'printf "%s\0" "$displaypath"'`
+        (no output when there are none), then run the **same** status command with the **same**
+        rule in `<path>/<displaypath>` for each, and count its records with the path prefixed by
+        `<displaypath>/` (e.g. `libs/core/.env`). An uninitialized submodule has no files to lose and
+        is skipped (foreach visits only initialized ones). Same host-aware client as the main
+        command, so on an ssh worktree all of it runs on the ssh host. Detached-HEAD commits are
+        checked for the worktree itself only.
+      Dirty = at least one counted record (worktree or submodule), or detached commits (below). One
+      rule for both the first check and the post-script re-check.
     - Unpushed commits do **not** block: the branch is never deleted (ОВ6), so its commits stay
       reachable.
     - Detached HEAD (Codex r2 F3): commits reachable only from the worktree's HEAD would become
@@ -467,7 +476,8 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
   effect, outcome updates in the existing arms, the two explicit early-exit outcomes, the
   `repositoriesChanged` backstop). Tests with `TestClock`, no `Task.sleep`: success only via
   `.worktreeDeleted`; dirty (tracked change, untracked file, ignored file such as `.env`) → `worktree_dirty`; only
-  wholly ignored directories (`node_modules/`) → deletes; second check: a file written during the
+  wholly ignored directories (`node_modules/`) → deletes; an ignored `.env` inside an initialized (nested) submodule →
+  `worktree_dirty` with the prefixed path; second check: a file written during the
   delete script → `worktree_dirty`, row `.idle`, directory untouched, no Mac alert; no script → no
   second check; detached HEAD with a commit on no ref → `worktree_dirty`, attached branch with unpushed
   commits → deletes; a clean request passes its own re-check (not `worktree_busy`); check error → `worktree_failed`; orphan skips the check; re-check after the check refuses a
