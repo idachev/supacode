@@ -35,6 +35,33 @@ struct GhosttySurfaceViewTests {
     )
   }
 
+  // Drives the real `updateSurfaceSize` path: a never-mounted surface hands
+  // Ghostty its pixel frame as is, and an exact remote grid lands exactly,
+  // not at the main screen's 2x. Needs a live core surface, absent when the
+  // display sleeps; then there is nothing to measure.
+  @Test func unmountedSurfacePushesItsPixelFrameUnscaled() {
+    let surfaceView = GhosttySurfaceView(
+      id: UUID(),
+      runtime: GhosttyRuntime(),
+      workingDirectory: nil,
+      initialGeometry: .fallback,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB
+    )
+    defer { surfaceView.closeSurface() }
+    guard let surface = surfaceView.surface else { return }
+    #expect(surfaceView.window == nil)
+
+    let start = ghostty_surface_size(surface)
+    #expect(CGFloat(start.width_px) == ContentGeometry.fallback.pixelSize.width)
+    #expect(CGFloat(start.height_px) == ContentGeometry.fallback.pixelSize.height)
+    guard start.cell_width_px > 0, start.cell_height_px > 0 else { return }
+
+    #expect(surfaceView.applyRequestedGrid(columns: 40, rows: 12) == .applied)
+    let resized = ghostty_surface_size(surface)
+    #expect(Int(resized.columns) == 40)
+    #expect(Int(resized.rows) == 12)
+  }
+
   @Test func surfaceBackingSizeInWindowConvertsAtTheWindowScale() {
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
