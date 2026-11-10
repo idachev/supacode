@@ -10,7 +10,7 @@ gitignored files:
 | File | What it holds |
 |---|---|
 | `remote-relay/wrangler.jsonc` | Worker name and, if needed, `account_id` (copied from `wrangler.example.jsonc`) |
-| `~/.config/supacode/remote-access.json` (0600) | `enabled`, `relayURL` (`wss://…/host`), `hostKey` |
+| `~/.config/supacode/remote-access.json` (0600) | `enabled`, `relayURL` (`wss://…/host`), `hostKey`, optional `lan`, optional `hostName` (the name the phone shows for this Mac) |
 | `~/.config/supacode/remote-client-key.txt` (0600) | the phone's connection key: `<relay host>/<client key>` |
 | Worker secrets `HOST_KEY_SHA256`, `CLIENT_KEY_SHA256` | SHA-256 hashes of the two keys, never the keys |
 
@@ -73,6 +73,43 @@ default one); the examples use `personal`.
    connection key is the relay host, a slash and the client key
    (`relay.example.com/abcde-fghij-…`), so the APK holds no relay address.
 
+## Name this Mac
+
+The phone lists every Mac by name. The name is the optional key `hostName` in
+`~/.config/supacode/remote-access.json`; when it is missing or blank, the Mac's computer name is
+used.
+
+- In Supacode: Settings → Remote Access → "Mac name". The field writes `hostName` and keeps every
+  other key. A blank field removes the key. The new name reaches the phone within seconds, without
+  dropping its terminals. The field is disabled until the config file exists.
+- By hand: set `"hostName": "Office Mac"` in the file. A hand edit applies the next time the hosting
+  app starts (app launch or a Settings toggle), like `lan`.
+- A copy of Supacode that does not host (a dev build next to the installed app) saves the name to the
+  file, but the hosting app picks it up only on its next start.
+- The name is trimmed, control characters become spaces, and it is cut to 64 characters.
+
+## Add another Mac
+
+One relay and one key pair serve every Mac. The Mac's identity on the relay (`hostId`) is derived
+from its hardware, so a copied config does not make two Macs evict each other.
+
+1. Copy `~/.config/supacode/remote-access.json` and `~/.config/supacode/remote-client-key.txt` to
+   the same folder on the new Mac, over a private channel (they hold the keys). Set mode 0600 on
+   both:
+
+   ```sh
+   chmod 600 ~/.config/supacode/remote-access.json ~/.config/supacode/remote-client-key.txt
+   ```
+
+2. Install Supacode under `/Applications` (only the installed app hosts) and start it.
+3. Set its name in Settings → Remote Access → "Mac name". Without it, the computer name is shown.
+4. On the phone, open „Mac-ове“ and pick the Mac.
+
+Do not run `node scripts/gen-keys.mjs --force` on the new Mac: it mints new keys, which stop every
+other Mac and the phone. Roll out in this order: relay, phone, then Supacode on each Mac. A second
+Mac needs the new relay and the new Supacode (an old build files as `default` and would evict the
+other old build).
+
 ## Own domain and WAF rate limiting (optional)
 
 A relay on your own Cloudflare zone lets a WAF rate limiting rule stop floods before the Worker
@@ -120,7 +157,9 @@ Rotate when a key may have leaked, or when a phone is lost.
    npx wrangler secret put CLIENT_KEY_SHA256 --profile personal
    ```
 
-3. Restart Supacode, so it connects with the new host key.
+3. Restart Supacode, so it connects with the new host key. With several Macs, copy the new
+   `remote-access.json` and `remote-client-key.txt` to each of them first (see "Add another Mac"),
+   keeping each Mac's own `hostName`.
 4. Paste the new connection key on the phone. Old keys stop working as soon as the secrets change.
 
 To print the current hashes again without changing anything, run `node scripts/gen-keys.mjs`.
@@ -141,8 +180,10 @@ everyone, also delete the Worker (`npx wrangler delete --profile personal`).
 - **Failed keys.** 5 wrong or missing keys from one IP within 10 minutes block that IP for 1 hour
   (`GuardDO`, one Durable Object per IP); a blocked IP gets `403`. A correct key clears the
   earlier failures. Mobile carriers share IPs, so someone else's failures can block you too.
-- **One host.** A new host connection replaces the old one; the replaced Supacode stops instead
-  of reconnecting, so two instances never flap.
+- **One host per Mac.** A new host connection replaces the old one only when both come from the
+  same Mac (same `hostId`); the replaced Supacode stops instead of reconnecting, so two instances
+  never flap. Different Macs do not replace each other. Anyone with the host key may still claim any
+  host id: the trust is the same as before.
 - **Only the installed app hosts.** Every Supacode on the Mac reads the same config, so only the
   app under `/Applications` (or `~/Applications`) connects to the relay. A dev build from
   DerivedData or an agent's test copy stays off, unless started with `SUPACODE_REMOTE_ACCESS=1`;
@@ -170,8 +211,13 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
 ## Troubleshooting
 
 - **Phone shows "Mac offline"**: Supacode is not running, `enabled` is false, or another Supacode
-  instance took the host slot (the replaced one logs "Another Supacode instance is the remote
-  access host now"). Restart Supacode.
+  instance on the same Mac took this Mac's host slot (the replaced one logs "Another Supacode
+  instance is the remote access host now"). Restart Supacode. Another Mac never takes the slot.
+- **Phone shows the wrong Mac**: pick the right one in „Mac-ове“. The phone remembers the last pick.
+- **A Mac is missing from the list**: it has not connected for 30 days, so the relay dropped it (the
+  relay also keeps at most 20 offline Macs). Start Supacode on it. A „Mac без име“ entry is a
+  Supacode build that is not updated yet.
+- **Two Macs show the same name**: give them different names in Settings → Remote Access → "Mac name".
 - **`401` on connect**: the key does not match the secret. Print the hashes with
   `node scripts/gen-keys.mjs` and set the secrets again.
 - **`403` on connect**: the IP is blocked for an hour after 5 failed keys. Wait, or connect from
@@ -179,4 +225,4 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
 - **A second Supacode for tests** needs `CFFIXED_USER_HOME=<dir>` and `ZMX_DIR=<short dir>`
   (Foundation ignores `HOME`); otherwise it shares `~/.supacode` state and zmx sessions with the
   real app. It connects to the relay only with `SUPACODE_REMOTE_ACCESS=1`, and then it takes the
-  host slot from the installed app until that one restarts.
+  host slot of this Mac from the installed app until that one restarts.
