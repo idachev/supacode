@@ -1,4 +1,5 @@
 import Foundation
+import IdentifiedCollections
 
 /// The sidebar filter's text matcher. Ported from Supacode Remote (Android
 /// `FuzzyMatch.kt` / `SessionGroups.filter`, web `fuzzy-match.js`) so the Mac

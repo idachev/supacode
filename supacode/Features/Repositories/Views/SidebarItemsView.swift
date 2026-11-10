@@ -83,14 +83,19 @@ private struct SidebarItemGroupView: View {
   var body: some View {
     let bucketID = moveBehavior.bucketID
     let groupingActive = nestWorktreesByBranch && bucketID != nil
+    // While filtering, branch folders show expanded; the stored prefixes stay.
+    let collapsedPrefixes: Set<String> =
+      if !isFiltered, let bucketID {
+        store.state.sidebar.sections[repository.id]?.buckets[bucketID]?.collapsedBranchPrefixes ?? []
+      } else {
+        []
+      }
     let nestedBranchRows: [SidebarBranchNesting.Row] =
-      if groupingActive, let bucketID {
+      if groupingActive {
         SidebarBranchNesting.buildRows(
           itemIDs: rowIDs,
           branchNames: branchNames(for: rowIDs),
-          collapsedPrefixes: isFiltered
-            ? []
-            : store.state.sidebar.sections[repository.id]?.buckets[bucketID]?.collapsedBranchPrefixes ?? []
+          collapsedPrefixes: collapsedPrefixes
         )
       } else {
         rowIDs.map { .leaf(id: $0, depth: 0, displayName: nil) }
@@ -105,7 +110,12 @@ private struct SidebarItemGroupView: View {
     }
     // No row reordering while filtered: hidden rows would make a drop
     // position ambiguous (a drop at the end lands after every hidden row).
-    let moveAction: ((IndexSet, Int) -> Void)? = isFiltered ? nil : moveRows
+    let moveAction: ((IndexSet, Int) -> Void)? =
+      if isFiltered {
+        nil
+      } else {
+        { offsets, destination in moveRows(offsets, destination) }
+      }
     switch moveBehavior {
     case .disabled:
       ForEach(nestedBranchRows) { row in
