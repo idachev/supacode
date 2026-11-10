@@ -262,8 +262,7 @@ final class RemoteHostRouter {
     guard let message = RemoteJSON.decodeInbound(json) else { return }
     switch message.t {
     case "conn.open":
-      if clients[connID] == nil { clients[connID] = .some(nil) }
-      if message.sameNetwork == true { sameNetwork.insert(connID) } else { sameNetwork.remove(connID) }
+      connectionOpened(connID, sameNetwork: message.sameNetwork == true)
     case "conn.close":
       cancelTabNewWaits(connID: connID)
       cancelWorktreeNewWaits(connID: connID)
@@ -298,6 +297,12 @@ final class RemoteHostRouter {
     default:
       replyError(connID, id: message.id, "unknown message type: \(message.t)")
     }
+  }
+
+  /// The relay announced a phone (`conn.open`), possibly on the Mac's network.
+  private func connectionOpened(_ connID: String, sameNetwork onMacNetwork: Bool) {
+    if clients[connID] == nil { clients[connID] = .some(nil) }
+    if onMacNetwork { sameNetwork.insert(connID) } else { sameNetwork.remove(connID) }
   }
 
   // MARK: - Hello
@@ -887,9 +892,10 @@ final class RemoteHostRouter {
     let probes = source.worktreeNewProbes(pendingID: start.pendingID, grid: grid)
     let waitID = UUID()
     let wait = Task { [weak self] in
-      let outcome = await Self.runWorktreeNew(isSSH: start.isSSH, clock: clock, probes: probes)
-      // Every exit, a cancelled wait included, so the app's entry never leaks.
-      source.consumeWorktreeCreation(pendingID: start.pendingID)
+      // Consumes the app's entry on every exit, a cancelled wait included.
+      let outcome = await Self.awaitWorktreeNew(
+        isSSH: start.isSSH, clock: clock, probes: probes,
+        consume: { source.consumeWorktreeCreation(pendingID: start.pendingID) })
       guard let self else { return }
       self.worktreeNewInFlight.remove(key)
       self.worktreeNewWaits[connID]?[waitID] = nil

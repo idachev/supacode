@@ -172,6 +172,19 @@ extension RemoteHostRouter {
     return .created(worktreeID: worktreeID, name: name, tab: tab)
   }
 
+  /// `runWorktreeNew`, then `consume` on every exit (answered, timed out or
+  /// cancelled), so the app's entry for the creation never leaks.
+  static func awaitWorktreeNew(
+    isSSH: Bool,
+    clock: any Clock<Duration>,
+    probes: RemoteWorktreeNewProbes,
+    consume: @MainActor () -> Void
+  ) async -> RemoteWorktreeNewOutcome {
+    let outcome = await runWorktreeNew(isSSH: isSSH, clock: clock, probes: probes)
+    consume()
+    return outcome
+  }
+
   private nonisolated enum WorktreeTabProbe: Sendable {
     case tab(RemoteWorktreeNewTab)
     case none
