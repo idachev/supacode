@@ -2127,6 +2127,8 @@ struct RepositoriesFeature {
         let createWorktreeStream = gitClient.createWorktreeStream
         let isValidBranchName = gitClient.isValidBranchName
         return .run { send in
+          // The failure cleanup target: set only once this creation may itself
+          // have made the directory at the cleanup path (see the arm before the stream).
           var newWorktreeName: String?
           var progress = WorktreeCreationProgress(
             stage: .loadingLocalBranches,
@@ -2235,7 +2237,6 @@ struct RepositoriesFeature {
               }
               name = trimmed
             }
-            newWorktreeName = name
             // Validate the name leaf here too: the prompt guards it, but the
             // CLI / deeplink entry points reach this path without that check.
             if let nameError = WorktreePlacementOverride.nameValidationError(placement?.name) {
@@ -2442,6 +2443,14 @@ struct RepositoriesFeature {
                 progress: progress
               )
             )
+            // Arm the failed-creation cleanup only now: nothing earlier creates
+            // anything on disk, and a directory already at the cleanup path is not
+            // this creation's to delete (a racing creation's, or the user's).
+            if let cleanupURL = State.failedWorktreeCleanupURL(name: name, baseDirectory: worktreeBaseDirectory),
+              !FileManager.default.fileExists(atPath: cleanupURL.path(percentEncoded: false))
+            {
+              newWorktreeName = name
+            }
             let stream = createWorktreeStream(
               name,
               repository.rootURL,
@@ -4706,6 +4715,7 @@ struct RepositoriesFeature {
         state.restoreSelection(previousSelection, pendingID: pendingID)
         let cleanup = state.cleanupFailedWorktree(
           repositoryID: repositoryID,
+          pendingID: pendingID,
           name: name,
           baseDirectory: baseDirectory,
         )
@@ -6568,24 +6578,43 @@ extension RepositoriesFeature.State {
     return true
   }
 
-  mutating func cleanupFailedWorktree(
-    repositoryID: Repository.ID,
-    name: String?,
-    baseDirectory: URL,
-  ) -> FailedWorktreeCleanup {
-    guard let name, !name.isEmpty else {
-      return FailedWorktreeCleanup(didRemoveWorktree: false, worktree: nil)
-    }
-    let repositoryRootURL = URL(fileURLWithPath: repositoryID.rawValue).standardizedFileURL
+  /// The directory a failed creation of `name` cleans up: `name` under the
+  /// creation-time base directory, or nil when the name is empty or escapes it.
+  /// Nonisolated: the creation effect calls it off the main actor.
+  nonisolated static func failedWorktreeCleanupURL(name: String?, baseDirectory: URL) -> URL? {
+    guard let name, !name.isEmpty else { return nil }
     let normalizedBaseDirectory = baseDirectory.standardizedFileURL
     let worktreeURL =
       normalizedBaseDirectory
       .appending(path: name, directoryHint: .isDirectory)
       .standardizedFileURL
-    guard worktreeURL.isInside(baseDirectory: normalizedBaseDirectory) else {
+    guard worktreeURL.isInside(baseDirectory: normalizedBaseDirectory) else { return nil }
+    return worktreeURL
+  }
+
+  mutating func cleanupFailedWorktree(
+    repositoryID: Repository.ID,
+    pendingID: Worktree.ID,
+    name: String?,
+    baseDirectory: URL,
+  ) -> FailedWorktreeCleanup {
+    guard let name, let worktreeURL = Self.failedWorktreeCleanupURL(name: name, baseDirectory: baseDirectory)
+    else {
       return FailedWorktreeCleanup(didRemoveWorktree: false, worktree: nil)
     }
     let worktreeID = WorktreeID(worktreeURL.path(percentEncoded: false))
+    // Two creations of one name can race past the name check; the loser's
+    // `git worktree add` fails on the winner's directory. Never touch a path
+    // another creation owns, whether still in flight or already landed.
+    guard
+      !isFailedCleanupTargetOwnedByAnotherCreation(
+        worktreeURL, name: name, repositoryID: repositoryID, pendingID: pendingID)
+    else {
+      repositoriesLogger.info(
+        "Skipping failed-creation cleanup of \(name): another creation owns \(worktreeID.rawValue).")
+      return FailedWorktreeCleanup(didRemoveWorktree: false, worktree: nil)
+    }
+    let repositoryRootURL = URL(fileURLWithPath: repositoryID.rawValue).standardizedFileURL
     let worktree =
       repositories[id: repositoryID]?.worktrees[id: worktreeID]
       ?? Worktree(
@@ -6598,6 +6627,35 @@ extension RepositoriesFeature.State {
       )
     let didRemoveWorktree = cleanupWorktreeState(worktreeID, repositoryID: repositoryID)
     return FailedWorktreeCleanup(didRemoveWorktree: didRemoveWorktree, worktree: worktree)
+  }
+
+  /// True when another creation (not `pendingID`) in the repository claims the
+  /// failed creation's cleanup target: a live pending row with the same name, or
+  /// a creation already resolved onto a worktree at that path. Names and paths
+  /// compare case-insensitively, as the default macOS volume does.
+  func isFailedCleanupTargetOwnedByAnotherCreation(
+    _ worktreeURL: URL,
+    name: String,
+    repositoryID: Repository.ID,
+    pendingID: Worktree.ID
+  ) -> Bool {
+    let lowercasedName = name.lowercased()
+    let inFlight = pendingWorktrees.contains { pending in
+      pending.id != pendingID && pending.repositoryID == repositoryID
+        && pending.progress.worktreeName?.lowercased() == lowercasedName
+    }
+    if inFlight { return true }
+    let targetPath = Self.comparablePath(worktreeURL)
+    return resolvedPendingWorktrees.contains { entry in
+      entry.key != pendingID && entry.value.repositoryID == repositoryID
+        && Self.comparablePath(URL(fileURLWithPath: entry.value.worktreeID.rawValue)) == targetPath
+    }
+  }
+
+  private static func comparablePath(_ url: URL) -> String {
+    var path = url.standardizedFileURL.path(percentEncoded: false)
+    while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+    return path.lowercased()
   }
 
   @discardableResult
@@ -6627,7 +6685,7 @@ extension RepositoriesFeature.State {
 }
 
 extension URL {
-  fileprivate func isInside(baseDirectory: URL) -> Bool {
+  nonisolated fileprivate func isInside(baseDirectory: URL) -> Bool {
     let normalizedPath = standardizedFileURL.pathComponents
     let normalizedBase = baseDirectory.standardizedFileURL.pathComponents
     guard normalizedPath.count >= normalizedBase.count else { return false }
