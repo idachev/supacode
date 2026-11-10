@@ -9,6 +9,8 @@ import Foundation
 nonisolated enum RemoteHostFrame {
   /// The connId that broadcasts a host frame to every phone.
   static let broadcastConnID = "*"
+  /// The reserved connId of host → relay control frames (ИД3); never a phone's.
+  static let controlConnID = "@"
 
   static func parse(_ text: String) -> (connID: String, json: Data)? {
     guard let newline = text.firstIndex(of: "\n"), newline != text.startIndex else { return nil }
@@ -19,6 +21,13 @@ nonisolated enum RemoteHostFrame {
 
   static func encode(connID: String, payload: Data) -> String {
     connID + "\n" + (String(bytes: payload, encoding: .utf8) ?? "{}")
+  }
+
+  /// `@\n{"t":"host.name","name":…}`: tells the relay this Mac's new name
+  /// without a reconnect. The name is normalized (ИД4) and omitted when empty.
+  static func renameFrame(name: String) -> String {
+    let message = RemoteHostNameMessage(name: RemoteAccessConfig.normalizedHostName(name))
+    return encode(connID: controlConnID, payload: RemoteJSON.encode(message))
   }
 }
 
@@ -42,9 +51,19 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
 nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
   var t = "hello"
   var v = 1
+  /// The host name (ИД4): the configured name or the computer name.
   let host: String
+  /// This Mac's relay id (ИД1); omitted when it has none.
+  var hostId: String?
   /// Where a phone on the Mac's network can try the LAN shortcut; omitted otherwise.
   var lan: RemoteLANCandidate?
+}
+
+/// The host → relay rename control frame's body (ИД3), sent on `controlConnID`.
+nonisolated struct RemoteHostNameMessage: Encodable, Equatable, Sendable {
+  var t = "host.name"
+  /// Omitted when the name normalizes to nothing.
+  var name: String?
 }
 
 nonisolated struct RemoteLANCandidate: Encodable, Equatable, Sendable {

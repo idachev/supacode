@@ -107,6 +107,41 @@ struct RemoteAccessProtocolTests {
     #expect(RemoteHostRouter.lastLines(text, count: 10) == "one\n  two\nthree")
   }
 
+  @Test func helloCarriesTheHostIDWhenThereIsOne() throws {
+    let hello = RemoteHelloMessage(host: "Office Mac", hostId: "5ff84c3b79a7faaa")
+    let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
+    #expect(json.count == 4)
+    #expect(json["t"] as? String == "hello")
+    #expect(json["v"] as? Int == 1)
+    #expect(json["host"] as? String == "Office Mac")
+    #expect(json["hostId"] as? String == "5ff84c3b79a7faaa")
+  }
+
+  @Test func helloWithoutAHostIDOmitsTheField() throws {
+    let hello = RemoteHelloMessage(host: "Office Mac")
+    let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
+    #expect(json.count == 3)
+    #expect(!json.keys.contains("hostId"))
+    #expect(!json.keys.contains("lan"))
+  }
+
+  @Test func renameFrameGoesToTheControlConnID() throws {
+    let text = RemoteHostFrame.renameFrame(name: "Office Mac")
+    #expect(text == "@\n{\"t\":\"host.name\",\"name\":\"Office Mac\"}")
+    let parsed = try #require(RemoteHostFrame.parse(text))
+    #expect(parsed.connID == RemoteHostFrame.controlConnID)
+  }
+
+  @Test func renameFrameNormalizesTheNameAndOmitsAnEmptyOne() throws {
+    let normalized = try #require(RemoteHostFrame.parse(RemoteHostFrame.renameFrame(name: " a\tb ")))
+    let json = try #require(try JSONSerialization.jsonObject(with: normalized.json) as? [String: Any])
+    #expect(json["name"] as? String == "a b")
+    let empty = try #require(RemoteHostFrame.parse(RemoteHostFrame.renameFrame(name: "  ")))
+    let emptyJSON = try #require(try JSONSerialization.jsonObject(with: empty.json) as? [String: Any])
+    #expect(emptyJSON.count == 1)
+    #expect(emptyJSON["t"] as? String == "host.name")
+  }
+
   @Test func onlyTheInstalledAppHostsUnlessOverridden() {
     #expect(RemoteAccessConfig.mayHost(bundlePath: "/Applications/supacode.app", override: nil))
     #expect(

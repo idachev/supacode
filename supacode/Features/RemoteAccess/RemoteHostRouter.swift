@@ -2,7 +2,6 @@ import AppKit
 import ComposableArchitecture
 import Foundation
 import SupacodeSettingsShared
-import SystemConfiguration
 
 nonisolated private let routerLogger = SupaLogger("RemoteAccess")
 
@@ -53,12 +52,22 @@ final class RemoteHostRouter {
   private var clientKey: String?
   /// Bounds the wait of a delayed `hello` (`helloLANWait`).
   private let clock: any Clock<Duration>
-  /// The Mac's computer name from the system configuration store, which does
-  /// no network lookup (`Host.current()` can block on name resolution).
-  private lazy var hostName = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? "Mac"
+  /// The name every `hello` carries (ИД4); `rename(to:)` updates it.
+  private(set) var hostName: String
+  /// This Mac's relay id (ИД1), sent in `hello` so a phone can tell its Macs apart.
+  let hostID: String?
+  /// The missing-hardware-UUID warning goes out once per process, not per start.
+  private static var warnedMissingHostID = false
 
-  init(source: RemoteSnapshotSource, clock: any Clock<Duration> = ContinuousClock()) {
+  init(
+    source: RemoteSnapshotSource,
+    hostName: String,
+    hostID: String?,
+    clock: any Clock<Duration> = ContinuousClock()
+  ) {
     self.source = source
+    self.hostName = hostName
+    self.hostID = hostID
     self.clock = clock
   }
 
@@ -86,9 +95,22 @@ final class RemoteHostRouter {
       return nil
     }
     guard let config = RemoteAccessConfig.load() else { return nil }
-    let router = RemoteHostRouter(source: RemoteSnapshotSource(store: store, terminalManager: terminalManager))
+    let hostID = RemoteAccessConfig.currentHostID
+    if hostID == nil, !warnedMissingHostID {
+      warnedMissingHostID = true
+      routerLogger.warning("No hardware UUID; the relay files this Mac as the legacy host")
+    }
+    let hostName = RemoteAccessConfig.displayName(
+      configured: config.hostName, computerName: RemoteAccessConfig.computerName)
+    let router = RemoteHostRouter(
+      source: RemoteSnapshotSource(store: store, terminalManager: terminalManager),
+      hostName: hostName,
+      hostID: hostID
+    )
     let connection = RemoteRelayConnection(
       config: config,
+      hostID: hostID,
+      hostName: hostName,
       onText: { [weak router] text in router?.receive(text) },
       onConnectionChange: { [weak router] connected in
         if !connected { router?.dropAllClients() }
@@ -172,6 +194,15 @@ final class RemoteHostRouter {
     )
   }
 
+  /// Applies a name saved in Settings at once: the next `hello` (relay and LAN)
+  /// carries it, and the relay learns it without a reconnect (ИД3). A blank
+  /// name falls back to the computer name (ИД4).
+  func rename(to name: String) {
+    let resolved = RemoteAccessConfig.displayName(configured: name, computerName: RemoteAccessConfig.computerName)
+    hostName = resolved
+    connection?.rename(resolved)
+  }
+
   func stop() {
     lanStart?.cancel()
     lanStart = nil
@@ -238,7 +269,12 @@ final class RemoteHostRouter {
   // MARK: - Hello
 
   private func replyHello(_ connID: String) {
-    reply(connID, RemoteHelloMessage(host: hostName, lan: lanCandidate(for: connID)))
+    reply(connID, helloMessage(for: connID))
+  }
+
+  /// The `hello` answer for one phone: name, id and, for a same-network phone, `lan`.
+  func helloMessage(for connID: String) -> RemoteHelloMessage {
+    RemoteHelloMessage(host: hostName, hostId: hostID, lan: lanCandidate(for: connID))
   }
 
   /// Answers a same-network phone's `hello` once the LAN start ends, or after

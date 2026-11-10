@@ -30,6 +30,12 @@ final class RemoteAccessHostController {
     router = nil
   }
 
+  /// Applies a host name saved in Settings to the running host without a
+  /// restart; a no-op when this copy does not host.
+  func rename(to name: String) {
+    router?.rename(to: name)
+  }
+
   var status: RemoteAccessHostStatus {
     let rawOverride = ProcessInfo.processInfo.environment[RemoteAccessConfig.overrideVariable]
     let override: RemoteAccessHostStatus.Override =
