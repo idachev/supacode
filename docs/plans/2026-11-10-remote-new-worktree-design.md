@@ -1,7 +1,7 @@
 # Remote new worktree (ЗД11) — design
 
 Status: draft, verified against the code on 2026-11-10 (base `0342212c`). Contract for the Mac host,
-the protocol doc, the web client and the Android client. ОВ1–ОВ3 are decided; ОВ4 waits for the owner.
+the protocol doc, the web client and the Android client. ОВ1–ОВ4 are decided by the owner.
 
 ## Goal
 
@@ -341,15 +341,15 @@ that is not being removed. Absent (old host) means false: the client shows no bu
   Supacode's button. The Mac selects the new worktree, the first tab takes the Mac pane's size;
   clients still send `cols`/`rows` and do not resize after. Rejected: `background: true` (the tab
   would keep the client's grid, but the Mac would not show the worktree as its own button does).
+  ssh exception: for an ssh repository the Mac does not select the new worktree, as its own button
+  does not (`remoteCreateWorktree` has no pending row and no selection); the phone's first tab is
+  a background tab at the requested grid (Host behaviour 9).
 - ОВ2 Name — decided by the owner: `name` is required; missing or empty → `worktree_invalid`
   before git. No random name from the remote. Rejected: empty = random name.
 - ОВ3 ssh repositories — decided by the owner: supported in v1, `canCreateWorktree: true`. The
   host reuses `remoteCreateWorktree` (outcome by pending id through `remoteWorktreeCreationCompleted`
   / `worktreeCreationRejected`) and opens the first tab itself with the `tab.new` mechanism after
   the roster reload lists the worktree (Host behaviour 5, 9). Rejected: `worktree_unsupported`.
-
-## Open questions
-
-- ОВ4 Progress: the app has stage progress (`WorktreeCreationProgress` via
-  `.pendingWorktreeProgressUpdated`). Recommendation: no progress frames in v1 (spinner only); add
-  `worktree.progress` later if creations prove slow.
+- ОВ4 Progress — decided by the owner (ОП1): no progress frames in v1, spinner only. The app's
+  stage progress (`WorktreeCreationProgress` via `.pendingWorktreeProgressUpdated`) is not sent.
+  Rejected: a `worktree.progress` message in v1.
