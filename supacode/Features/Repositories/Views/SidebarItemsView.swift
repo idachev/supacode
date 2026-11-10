@@ -18,6 +18,9 @@ struct SidebarItemsView: View {
   let shortcutHintByID: [Worktree.ID: String]
   @Bindable var store: StoreOf<RepositoriesFeature>
   let terminalManager: WorktreeTerminalManager
+  /// While the sidebar filter has text, branch folders show expanded so a
+  /// matching row is never hidden; the stored collapsed prefixes stay as they are.
+  var isFiltered = false
   @Shared(.sidebarNestWorktreesByBranch) private var nestWorktreesByBranch: Bool
 
   var body: some View {
@@ -29,7 +32,8 @@ struct SidebarItemsView: View {
       terminalManager: terminalManager,
       isRepositoryRemoving: isRepositoryRemoving,
       shortcutHintByID: shortcutHintByID,
-      nestWorktreesByBranch: nestWorktreesByBranch && repository.isGitRepository
+      nestWorktreesByBranch: nestWorktreesByBranch && repository.isGitRepository,
+      isFiltered: isFiltered
     )
   }
 }
@@ -44,6 +48,7 @@ private struct SidebarItemsDragOverlay: View {
   let isRepositoryRemoving: Bool
   let shortcutHintByID: [Worktree.ID: String]
   let nestWorktreesByBranch: Bool
+  let isFiltered: Bool
 
   var body: some View {
     ForEach(groups) { group in
@@ -56,7 +61,8 @@ private struct SidebarItemsDragOverlay: View {
         hideSubtitle: group.hideSubtitle,
         moveBehavior: group.moveBehavior,
         shortcutHintByID: shortcutHintByID,
-        nestWorktreesByBranch: nestWorktreesByBranch && group.supportsBranchNesting
+        nestWorktreesByBranch: nestWorktreesByBranch && group.supportsBranchNesting,
+        isFiltered: isFiltered
       )
     }
   }
@@ -72,6 +78,7 @@ private struct SidebarItemGroupView: View {
   let moveBehavior: SidebarItemGroup.MoveBehavior
   let shortcutHintByID: [Worktree.ID: String]
   let nestWorktreesByBranch: Bool
+  let isFiltered: Bool
 
   var body: some View {
     let bucketID = moveBehavior.bucketID
@@ -81,8 +88,9 @@ private struct SidebarItemGroupView: View {
         SidebarBranchNesting.buildRows(
           itemIDs: rowIDs,
           branchNames: branchNames(for: rowIDs),
-          collapsedPrefixes: store.state.sidebar.sections[repository.id]?.buckets[bucketID]?
-            .collapsedBranchPrefixes ?? []
+          collapsedPrefixes: isFiltered
+            ? []
+            : store.state.sidebar.sections[repository.id]?.buckets[bucketID]?.collapsedBranchPrefixes ?? []
         )
       } else {
         rowIDs.map { .leaf(id: $0, depth: 0, displayName: nil) }

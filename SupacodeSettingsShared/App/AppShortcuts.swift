@@ -7,7 +7,7 @@ import SwiftUI
 // Compile-time checkable shortcut identifier.
 public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRepresentable {
   case commandPalette, worktreeSwitcher, openSettings, checkForUpdates, showMainWindow
-  case toggleLeftSidebar, revealInSidebar
+  case toggleLeftSidebar, revealInSidebar, filterSidebar
   case expandAllSidebarGroups, collapseAllSidebarGroups
   case newWorktree, refreshWorktrees, archivedWorktrees, recentTerminals, archiveWorktree
   case resumeAgentSessions
@@ -33,7 +33,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     case .archiveWorktree, .deleteWorktree:
       false
     case .commandPalette, .worktreeSwitcher, .openSettings, .checkForUpdates, .showMainWindow,
-      .toggleLeftSidebar, .revealInSidebar, .expandAllSidebarGroups, .collapseAllSidebarGroups,
+      .toggleLeftSidebar, .revealInSidebar, .filterSidebar, .expandAllSidebarGroups, .collapseAllSidebarGroups,
       .newWorktree, .refreshWorktrees, .archivedWorktrees, .recentTerminals, .resumeAgentSessions,
       .confirmWorktreeAction,
       .selectNextWorktree, .selectPreviousWorktree, .worktreeHistoryBack, .worktreeHistoryForward,
@@ -75,6 +75,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     case .showMainWindow: "showMainWindow"
     case .toggleLeftSidebar: "toggleLeftSidebar"
     case .revealInSidebar: "revealInSidebar"
+    case .filterSidebar: "filterSidebar"
     case .expandAllSidebarGroups: "expandAllSidebarGroups"
     case .collapseAllSidebarGroups: "collapseAllSidebarGroups"
     case .newWorktree: "newWorktree"
@@ -135,6 +136,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     "showMainWindow": .showMainWindow,
     "toggleLeftSidebar": .toggleLeftSidebar,
     "revealInSidebar": .revealInSidebar,
+    "filterSidebar": .filterSidebar,
     "expandAllSidebarGroups": .expandAllSidebarGroups,
     "collapseAllSidebarGroups": .collapseAllSidebarGroups,
     "newWorktree": .newWorktree,
@@ -212,6 +214,7 @@ public nonisolated enum AppShortcutID: Codable, Hashable, Sendable, CodingKeyRep
     case .showMainWindow: "Show Main Window"
     case .toggleLeftSidebar: "Toggle Left Sidebar"
     case .revealInSidebar: "Reveal in Sidebar"
+    case .filterSidebar: "Filter Sidebar"
     case .expandAllSidebarGroups: "Expand All Sidebar Groups"
     case .collapseAllSidebarGroups: "Collapse All Sidebar Groups"
     case .newWorktree: "New Worktree"
@@ -513,6 +516,8 @@ public enum AppShortcuts {
 
   public static let toggleLeftSidebar = AppShortcut(id: .toggleLeftSidebar, key: "[", modifiers: .command)
   public static let revealInSidebar = AppShortcut(id: .revealInSidebar, key: "e", modifiers: [.command, .shift])
+  // ⇧⌘F: ⌘F is the terminal Find, ⌃⌘F is macOS full screen, ⌥⌘F the Files inspector.
+  public static let filterSidebar = AppShortcut(id: .filterSidebar, key: "f", modifiers: [.command, .shift])
   // `]` expands (opens rightward), `[` collapses, mirroring the outline-view
   // Right/Left arrow convention, and pairs with ⌘[ for the sidebar toggle.
   public static let expandAllSidebarGroups = AppShortcut(
@@ -703,7 +708,7 @@ public enum AppShortcuts {
     ),
     AppShortcutGroup(
       category: .sidebar,
-      shortcuts: [toggleLeftSidebar, revealInSidebar, expandAllSidebarGroups, collapseAllSidebarGroups]
+      shortcuts: [toggleLeftSidebar, revealInSidebar, filterSidebar, expandAllSidebarGroups, collapseAllSidebarGroups]
     ),
     AppShortcutGroup(
       category: .worktrees,

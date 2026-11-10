@@ -7,6 +7,7 @@ struct SidebarView: View {
   @Bindable var store: StoreOf<RepositoriesFeature>
   let terminalManager: WorktreeTerminalManager
   @Shared(.settingsFile) private var settingsFile
+  @FocusState private var isFilterFocused: Bool
 
   var body: some View {
     let state = store.state
@@ -16,11 +17,24 @@ struct SidebarView: View {
     let archiveTargets = state.sidebarSelectionSlice.archiveTargets
     let deleteTargets = state.sidebarSelectionSlice.deleteTargets
     let openRepo = AppShortcuts.openRepository.effective(from: settingsFile.global.shortcutOverrides)
+    let filterShortcut = AppShortcuts.filterSidebar.effective(from: settingsFile.global.shortcutOverrides)
 
     return SidebarListView(
       store: store,
       terminalManager: terminalManager
     )
+    // Outside the List, so its `.onKeyPress` (typing goes to the terminal)
+    // never sees keys typed into the field.
+    .safeAreaInset(edge: .top, spacing: 0) {
+      SidebarFilterField(
+        query: $store.sidebarFilterQuery.sending(\.sidebarFilterQueryChanged),
+        isFocused: $isFilterFocused,
+        shortcut: filterShortcut
+      )
+      .padding(.horizontal, 10)
+      .padding(.vertical, 6)
+    }
+    .bind($store.isSidebarFilterFocused.sending(\.sidebarFilterFocusChanged), to: $isFilterFocused)
     .modifier(
       RepositoryGroupNamePrompt(draft: store.repositoryGroupDraft) {
         store.send(.repositoryGroupCreation($0))

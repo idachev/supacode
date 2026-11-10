@@ -5,6 +5,7 @@ import SwiftUI
 struct SidebarCommands: Commands {
   @FocusedValue(\.toggleLeftSidebarAction) private var toggleLeftSidebarAction
   @FocusedValue(\.revealInSidebarAction) private var revealInSidebarAction
+  @FocusedValue(\.filterSidebarAction) private var filterSidebarAction
   @FocusedValue(\.expandAllSidebarGroupsAction) private var expandAllSidebarGroupsAction
   @FocusedValue(\.collapseAllSidebarGroupsAction) private var collapseAllSidebarGroupsAction
   @FocusedValue(\.toggleInspectorPaneAction) private var toggleInspectorPaneAction
@@ -19,6 +20,7 @@ struct SidebarCommands: Commands {
     let overrides = settingsFile.global.shortcutOverrides
     let toggleLeftSidebar = AppShortcuts.toggleLeftSidebar.effective(from: overrides)
     let revealInSidebar = AppShortcuts.revealInSidebar.effective(from: overrides)
+    let filterSidebar = AppShortcuts.filterSidebar.effective(from: overrides)
     let expandAll = AppShortcuts.expandAllSidebarGroups.effective(from: overrides)
     let collapseAll = AppShortcuts.collapseAllSidebarGroups.effective(from: overrides)
     let togglePullRequestInspector = AppShortcuts.togglePullRequestInspector.effective(from: overrides)
@@ -37,6 +39,12 @@ struct SidebarCommands: Commands {
       .appKeyboardShortcut(revealInSidebar)
       .help(AppShortcut.helpText("Reveal in Sidebar", shortcut: revealInSidebar))
       .disabled(revealInSidebarAction?.isEnabled != true)
+      Button("Filter Sidebar", systemImage: "line.3.horizontal.decrease") {
+        filterSidebarAction?()
+      }
+      .appKeyboardShortcut(filterSidebar)
+      .help(AppShortcut.helpText("Filter repositories, worktrees and branches", shortcut: filterSidebar))
+      .disabled(filterSidebarAction?.isEnabled != true)
       Divider()
       Button("Expand All", systemImage: "chevron.down") {
         expandAllSidebarGroupsAction?()
@@ -94,6 +102,10 @@ private struct RevealInSidebarActionKey: FocusedValueKey {
   typealias Value = FocusedAction<Void>
 }
 
+private struct FilterSidebarActionKey: FocusedValueKey {
+  typealias Value = FocusedAction<Void>
+}
+
 private struct ExpandAllSidebarGroupsActionKey: FocusedValueKey {
   typealias Value = FocusedAction<Void>
 }
@@ -115,6 +127,11 @@ extension FocusedValues {
   var revealInSidebarAction: FocusedAction<Void>? {
     get { self[RevealInSidebarActionKey.self] }
     set { self[RevealInSidebarActionKey.self] = newValue }
+  }
+
+  var filterSidebarAction: FocusedAction<Void>? {
+    get { self[FilterSidebarActionKey.self] }
+    set { self[FilterSidebarActionKey.self] = newValue }
   }
 
   var expandAllSidebarGroupsAction: FocusedAction<Void>? {

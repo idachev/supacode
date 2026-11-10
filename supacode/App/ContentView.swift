@@ -128,6 +128,12 @@ struct ContentView: View {
       }
       store.send(.repositories(.revealSelectedWorktreeInSidebar))
     }
+    .focusedSceneAction(\.filterSidebarAction, enabled: true) {
+      withAnimation(.easeOut(duration: 0.2)) {
+        leftSidebarVisibility = .all
+      }
+      store.send(.repositories(.sidebarFilterFocusChanged(true)))
+    }
     .focusedSceneAction(
       \.expandAllSidebarGroupsAction,
       enabled: !repositoriesStore.repositories.isEmpty
