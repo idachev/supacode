@@ -55,10 +55,10 @@ struct RemoteAccessHelloWaitTests {
       ),
       hostName: "iMac",
       hostID: "5ff84c3b79a7faaa",
-      appLabel: "Supacode 0.11.5 (154)"
+      appLabel: "Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48"
     )
     defer { router.stop() }
-    #expect(router.helloMessage(for: "c1").app == "Supacode 0.11.5 (154)")
+    #expect(router.helloMessage(for: "c1").app == "Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48")
   }
 
   @Test func onlySameNetworkPhonesWaitAndOnlyWhileTheLANStarts() {

@@ -144,12 +144,19 @@ Every request may carry a numeric `id`; the response repeats it.
 ### hello
 
 - client → host `{"t":"hello","v":1}`
-- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"},"app":"Supacode 0.11.5 (154)"}`
-- `app` (optional string) is the app build the host runs: `"Supacode <CFBundleShortVersionString>
-  (<CFBundleVersion>)"`, e.g. `"app":"Supacode 0.11.5 (154)"`. If one of the two keys is missing, the
-  label carries what exists (`"Supacode 0.11.5"`); the field is omitted rather than sent empty. It
-  is in the `hello` reply over the relay and over LAN. Optional; omitted by hosts before this
-  change. Clients ignore unknown fields, so old clients are unaffected.
+- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"},"app":"Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48"}`
+- `app` (optional string) is the app build the host runs, the same values Supacode's "About
+  Supacode" panel shows, so two builds with the same version and build number can be told apart:
+  `"Supacode <CFBundleShortVersionString> (<CFBundleVersion>) · <build date YYYY-MM-DD> · <short git sha>"`,
+  e.g. `"app":"Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48"`. The parts are added only when known:
+  a missing version or build is left out (`"Supacode 0.11.5"`), a missing build date or sha is left
+  out with its ` · ` (`"Supacode 0.11.5 (154)"`, `"Supacode 0.11.5 (154) · 2026-11-10"`), and with
+  nothing known the field is omitted; it is never an empty string and never ends with ` · `. The sha
+  is the stamped one as is, so a build from a modified tree ends in `-dirty`, and a build made
+  without git carries no sha. The field is in the `hello` reply over the relay and over LAN.
+  Optional; hosts before this change send `"Supacode <version> (<build>)"` without the date and
+  sha, and older ones omit it. Clients treat the value as opaque display text and ignore unknown
+  fields, so old clients are unaffected.
 - `host` is the configured host name, or the Mac's computer name when none is set. `hostId` is
   omitted when the host has none (a legacy host). A client that selected a host ignores `lan` when
   `hostId` is present and differs from that host (see "LAN shortcut").
