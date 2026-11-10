@@ -56,7 +56,7 @@ struct SidebarFilterTests {
 
   @Test func sixOrMoreCharacterQueryToleratesTwoErrors() throws {
     #expect(try #require(SidebarFilter(query: "fetaure")).matches("feature"))
-    #expect(try #require(SidebarFilter(query: "fxtxure")).matches("feature"))
+    #expect(try #require(SidebarFilter(query: "fxatxre")).matches("feature"))
     #expect(!(try #require(SidebarFilter(query: "fxxxure")).matches("feature")))
   }
 
