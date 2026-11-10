@@ -97,7 +97,7 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
   let rows: Int
 
   /// Why a `resize` is ignored (logged on the host; the client gets no reply).
-  enum Ignored: Error, Equatable {
+  nonisolated enum Ignored: Error, Equatable {
     case notAttached
     case invalidSize
   }
