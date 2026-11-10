@@ -142,7 +142,7 @@ So the remote flow reuses this first tab (owner УТ2) and never opens a second 
 | `worktree_busy` | a remote `worktree.new` for the same repository and (case-insensitive) name is still being created on this host (its phone may have gone) | `a worktree with this branch is already being created` |
 | `worktree_unsupported` | folder entry; repository being removed | router text: `worktrees are only supported for git repositories`, `the repository is being removed` |
 | `worktree_failed` | any app-side failure: name checks, license, git error, guard rejection, cancelled on the Mac | `createRandomWorktreeFailed`: `"<title>: <message>"` (e.g. `"Branch name already exists: Choose a different branch name and try again."`); `worktreeCreationRejected`: the bare message; Mac cancel: `"Worktree creation was cancelled on the Mac."` |
-| `worktree_timeout` | no outcome within 300 s | `worktree creation is still running on the Mac; it will appear in the list when it finishes` |
+| `worktree_timeout` | no outcome within 300 s local / 290 s ssh (`worktreeNewTimeout`) | `worktree creation is still running on the Mac; the outcome is unknown and the worktree may appear in the list later` |
 
 Router-side errors (`worktree_invalid`, `worktree_unsupported`) never reach the app, so the Mac shows
 no alert for them. Old clients ignore unknown codes and show `message` (existing rule). Old hosts
@@ -329,7 +329,7 @@ that is not being removed. Absent (old host) means false: the client shows no bu
   `contentId` open the worktree and offer "New tab".
 - Error: keep the dialog open with the name, show `message`; for `worktree_timeout`, a client-side
   timeout (К3) or a lost connection (К2) say "Still creating on the Mac, or the connection
-  was lost. If it succeeds it will appear in the list; if not, the Mac shows why. You can try again
+  was lost. The outcome is unknown; the worktree may appear in the list later. You can try again
   with the same name." (К3a). No automatic retry.
 
 ## Task split
