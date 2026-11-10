@@ -503,7 +503,24 @@ nonisolated enum RemoteJSON {
   }
 
   static func decodeInbound(_ data: Data) -> RemoteInboundMessage? {
-    try? JSONDecoder().decode(RemoteInboundMessage.self, from: data)
+    if let message = try? JSONDecoder().decode(RemoteInboundMessage.self, from: data) { return message }
+    // `worktree.new` answers every request with an integer `id`: a field it
+    // does not use (e.g. a non-string `worktreeId`) must not drop it.
+    guard let fields = try? JSONDecoder().decode(WorktreeNewFields.self, from: data), fields.t == "worktree.new"
+    else { return nil }
+    return RemoteInboundMessage(
+      t: fields.t, id: fields.id, cols: fields.cols, rows: fields.rows,
+      repositoryId: fields.repositoryId, name: fields.name)
+  }
+
+  /// The fields `worktree.new` reads, for `decodeInbound`'s fallback.
+  private nonisolated struct WorktreeNewFields: Decodable {
+    let t: String
+    var id: Int?
+    var cols: RemoteLenientInt?
+    var rows: RemoteLenientInt?
+    var repositoryId: RemoteLenientString?
+    var name: RemoteLenientString?
   }
 
   /// `out` messages for terminal bytes, split into base64 payloads of at most

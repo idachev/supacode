@@ -196,13 +196,14 @@ final class RemoteHostRouter {
 
   // MARK: - LAN shortcut
 
-  private func lanOpened(_ connID: String, send: @escaping (String) -> Void) {
+  /// Internal (not private) so router tests can stand in for a LAN phone.
+  func lanOpened(_ connID: String, send: @escaping (String) -> Void) {
     lanSinks[connID] = send
     clients[connID] = .some(nil)
     routerLogger.info("LAN shortcut: phone connected as \(connID)")
   }
 
-  private func lanClosed(_ connID: String) {
+  func lanClosed(_ connID: String) {
     cancelTabNewWaits(connID: connID)
     cancelWorktreeNewWaits(connID: connID)
     detach(connID: connID)

@@ -1,4 +1,5 @@
 import Clocks
+import ComposableArchitecture
 import ConcurrencyExtras
 import Foundation
 import Testing
@@ -366,6 +367,104 @@ struct RemoteAccessWorktreeNewTests {
     await Task.megaYield()
     await clock.advance(by: .seconds(290))
     #expect(await wait.value == .timedOut)
+  }
+
+  // MARK: - Router wiring
+
+  /// A router on a store whose reducer only keeps the remote bookkeeping (no
+  /// git): the request inserts `.creating`, abandon and consume as `AppFeature` does.
+  private static func makeRouter(clock: TestClock<Duration>) -> (RemoteHostRouter, StoreOf<AppFeature>) {
+    let repository = Repository(
+      id: "/tmp/repo", rootURL: URL(fileURLWithPath: "/tmp/repo"), name: "repo", worktrees: [])
+    var repositories = RepositoriesFeature.State()
+    repositories.repositories = [repository]
+    let store = Store(initialState: AppFeature.State(repositories: repositories)) {
+      Reduce<AppFeature.State, AppFeature.Action> { state, action in
+        switch action {
+        case .remoteWorktreeNewRequested(let repositoryID, let name, let pendingID):
+          state.remoteWorktreeCreations[pendingID] = .creating(
+            repositoryID: repositoryID, name: name, abandoned: false)
+        case .remoteWorktreeCreationAbandoned(let pendingID):
+          AppFeature.RemoteWorktreeCreation.abandon(pendingID, in: &state.remoteWorktreeCreations)
+        case .remoteWorktreeCreationConsumed(let pendingID):
+          state.remoteWorktreeCreations[pendingID] = nil
+        default:
+          break
+        }
+        return .none
+      }
+    }
+    let router = RemoteHostRouter(
+      source: RemoteSnapshotSource(store: store, terminalManager: WorktreeTerminalManager(runtime: GhosttyRuntime())),
+      hostName: "Mac", hostID: nil, appLabel: nil, clock: clock)
+    return (router, store)
+  }
+
+  private static func send(_ router: RemoteHostRouter, _ connID: String, id: Int, name: String) {
+    let json = #"{"t":"worktree.new","id":\#(id),"repositoryId":"/tmp/repo","name":"\#(name)"}"#
+    router.receiveDirect(connID: connID, json: Data(json.utf8))
+  }
+
+  @Test func aDisconnectAbandonsTheCreationAndARetryAfterReconnectIsBusy() async throws {
+    let clock = TestClock()
+    let (router, store) = Self.makeRouter(clock: clock)
+    defer { router.stop() }
+    let first = LockIsolated<[String]>([])
+    router.lanOpened("phone-1") { frame in first.withValue { $0.append(frame) } }
+    Self.send(router, "phone-1", id: 7, name: "feature-x")
+    let pendingID = try #require(store.remoteWorktreeCreations.keys.first)
+    #expect(
+      store.remoteWorktreeCreations[pendingID]
+        == .creating(repositoryID: "/tmp/repo", name: "feature-x", abandoned: false))
+    await Task.megaYield()
+    await clock.advance(by: .seconds(1))
+    // The phone's socket closes: its wait ends without a reply, the creation keeps its guard.
+    router.lanClosed("phone-1")
+    await Task.megaYield()
+    await Task.megaYield()
+    #expect(first.value.isEmpty)
+    #expect(
+      store.remoteWorktreeCreations[pendingID]
+        == .creating(repositoryID: "/tmp/repo", name: "feature-x", abandoned: true))
+    // Reconnect and retry the same name in another case while it still runs: worktree_busy at once.
+    let second = LockIsolated<[String]>([])
+    router.lanOpened("phone-2") { frame in second.withValue { $0.append(frame) } }
+    Self.send(router, "phone-2", id: 8, name: "Feature-X")
+    let reply = try #require(second.value.first)
+    let json = try #require(try JSONSerialization.jsonObject(with: Data(reply.utf8)) as? [String: Any])
+    #expect(json["t"] as? String == "error")
+    #expect(json["id"] as? Int == 8)
+    #expect(json["code"] as? String == "worktree_busy")
+    #expect(store.remoteWorktreeCreations.count == 1)
+  }
+
+  @Test func aRelayConnCloseAbandonsTheCreationToo() async throws {
+    let clock = TestClock()
+    let (router, store) = Self.makeRouter(clock: clock)
+    defer { router.stop() }
+    router.receiveDirect(connID: "relay-1", json: Data(#"{"t":"conn.open"}"#.utf8))
+    Self.send(router, "relay-1", id: 3, name: "feature-y")
+    let pendingID = try #require(store.remoteWorktreeCreations.keys.first)
+    await Task.megaYield()
+    router.receiveDirect(connID: "relay-1", json: Data(#"{"t":"conn.close"}"#.utf8))
+    await Task.megaYield()
+    await Task.megaYield()
+    #expect(
+      store.remoteWorktreeCreations[pendingID]
+        == .creating(repositoryID: "/tmp/repo", name: "feature-y", abandoned: true))
+  }
+
+  @Test func aWorktreeNewWithAnUnrelatedFieldOfTheWrongTypeIsStillAnswered() throws {
+    let message = try #require(
+      RemoteJSON.decodeInbound(
+        Data(#"{"t":"worktree.new","id":7,"repositoryId":"/r","name":"x","worktreeId":42}"#.utf8)))
+    #expect(message.id == 7)
+    #expect(
+      RemoteWorktreeNewRequest.resolve(message) == .success(RemoteWorktreeNewRequest(repositoryID: "/r", name: "x")))
+    // Other types keep the old rule; a non-integer id is still dropped.
+    #expect(RemoteJSON.decodeInbound(Data(#"{"t":"tab.new","id":7,"worktreeId":42}"#.utf8)) == nil)
+    #expect(
+      RemoteJSON.decodeInbound(Data(#"{"t":"worktree.new","id":"7","repositoryId":"/r","name":"x"}"#.utf8)) == nil)
   }
 
   // MARK: - Reply
