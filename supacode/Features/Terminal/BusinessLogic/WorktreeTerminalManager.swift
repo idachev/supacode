@@ -1049,9 +1049,10 @@ final class WorktreeTerminalManager {
     )
     // The layout provisions the content synchronously, so the grid is only
     // offered for this one spawn.
-    startGrids[spec.contentID] = startGrid
+    // `spec.contentID` is optional; this path always mints it from `mintedID`.
+    startGrids[ContentID(rawValue: mintedID)] = startGrid
     sendLayout(worktree.id, .newTab(inPane: paneID, spec: spec))
-    startGrids[spec.contentID] = nil
+    startGrids[ContentID(rawValue: mintedID)] = nil
     if let customTitle {
       sendLayout(worktree.id, .renameTab(id: TabID(rawValue: mintedID), title: customTitle))
     }
