@@ -3182,6 +3182,83 @@ struct RepositoriesFeatureTests {
     #expect(FileManager.default.fileExists(atPath: existingDirectory.path(percentEncoded: false)))
   }
 
+  @Test(.dependencies) func cancelledCreationNeverDeletesAnAdoptedWorktree() async {
+    // `wt` "succeeded" by returning the branch's existing worktree (the winner of
+    // a same-name race); this creation was cancelled, but the worktree is not its
+    // to delete.
+    let repoRoot = "/tmp/repo"
+    let repository = makeRepository(id: repoRoot, worktrees: [makeWorktree(id: repoRoot, name: "main")])
+    let winner = makeWorktree(id: "/tmp/repo/.worktrees/feature-x", name: "feature-x")
+    let pendingID: Worktree.ID = "pending:loser"
+    let permit = LicenseCreationPermit(id: UUID())
+    var state = makeState(repositories: [repository])
+    state.cancelRequestedPendingIDs = [pendingID]
+    state.licensePermits[pendingID] = permit
+    let removeCalls = LockIsolated(0)
+    let cancelledPermits = LockIsolated(0)
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.removeWorktree = { worktree, _ in
+        removeCalls.withValue { $0 += 1 }
+        return await MainActor.run { worktree.workingDirectory }
+      }
+      $0[LicenseClient.self].cancelCreation = { _ in cancelledPermits.withValue { $0 += 1 } }
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .createRandomWorktreeSucceeded(
+        winner, repositoryID: repository.id, pendingID: pendingID, createdByThisCreation: false)
+    )
+    await store.finish()
+
+    #expect(removeCalls.value == 0)
+    #expect(cancelledPermits.value == 1)
+    #expect(store.state.cancelRequestedPendingIDs.isEmpty)
+  }
+
+  @Test(.dependencies) func createWorktreeSuccessWithoutGitProofIsNotThisCreations() async {
+    // `wt` printed only the existing worktree's path (no `git worktree add`
+    // output): the success must say this creation did not make it.
+    let repoRoot = "/tmp/repo"
+    let repository = makeRepository(id: repoRoot, worktrees: [makeWorktree(id: repoRoot, name: "main")])
+    let adopted = makeWorktree(id: "/tmp/repo/.worktrees/feature-x", name: "feature-x")
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.gitClient.localBranchNames = { _ in [] }
+      $0.gitClient.isValidBranchName = { _, _ in true }
+      $0.gitClient.isBareRepository = { _ in false }
+      $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
+      $0.gitClient.ignoredFileCount = { _ in 0 }
+      $0.gitClient.untrackedFileCount = { _ in 0 }
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+        AsyncThrowingStream { continuation in
+          continuation.yield(.finished(adopted))
+          continuation.finish()
+        }
+      }
+      $0.gitClient.worktrees = { _ in [adopted] }
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .createWorktreeInRepository(
+        repositoryID: repository.id,
+        nameSource: .explicit("feature-x"),
+        baseRefSource: .explicit("main"),
+        fetchOrigin: false
+      )
+    )
+    await store.receive({ action in
+      guard case .createRandomWorktreeSucceeded(_, _, _, let createdByThisCreation) = action else { return false }
+      return createdByThisCreation == false
+    })
+    await store.finish()
+  }
+
   @Test func pendingProgressUpdateUpdatesPendingWorktreeState() async {
     let repoRoot = "/tmp/repo"
     let repository = makeRepository(

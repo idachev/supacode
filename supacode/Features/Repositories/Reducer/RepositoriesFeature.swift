@@ -530,7 +530,10 @@ struct RepositoriesFeature {
     case createRandomWorktreeSucceeded(
       Worktree,
       repositoryID: Repository.ID,
-      pendingID: Worktree.ID
+      pendingID: Worktree.ID,
+      /// False when `wt` returned a worktree this creation did not make (it
+      /// adopted the branch's existing worktree): a cancel must not delete it.
+      createdByThisCreation: Bool = true
     )
     case createRandomWorktreeFailed(
       title: String,
@@ -2558,7 +2561,8 @@ struct RepositoriesFeature {
                   .createRandomWorktreeSucceeded(
                     newWorktree,
                     repositoryID: repository.id,
-                    pendingID: pendingID
+                    pendingID: pendingID,
+                    createdByThisCreation: ownershipProof?.provesOwnership == true
                   )
                 )
                 // Coalesce copy + upstream advisories into one alert; a second
@@ -4662,10 +4666,14 @@ struct RepositoriesFeature {
       case .createRandomWorktreeSucceeded(
         let worktree,
         let repositoryID,
-        let pendingID
+        let pendingID,
+        let createdByThisCreation
       ):
         let permit = state.licensePermits.removeValue(forKey: pendingID)
         if state.cancelRequestedPendingIDs.remove(pendingID) != nil {
+          // `wt` succeeds by returning a branch's existing worktree, e.g. the
+          // winner of a same-name race: a cancelled loser never deletes that.
+          guard createdByThisCreation else { return cancelLicensePermit(permit) }
           return deleteCancelledCreation(worktree, permit: permit)
         }
         let licenseEffect = completeLicensePermit(permit)
