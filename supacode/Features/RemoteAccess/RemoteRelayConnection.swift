@@ -96,7 +96,11 @@ nonisolated struct RemoteAccessConfig: Decodable, Equatable, Sendable {
   /// is omitted when nil, `name` when it normalizes to nothing.
   static func hostURL(base: URL, hostID: String?, name: String) -> URL {
     guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return base }
-    var items = (components.percentEncodedQueryItems ?? []).filter { $0.name != "id" && $0.name != "name" }
+    // Compare decoded names: the relay reads `%69d` as `id`.
+    var items = (components.percentEncodedQueryItems ?? []).filter {
+      let name = $0.name.removingPercentEncoding ?? $0.name
+      return name != "id" && name != "name"
+    }
     let encode = { (value: String) in value.addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? "" }
     if let hostID { items.append(URLQueryItem(name: "id", value: encode(hostID))) }
     if let name = normalizedHostName(name) { items.append(URLQueryItem(name: "name", value: encode(name))) }

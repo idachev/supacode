@@ -103,6 +103,12 @@ struct RemoteAccessConfigHostTests {
     #expect(url.absoluteString == "wss://relay.example.com/host?x=1&y=a%20b&id=abc&name=New")
   }
 
+  @Test func hostURLReplacesPercentEncodedIdAndNameItems() throws {
+    let base = try #require(URL(string: "wss://relay.example.com/host?%69d=old&%6Eame=Old&x=1"))
+    let url = RemoteAccessConfig.hostURL(base: base, hostID: "abc", name: "New")
+    #expect(url.absoluteString == "wss://relay.example.com/host?x=1&id=abc&name=New")
+  }
+
   @Test func hostURLOmitsANilIdAndAnEmptyName() throws {
     let base = try #require(URL(string: "wss://relay.example.com/host"))
     #expect(RemoteAccessConfig.hostURL(base: base, hostID: nil, name: "Mac").absoluteString
