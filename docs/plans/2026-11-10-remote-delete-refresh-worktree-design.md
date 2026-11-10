@@ -1,8 +1,8 @@
 # Remote delete worktree and refresh worktrees (ЗД9) — design
 
 Status: draft r2 (Codex r1 F1–F13 triaged), checked against the code on 2026-11-10 (base `28d7b272`).
-Contract for the Mac host, the protocol doc, the web client and the Android client. ОВ5–ОВ11 are decided; ОВ12 (from
-the Codex r1 review) is open. Builds on `docs/plans/2026-11-10-remote-new-worktree-design.md` (`worktree.new`)
+Contract for the Mac host, the protocol doc, the web client and the Android client. ОВ5–ОВ12 are decided (ОВ12 came
+from the Codex r1 review). Builds on `docs/plans/2026-11-10-remote-new-worktree-design.md` (`worktree.new`)
 and reuses its patterns: lenient fields, an AppFeature outcome bridge read through `withState`,
 router waits through `RemoteHostRouter.poll` with an injected clock, `worktree_*` error codes, ids on
 every error, per-connection waits cancelled on disconnect.
@@ -484,8 +484,9 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
   host would answer with a stale list and the client could not tell), a refresh on every `list`
   (`list` is a synchronous reply, `RemoteHostRouter.swift:279-280`; a git reload per `list` is slow
   and each cancels the previous load), a host-started refresh on connect (can follow later).
-- ОВ12 Archived worktrees (Codex r1 F11). The Mac can delete an archived worktree from its archived
-  list (`ArchivedWorktreesDetailView.swift:57`), but `list` leaves archived worktrees out, so this
-  design refuses them (`worktree_invalid`): a deviation from "mirror the Mac". Options: (a) keep the
-  deviation in v1 (archive is out of scope, ГР1); (b) add archived worktrees to `list` with
-  `"archived":true` and allow deleting them. Recommendation: (a).
+- ОВ12 Archived worktrees — decided (main, on the recommendation, owner away): archived worktrees
+  cannot be deleted from the remote in v1. `list` leaves them out, `canDeleteWorktree` is false for
+  them, and a `worktree.delete` for one gets `worktree_invalid` "no such worktree" (D3). This is a
+  stated deviation from the Mac, which can delete them from its archived list
+  (`ArchivedWorktreesDetailView.swift:57`); archive is out of scope (ГР1). Rejected for v1: listing
+  archived worktrees with `"archived":true` and allowing their delete.
