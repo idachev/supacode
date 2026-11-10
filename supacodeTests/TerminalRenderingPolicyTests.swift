@@ -167,24 +167,29 @@ struct TerminalRenderingPolicyTests {
   }
 
   // MARK: - Requested grid hold (remote `resize`)
+  // `keeps` and `release` are mutating, so they run outside `#expect`.
 
   @Test func aRequestedGridHoldsWhileThePaneKeepsItsSize() {
     var hold = GhosttySurfaceView.RequestedGridHold()
     let pane = CGSize(width: 1606, height: 966)
     hold.hold(replacing: pane)
     // Layout passes that measure the same pane keep the requested grid.
-    #expect(hold.keeps(layoutBackingSize: pane))
-    #expect(hold.keeps(layoutBackingSize: pane))
+    let firstPass = hold.keeps(layoutBackingSize: pane)
+    let secondPass = hold.keeps(layoutBackingSize: pane)
+    #expect(firstPass)
+    #expect(secondPass)
     #expect(hold.paneBackingSize == pane)
   }
 
   @Test func aRequestedGridEndsAtThePanesNextSizeChange() {
     var hold = GhosttySurfaceView.RequestedGridHold()
     hold.hold(replacing: CGSize(width: 1606, height: 966))
-    #expect(!hold.keeps(layoutBackingSize: CGSize(width: 1206, height: 966)))
+    let resized = hold.keeps(layoutBackingSize: CGSize(width: 1206, height: 966))
+    #expect(!resized)
     #expect(hold.paneBackingSize == nil)
     // Once released, later passes follow the pane as usual.
-    #expect(!hold.keeps(layoutBackingSize: CGSize(width: 1606, height: 966)))
+    let later = hold.keeps(layoutBackingSize: CGSize(width: 1606, height: 966))
+    #expect(!later)
   }
 
   @Test func aLaterRequestKeepsThePaneSizeOfTheFirstHold() {
@@ -194,16 +199,21 @@ struct TerminalRenderingPolicyTests {
     // The second request replaces the applied size with the first request's grid, not the pane's.
     hold.hold(replacing: CGSize(width: 806, height: 486))
     #expect(hold.paneBackingSize == pane)
-    #expect(hold.keeps(layoutBackingSize: pane))
+    let kept = hold.keeps(layoutBackingSize: pane)
+    #expect(kept)
   }
 
   @Test func showingOrHidingThePaneReleasesTheRequestedGrid() {
     var hold = GhosttySurfaceView.RequestedGridHold()
-    #expect(hold.release() == nil)
+    let nothingHeld = hold.release()
+    #expect(nothingHeld == nil)
     let pane = CGSize(width: 1606, height: 966)
     hold.hold(replacing: pane)
-    #expect(hold.release() == pane)
-    #expect(hold.release() == nil)
-    #expect(!hold.keeps(layoutBackingSize: pane))
+    let released = hold.release()
+    let releasedAgain = hold.release()
+    #expect(released == pane)
+    #expect(releasedAgain == nil)
+    let kept = hold.keeps(layoutBackingSize: pane)
+    #expect(!kept)
   }
 }
