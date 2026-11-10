@@ -187,7 +187,7 @@ Line numbers are `supacode/Features/...` unless the path says otherwise.
 | `worktree_invalid` | `worktree.delete needs a worktreeId`, `no such worktree` | `worktreeId` missing or empty; unknown, archived (ОВ12), or a pending (`pending:…`) id |
 | `worktree_unsupported` | `the main worktree cannot be deleted`, `folders cannot be deleted from the remote`, `the repository is being removed` | main worktree; folder (non-git) entry; repository in `removingRepositoryIDs` |
 | `worktree_busy` | `the worktree is busy (being created, archived or deleted)` | row lifecycle not `.idle` (setup script running, archiving, deleting, delete script running), or a remote delete of it is still in flight; also when the re-check after the dirty check finds this (D4) |
-| `worktree_dirty` | `the worktree has uncommitted changes or untracked files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` | the dirty check (D4) found at least one entry |
+| `worktree_dirty` | `the worktree has uncommitted changes or untracked files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` | the dirty check (D4) found at least one status entry, or commits on a detached HEAD that no branch, tag or remote ref holds (message then: `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first`) |
 | `worktree_failed` | `Delete script failed (exit code N).`, `Delete cancelled.`, `Unable to delete worktree: <git message>`, `The worktree could not be found. It may have already been removed.`, `could not check the worktree for changes: <error>`, `the worktree left the list before it was deleted (removed outside Supacode, or its repository was removed)` | the app reported a failure, the check failed, or the worktree vanished without a delete result |
 | `worktree_timeout` | `the delete is still running on the Mac; the worktree may disappear from the list later` | no outcome within `worktreeDeleteTimeout` (300 s) |
 | `refresh_timeout` | `the refresh is still running on the Mac; send list again later` | `worktrees.refresh`: no load finished within 60 s |
@@ -277,20 +277,25 @@ D4. AppFeature (core, next to the `worktree.new` arms; core runs before the repo
       and untracked files. Ignored files (`.gitignore`) do not count (no `--ignored`), so build output
       does not block. Dirty = at least one entry.
     - Unpushed commits do **not** block: the branch is never deleted (ОВ6), so its commits stay
-      reachable. Note: a worktree on a detached HEAD whose commits are on no branch would lose them
-      (only the removed worktree's reflog points at them); v1 does not check this (see "Not
-      confirmed / notes").
+      reachable.
+    - Detached HEAD (Codex r2 F3): commits reachable only from the worktree's HEAD would become
+      unreachable once the worktree (and its reflog) is gone. The same check therefore also runs
+      `git -C <path> rev-list --count HEAD --not --branches --tags --remotes`; a count above 0
+      makes the worktree dirty. On an attached HEAD the branch itself is in `--branches`, so the count
+      is 0 and unpushed commits still do not block. Same host-aware client as the status command.
     - ssh worktree: the same command through the host-aware client, as
       `RepositoriesFeature.gitClient(for:)` picks it (`RepositoriesFeature.swift:721-727`:
       `.ssh(host:)` for a worktree with a host). Its git commands run on the ssh host, the way
       `removeWorktree` runs `git worktree remove` there (`GitClient.swift:1318-1320`, `:1340`), with
       the worktree's remote path. AppFeature reaches the client through the same `GitClientDependency`
       (T1 wires it; not read further here).
-    - Result `.remoteWorktreeDeleteChecked(worktreeID:, result:)`: entries → `.failed(worktree_dirty,
-      "<message with the count and up to 5 paths>")`; error → `.failed(worktree_failed, "could not
+    - Result `.remoteWorktreeDeleteChecked(worktreeID:, result:)`: status entries or detached commits →
+      `.failed(worktree_dirty, "<message with the count and up to 5 paths, and/or the detached commit
+      count>")`; error → `.failed(worktree_failed, "could not
       check the worktree for changes: <localizedDescription>")` (refuse, never delete unchecked);
       clean → re-run the D1 check on the current state (the Mac user may have started a delete,
-      archived it, or the repository may be going away during the check): refused →
+      archived it, or the repository may be going away during the check), with `inFlight: false`:
+      this request's own `.checking` entry must not count as another delete in flight (Codex r2 F1); refused →
       `.failed(<rejection code>, <rejection message>)`; passed → step "delete".
     - Delete step: entry `.deleting(abandoned: <kept>)`, then send
       `.repositories(.deleteSidebarItemConfirmed(worktreeID, repositoryID, background: true,
@@ -430,7 +435,8 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
   effect, outcome updates in the existing arms, the two explicit early-exit outcomes, the
   `repositoriesChanged` backstop). Tests with `TestClock`, no `Task.sleep`: success only via
   `.worktreeDeleted`; dirty (tracked change, untracked file) → `worktree_dirty`, ignored file only →
-  deletes; check error → `worktree_failed`; orphan skips the check; re-check after the check refuses a
+  deletes; detached HEAD with a commit on no ref → `worktree_dirty`, attached branch with unpushed
+  commits → deletes; a clean request passes its own re-check (not `worktree_busy`); check error → `worktree_failed`; orphan skips the check; re-check after the check refuses a
   row that became busy; branch kept with the setting on (`removeWorktree` called with
   `deleteBranch: false`) and Mac deletes unchanged; `deleteWorktreeFailed`, script exit ≠ 0 / nil, the
   two early exits, the roster backstop (repository removed during the script) → `worktree_failed`
@@ -450,9 +456,6 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
 - That the `.ssh(host:)` `GitClientDependency` runs a `git -C <path> status` on the host the way it
   runs `git worktree remove` there, and how AppFeature gets that client: read from the comments at
   `GitClient.swift:1318-1320` and `RepositoriesFeature.swift:718-727`, not traced into the ssh shell.
-- Detached-HEAD worktrees: commits that are on no branch are lost on delete even though the branch rule
-  keeps branches; v1 does not check `git log HEAD --not --branches --remotes` (could be added to the
-  dirty check later).
 
 ## Open questions
 
