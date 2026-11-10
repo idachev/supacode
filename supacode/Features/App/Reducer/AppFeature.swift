@@ -1737,7 +1737,7 @@ struct AppFeature {
           state: &state)
         return .none
 
-      case .repositories(.createRandomWorktreeFailed(let title, let message, let pendingID, _, _, _, _)):
+      case .repositories(.createRandomWorktreeFailed(let title, let message, let pendingID, _, _, _, _, _)):
         // Core runs before the repositories scope, so a Mac cancel's flag is still set here.
         let cancelledOnMac = state.repositories.cancelRequestedPendingIDs.contains(pendingID)
         settleRemoteWorktreeCreation(
