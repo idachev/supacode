@@ -127,9 +127,14 @@ struct RemoteAccessProtocolTests {
 
   @Test func renameFrameGoesToTheControlConnID() throws {
     let text = RemoteHostFrame.renameFrame(name: "Office Mac")
-    #expect(text == "@\n{\"t\":\"host.name\",\"name\":\"Office Mac\"}")
+    #expect(text.hasPrefix("@\n"))
     let parsed = try #require(RemoteHostFrame.parse(text))
     #expect(parsed.connID == RemoteHostFrame.controlConnID)
+    // Field by field: JSONEncoder does not promise a key order.
+    let json = try #require(try JSONSerialization.jsonObject(with: parsed.json) as? [String: Any])
+    #expect(json.count == 2)
+    #expect(json["t"] as? String == "host.name")
+    #expect(json["name"] as? String == "Office Mac")
   }
 
   @Test func renameFrameNormalizesTheNameAndOmitsAnEmptyOne() throws {
