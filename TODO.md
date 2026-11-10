@@ -20,9 +20,9 @@
 - **ТД4** Two edge cases of the host `resize` command — open (2026-11-10), kind: bug, reason: non-blocking review notes (ЗД12c r1 F1, F2, ACCEPT as artificial).
   Now: a resize A → B → A within 2 s may not send a new `size` (the 2 s size poll sees no change); integers of 2^63 or more in `cols`/`rows` are ignored, not clamped.
   Fix: only if it shows up in use; send `size` after every `resize`, and clamp large values.
-- **МР2** Merge the Android multi-host branch into supacode-remote master — open (2026-11-10), kind: merge, reason: owner decision (the branch is fully reviewed; merge only on the owner's word).
-  Now: `/Users/idachev/develop/personal/supacode-remote`, branch `captain/20261110-multi-host` at 2b8789f (code reviewed at 717806c, r4 approve), not merged, not pushed. The deployed multi-host relay needs this APK (old phones become unbound, owner ОТ2).
-  Steps: merge into `master`, build the APK, install it on the phone.
+- **МР2** Push supacode-remote master with the Android multi-host merge — open (2026-11-10), kind: merge, reason: owner decision (merged on the owner's word, push not asked yet).
+  Now: `/Users/idachev/develop/personal/supacode-remote` `master` at 2e139e4 holds `captain/20261110-multi-host` (reviewed at 717806c) and the web commits up to b60d1bc, not pushed. The conflict fixes in merges ba11220 and c6766e6 (`TODO.md`, `tools/mock-host.mjs`, web test helpers) had no review in the run (gradle 178 tests, web 93/93 green).
+  Steps: one Codex review of ba11220 and c6766e6, then push `master`; the phone APK stays supacode-remote-debug-20261110-1643.apk.
 - **СТ3** Set up and check the second Mac with the multi-host relay — open (2026-11-10), kind: tests, reason: needs the owner and the second Mac.
   Steps: install the `remote-multi-host` dev build on the second Mac; give it its own host name in Settings → Remote Access; on the phone, open the host list, see both Macs by name, switch between them, open a tab on each; agent notifications come only from the selected Mac (owner ОТ1).
 - **СТ4** Check the sidebar filter and the tab resize live on the installed dev build — open (2026-11-10), kind: tests, reason: unit-tested (swift group green on 93631322, 4255 tests), not yet checked by the owner after a restart.
