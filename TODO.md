@@ -17,13 +17,13 @@
 - **ТД3** Hide or dim the collapse chevrons while the sidebar filter is on — open (2026-11-10), kind: ui, reason: non-blocking review note (ЗД11 r1 F6, ACCEPT).
   Now: while filtering, group and branch-folder chevrons stay visible, but a click does nothing (collapse state is not written while filtering, by design).
   Fix: hide or dim the chevrons when the filter text is not empty; keep the no-write rule.
-- **ТД4** Two edge cases of the host `resize` command — open (2026-11-10), kind: bug, reason: non-blocking review notes (ЗД12c r1 F1, F2, ACCEPT as artificial).
-  Now: a resize A → B → A within 2 s may not send a new `size` (the 2 s size poll sees no change); integers of 2^63 or more in `cols`/`rows` are ignored, not clamped.
-  Fix: only if it shows up in use; send `size` after every `resize`, and clamp large values.
-- **МР2** Push supacode-remote master with the Android multi-host merge — open (2026-11-10), kind: merge, reason: owner decision (merged on the owner's word, push not asked yet).
-  Now: `/Users/idachev/develop/personal/supacode-remote` `master` at 2e139e4 holds `captain/20261110-multi-host` (reviewed at 717806c) and the web commits up to b60d1bc, not pushed. The conflict fixes in merges ba11220 and c6766e6 (`TODO.md`, `tools/mock-host.mjs`, web test helpers) had no review in the run (gradle 178 tests, web 93/93 green).
-  Steps: one Codex review of ba11220 and c6766e6, then push `master`; the phone APK stays supacode-remote-debug-20261110-1643.apk.
+- **ТД4** Clamp huge `cols`/`rows` in the host `resize` command — open (2026-11-10), kind: bug, reason: non-blocking review note (ЗД12c r1 F2, ACCEPT as artificial); the A → B → A case is fixed by ЗД3 of run 20261110-181452 (`size` after every resize).
+  Now: integers of 2^63 or more in `cols`/`rows` are ignored, not clamped.
+  Fix: only if it shows up in use; clamp large values.
+- **ТД5** Two gaps of the resize confirmation — open (2026-11-10), kind: tests/bug, reason: non-blocking review notes (ЗД3 r1 F4 TODO, r2 F1 ACCEPT: needs two clients on one tab and an unreadable PTY size).
+  Now: `ZmxRemoteStream.controllingTerminal(pid:)` (sysctl `KERN_PROC_PID`) is tested only for a process without a terminal; no test opens a real PTY and reads `TIOCGWINSZ` without root. When client B's newer resize cancels client A's pending wait and the PTY size cannot be read, B gets `resize_failed` and A gets neither `size` nor `error` (`RemoteHostRouter.swift:529`; also when B disconnects); the web shows „Mac-ът не отговори“ after 4 s.
+  Fix: a test that spawns a child with `setsid` and a controlling tty; on cancel, send A the outcome of the newer resize.
 - **СТ3** Set up and check the second Mac with the multi-host relay — open (2026-11-10), kind: tests, reason: needs the owner and the second Mac.
   Steps: install the `remote-multi-host` dev build on the second Mac; give it its own host name in Settings → Remote Access; on the phone, open the host list, see both Macs by name, switch between them, open a tab on each; agent notifications come only from the selected Mac (owner ОТ1).
-- **СТ4** Check the sidebar filter and the tab resize live on the installed dev build — open (2026-11-10), kind: tests, reason: unit-tested (swift group green on 93631322, 4255 tests), not yet checked by the owner after a restart.
-  Steps: restart Supacode; ⇧⌘F opens the sidebar filter, typing narrows the rows (also with one typo), Esc clears it, ⌃1..⌃9 act on visible rows only; on the phone or the web app press the resize button for one tab and see the Mac tab take that size until the next pane layout change.
+- **СТ4** Check the tab resize live on Mac B — open (2026-11-10), kind: tests, reason: the sidebar filter was checked by the owner; resize needs the build of run 20261110-181452 (hibernated-tab wake, `size` reply, real PTY size).
+  Steps: install the new dev build on Mac B; from the web app press „Размер по този екран“ on a tab hidden on Mac B for over 5 minutes and on a visible one: the web gets the new size without a page refresh; open a new tab from the web: normal font size (else ТД1 needs the Ghostty patch).

@@ -17,11 +17,17 @@ final class RemoteHostRouter {
   /// Mac window or screen.
   static let newTabGrid = (columns: 120, rows: 40)
   static let sizePollInterval: Duration = .seconds(2)
-  /// How long after a `resize` the attached phones' PTY size is checked, so
-  /// the reply does not wait for the next poll. The PTY takes the new grid
-  /// asynchronously (Ghostty's IO thread, then zmx); a slower one is still
-  /// caught by the poll.
+  /// How often a `resize` re-reads the session PTY until it has the new grid,
+  /// for up to `resizeConfirmTimeout` in all. The PTY takes the grid
+  /// asynchronously (Ghostty's IO thread, then the `zmx attach` leader, then
+  /// the zmx daemon), so the reply waits for the size the stream really has.
   static let resizeSettle: Duration = .milliseconds(150)
+  static let resizeConfirmTimeout: Duration = .seconds(3)
+  /// How long a `resize` of a terminal without a live surface waits for the
+  /// woken surface's cell metrics before it answers `resize_failed`; the same
+  /// bound as an `attach` waiting for a woken session (`wakeTimeout`).
+  static let resizeReadyTimeout: Duration = .seconds(6)
+  static let resizeRetryInterval: Duration = .milliseconds(100)
   static let suggestionContextRows = 80
   static let wakeTimeout: Duration = .seconds(6)
   /// How long a `tab.new` waits for the new tab to appear in the layout.
@@ -47,6 +53,10 @@ final class RemoteHostRouter {
   /// `tab.new` waits in flight per phone, cancelled when that phone's
   /// connection ends so a reused connId never gets a stale answer.
   private var tabNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
+  /// The `resize` in flight per terminal (waking it, then reading the PTY
+  /// size); a newer `resize` of that terminal from any phone, or the
+  /// requester's detach or end, cancels it (last request wins).
+  private var resizeWaits = RemoteResizeWaits()
   /// The grid each attached phone last got (`attached` or `size`), shared by
   /// the poll and a resize's early check so neither sends the same size twice.
   private var sentGrids: [String: SentGrid] = [:]
@@ -71,6 +81,8 @@ final class RemoteHostRouter {
   private(set) var hostName: String
   /// This Mac's relay id (ИД1), sent in `hello` so a phone can tell its Macs apart.
   let hostID: String?
+  /// The app build every `hello` reports (`RemoteHelloMessage.appLabel`); nil omits the field.
+  private let appLabel: String?
   /// The missing-hardware-UUID warning goes out once per process, not per start.
   private static var warnedMissingHostID = false
 
@@ -78,11 +90,13 @@ final class RemoteHostRouter {
     source: RemoteSnapshotSource,
     hostName: String,
     hostID: String?,
+    appLabel: String? = RemoteHelloMessage.currentAppLabel(),
     clock: any Clock<Duration> = ContinuousClock()
   ) {
     self.source = source
     self.hostName = hostName
     self.hostID = hostID
+    self.appLabel = appLabel
     self.clock = clock
   }
 
@@ -282,9 +296,9 @@ final class RemoteHostRouter {
     reply(connID, helloMessage(for: connID))
   }
 
-  /// The `hello` answer for one phone: name, id and, for a same-network phone, `lan`.
+  /// The `hello` answer for one phone: name, id, app build and, for a same-network phone, `lan`.
   func helloMessage(for connID: String) -> RemoteHelloMessage {
-    RemoteHelloMessage(host: hostName, hostId: hostID, lan: lanCandidate(for: connID))
+    RemoteHelloMessage(host: hostName, hostId: hostID, lan: lanCandidate(for: connID), app: appLabel)
   }
 
   /// Answers a same-network phone's `hello` once the LAN start ends, or after
@@ -408,23 +422,6 @@ final class RemoteHostRouter {
     reply(connID, RemoteSizeMessage(contentId: attachment.contentKey, cols: grid.columns, rows: grid.rows))
   }
 
-  /// After a resize, checks every phone attached to that content once,
-  /// `resizeSettle` later, instead of at its next poll.
-  private func checkSizeSoon(contentID: UUID) {
-    let clock = self.clock
-    Task { [weak self] in
-      try? await clock.sleep(for: Self.resizeSettle)
-      guard let self else { return }
-      let attached = self.clients.compactMap { connID, entry -> (String, ZmxRemoteStream)? in
-        guard case .some(let attachment) = entry, attachment.contentID == contentID else { return nil }
-        return (connID, attachment.stream)
-      }
-      for (connID, stream) in attached {
-        await self.sendSizeIfChanged(connID: connID, stream: stream)
-      }
-    }
-  }
-
   /// Hands finished JSON messages to the phone's transport, in order.
   private func deliver(_ connID: String, _ messages: [String]) {
     if let lan = lanSinks[connID] {
@@ -475,6 +472,7 @@ final class RemoteHostRouter {
   }
 
   private func detach(connID: String) {
+    cancelResizeWait(connID: connID)
     guard case .some(.some(let attachment)) = clients[connID] else { return }
     clients[connID] = .some(nil)
     sentGrids[connID] = nil
@@ -511,10 +509,17 @@ final class RemoteHostRouter {
     }
   }
 
-  /// Sets the attached terminal's grid to the client's size. No direct reply:
-  /// every phone attached to it gets `size` once the PTY has the new grid,
-  /// checked `resizeSettle` later and then by the usual poll.
-  /// A request for another content or with a bad size is ignored and logged.
+  /// Sets the attached terminal's grid to the client's size and answers with
+  /// the size the session PTY really has (`ptySize`, what the remote stream
+  /// renders at), never the app's view grid:
+  /// - the PTY takes the size: `size` to the requester (even when it already
+  ///   had that size) and to every other phone attached there whose size changed;
+  /// - the PTY keeps another size: that `size` plus an `error` (`resize_failed`);
+  /// - the size cannot be applied or read: an `error` (`resize_failed`).
+  /// A terminal without a live surface (hibernated, or not started since
+  /// launch) is woken off-window and sized once its cell metrics exist
+  /// (`settleResize`). A request for another content or with a bad size is
+  /// ignored and logged.
   private func resize(connID: String, message: RemoteInboundMessage) {
     var attached: UUID?
     if case .some(.some(let attachment)) = clients[connID] { attached = attachment.contentID }
@@ -524,12 +529,189 @@ final class RemoteHostRouter {
     case .failure(.invalidSize):
       routerLogger.info("resize from \(connID) ignored: cols and rows must both be integers")
     case .success(let request):
-      if source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows) {
-        checkSizeSoon(contentID: request.contentID)
-      } else {
-        routerLogger.info("resize from \(connID) ignored: the terminal has no live surface")
+      // Before the new size is applied, so an older wait never retries its size over it.
+      resizeWaits.cancel(contentID: request.contentID)
+      let source = self.source
+      let clock = self.clock
+      let requestID = message.id
+      let socketPath = ZmxRemoteStream.socketPath(contentID: request.contentID)
+      let attempt: @MainActor @Sendable () -> RemoteResizeAttempt = {
+        source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
+      }
+      // In this turn, so a live terminal's grid changes before the next message.
+      let first = attempt()
+      let token = UUID()
+      let wait = Task { [weak self] in
+        let settled = await Self.settleResize(
+          first: first, clock: clock, wake: { source.wake(contentID: request.contentID) }, attempt: attempt)
+        let outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
+        switch settled {
+        case .failed(let failure):
+          outcome = .failure(failure)
+        case .applied, .unchanged:
+          // Also for an unchanged grid: the PTY may still be taking an earlier resize.
+          let confirmation = await Self.confirmResize(
+            grid: (columns: request.columns, rows: request.rows),
+            interval: Self.resizeSettle, within: Self.resizeConfirmTimeout, clock: clock,
+            readSize: { await Self.ptySize(socketPath: socketPath) })
+          outcome = .success(confirmation)
+        }
+        guard !Task.isCancelled, let self else { return }
+        self.resizeWaits.finished(contentID: request.contentID, token: token)
+        self.finishResize(connID: connID, request: request, requestID: requestID, outcome: outcome)
+      }
+      resizeWaits.start(contentID: request.contentID, connID: connID, token: token, task: wait)
+    }
+  }
+
+  /// Answers a settled `resize`, unless the phone left that terminal meanwhile.
+  private func finishResize(
+    connID: String,
+    request: RemoteResizeRequest,
+    requestID: Int?,
+    outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
+  ) {
+    guard case .some(.some(let attachment)) = clients[connID], attachment.contentID == request.contentID else {
+      return
+    }
+    let replies = Self.resizeReplies(
+      for: outcome, request: request, contentKey: attachment.contentKey, requestID: requestID)
+    for reply in replies {
+      switch reply {
+      case .size(let size):
+        let grid = SentGrid(columns: size.cols, rows: size.rows)
+        // Every phone on that terminal gets it, even when it already had the
+        // size: the requester waits for it, and another phone's resize may
+        // have been cancelled by this one (the poll's dedupe is bypassed).
+        for (other, entry) in clients {
+          guard case .some(let shown) = entry, shown.contentID == request.contentID else { continue }
+          sentGrids[other] = grid
+          self.reply(other, RemoteSizeMessage(contentId: shown.contentKey, cols: grid.columns, rows: grid.rows))
+        }
+      case .error(let error):
+        routerLogger.info("resize from \(connID) failed: \(error.message)")
+        self.reply(connID, error)
       }
     }
+  }
+
+  /// One frame a settled `resize` sends.
+  nonisolated enum ResizeReply: Equatable, Sendable {
+    /// The session PTY's size: to every phone attached to that content.
+    case size(RemoteSizeMessage)
+    /// To the requester only.
+    case error(RemoteErrorMessage)
+  }
+
+  /// The frames for a settled `resize`, in order.
+  nonisolated static func resizeReplies(
+    for outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>,
+    request: RemoteResizeRequest,
+    contentKey: String,
+    requestID: Int?
+  ) -> [ResizeReply] {
+    func failed(_ failure: RemoteResizeResult.Failure) -> ResizeReply {
+      .error(
+        RemoteErrorMessage(
+          id: requestID, message: failure.message, code: RemoteResizeResult.errorCode, contentId: contentKey))
+    }
+    switch outcome {
+    case .success(.matched):
+      return [.size(RemoteSizeMessage(contentId: contentKey, cols: request.columns, rows: request.rows))]
+    case .success(.mismatch(let columns, let rows)):
+      return [.size(RemoteSizeMessage(contentId: contentKey, cols: columns, rows: rows)), failed(.sessionKeptItsSize)]
+    case .success(.unreadable):
+      return [failed(.sizeUnreadable)]
+    case .failure(let failure):
+      return [failed(failure)]
+    }
+  }
+
+  /// Reads the session PTY until it has `grid`: now, then every `interval` on
+  /// `clock`, for at most `timeout` in all (a slow read counts against it).
+  /// `.mismatch` carries the last size read; `.unreadable` means no read succeeded.
+  nonisolated static func confirmResize(
+    grid: (columns: Int, rows: Int),
+    interval: Duration,
+    within timeout: Duration,
+    clock: any Clock<Duration>,
+    readSize: @escaping @Sendable () async -> (columns: Int, rows: Int)?
+  ) async -> RemoteResizeConfirmation {
+    let (events, continuation) = AsyncStream.makeStream(of: ResizeConfirmEvent.self)
+    // Not a loop with its own deadline check: a read may block past the deadline.
+    let reader = Task {
+      while !Task.isCancelled {
+        let size = await readSize()
+        continuation.yield(.read(columns: size?.columns, rows: size?.rows))
+        try? await clock.sleep(for: interval)
+      }
+    }
+    let deadline = Task {
+      try? await clock.sleep(for: timeout)
+      continuation.yield(.deadline)
+    }
+    var matched = false
+    var last: (columns: Int, rows: Int)?
+    for await event in events {
+      guard case .read(let columns, let rows) = event else { break }
+      guard let columns, let rows else { continue }
+      if columns == grid.columns, rows == grid.rows {
+        matched = true
+        break
+      }
+      last = (columns, rows)
+    }
+    reader.cancel()
+    deadline.cancel()
+    continuation.finish()
+    if matched { return .matched }
+    guard let last else { return .unreadable }
+    return .mismatch(columns: last.columns, rows: last.rows)
+  }
+
+  nonisolated enum ResizeConfirmEvent: Sendable {
+    /// One PTY read; nil sizes when it failed.
+    case read(columns: Int?, rows: Int?)
+    case deadline
+  }
+
+  /// Finishes a `resize` whose first try (`first`) found no live surface or no
+  /// cell metrics yet: wakes the terminal off-window when it has no surface
+  /// (the Mac does not show it, so the new surface takes the size as its start
+  /// size, as a phone-opened tab does), then retries `attempt` every
+  /// `resizeRetryInterval` on `clock` for up to `resizeReadyTimeout`.
+  static func settleResize(
+    first: RemoteResizeAttempt,
+    clock: any Clock<Duration>,
+    wake: @MainActor () -> Bool,
+    attempt: @escaping @MainActor @Sendable () -> RemoteResizeAttempt
+  ) async -> RemoteResizeResult {
+    switch first {
+    case .applied:
+      return .applied
+    case .unchanged:
+      return .unchanged
+    case .notReady:
+      break
+    case .noSurface, .failedToStart:
+      // False when no worktree lists the content any more.
+      guard wake() else { return .failed(.contentGone) }
+    }
+    let settled = await poll(every: resizeRetryInterval, within: resizeReadyTimeout, clock: clock) {
+      () -> RemoteResizeResult? in
+      switch attempt() {
+      case .applied: return .applied
+      case .unchanged: return .unchanged
+      // The wake ran synchronously, so this is its own failure, not a stale one.
+      case .failedToStart: return .failed(.wakeFailed)
+      case .notReady, .noSurface: return nil
+      }
+    }
+    return settled ?? .failed(.notReady)
+  }
+
+  private func cancelResizeWait(connID: String) {
+    resizeWaits.cancel(connID: connID)
   }
 
   /// The relay socket dropped: its phones are gone, LAN phones stay.

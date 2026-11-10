@@ -1195,18 +1195,28 @@ final class GhosttySurfaceView: NSView, Identifiable {
     return true
   }
 
+  /// What one `applyRequestedGrid` call did.
+  nonisolated enum RequestedGridOutcome: Equatable, Sendable {
+    /// The grid changes to the requested size (the PTY follows asynchronously).
+    case applied
+    /// The grid already has the requested size; nothing changed.
+    case unchanged
+    /// The core surface or its cell metrics do not exist yet; try again later.
+    case notReady
+  }
+
   /// Sets the grid to exactly `columns` × `rows` for a remote client's
   /// `resize`. A surface the Mac never showed takes it as its start size (see
   /// `capUnmountedGrid`); a shown one holds it over its pane's size until the
-  /// pane's next layout change (`RequestedGridHold`). Returns false while the
-  /// core surface or its cell metrics do not exist yet.
-  func applyRequestedGrid(columns: Int, rows: Int) -> Bool {
-    guard let surface else { return false }
-    guard window != nil || hasBeenInWindow else {
-      return capUnmountedGrid(maxColumns: columns, maxRows: rows, exact: true)
-    }
+  /// pane's next layout change (`RequestedGridHold`).
+  func applyRequestedGrid(columns: Int, rows: Int) -> RequestedGridOutcome {
+    guard let surface else { return .notReady }
     let size = ghostty_surface_size(surface)
-    guard size.cell_width_px > 0, size.cell_height_px > 0 else { return false }
+    guard size.cell_width_px > 0, size.cell_height_px > 0 else { return .notReady }
+    if Int(size.columns) == columns, Int(size.rows) == rows { return .unchanged }
+    guard window != nil || hasBeenInWindow else {
+      return capUnmountedGrid(maxColumns: columns, maxRows: rows, exact: true) ? .applied : .notReady
+    }
     guard
       let requested = GridCap.backingSize(
         current: CGSize(width: CGFloat(size.width_px), height: CGFloat(size.height_px)),
@@ -1215,12 +1225,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
         limit: (columns, rows),
         exact: true
       )
-    else { return true }
+    else { return .unchanged }
     requestedGridHold.hold(replacing: lastAppliedBackingSize)
     // Recorded as applied, so the hibernation freeze pairs it with the grid it renders.
     lastAppliedBackingSize = requested
     pushSurfaceSize(requested)
-    return true
+    return .applied
   }
 
   /// Ends a held remote grid and puts the pane's size back; a window the view

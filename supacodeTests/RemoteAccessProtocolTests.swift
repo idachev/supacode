@@ -125,6 +125,29 @@ struct RemoteAccessProtocolTests {
     #expect(!json.keys.contains("lan"))
   }
 
+  @Test func helloCarriesTheAppBuildWhenThereIsOne() throws {
+    let app = RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "154")
+    #expect(app == "Supacode 0.11.5 (154)")
+    let hello = RemoteHelloMessage(host: "Office Mac", hostId: "5ff84c3b79a7faaa", app: app)
+    let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
+    #expect(json.count == 5)
+    #expect(json["app"] as? String == "Supacode 0.11.5 (154)")
+  }
+
+  @Test func appLabelUsesWhatExistsAndNeverIsEmpty() {
+    #expect(RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: nil) == "Supacode 0.11.5")
+    #expect(RemoteHelloMessage.appLabel(shortVersion: "0.11.5", build: "  ") == "Supacode 0.11.5")
+    #expect(RemoteHelloMessage.appLabel(shortVersion: nil, build: "154") == "Supacode (154)")
+    #expect(RemoteHelloMessage.appLabel(shortVersion: nil, build: nil) == nil)
+    #expect(RemoteHelloMessage.appLabel(shortVersion: "", build: "") == nil)
+  }
+
+  @Test func helloWithoutAnAppBuildOmitsTheField() throws {
+    let hello = RemoteHelloMessage(host: "Office Mac", app: nil)
+    let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
+    #expect(!json.keys.contains("app"))
+  }
+
   @Test func renameFrameGoesToTheControlConnID() throws {
     let text = RemoteHostFrame.renameFrame(name: "Office Mac")
     #expect(text.hasPrefix("@\n"))
