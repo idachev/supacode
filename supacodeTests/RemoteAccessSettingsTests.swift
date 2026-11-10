@@ -179,6 +179,254 @@ struct RemoteAccessSettingsTests {
     }
   }
 
+  // MARK: - Host name
+
+  nonisolated static func configuredFile(hostName: String?) -> RemoteAccessFileStatus {
+    var status = configured
+    status.hostName = hostName
+    return status
+  }
+
+  static func state(hostName: String?, draft: String) -> RemoteAccessFeature.State {
+    var state = RemoteAccessFeature.State(file: configuredFile(hostName: hostName), host: running)
+    state.hostNameDraft = draft
+    return state
+  }
+
+  @Test func refreshFollowsTheFileButNeverOverwritesTyping() async {
+    let store = TestStore(initialState: Self.state(hostName: "Office", draft: "Office")) {
+      RemoteAccessFeature()
+    }
+    await store.send(.refreshed(file: Self.configuredFile(hostName: "Desk"), host: Self.running)) {
+      $0.file.hostName = "Desk"
+      $0.hostNameDraft = "Desk"
+    }
+    await store.send(.hostNameDraftChanged("Stud")) {
+      $0.hostNameDraft = "Stud"
+    }
+    await store.send(.refreshed(file: Self.configuredFile(hostName: "Office"), host: Self.running)) {
+      $0.file.hostName = "Office"
+    }
+  }
+
+  @Test func submittingTheSavedNameWritesNothing() async {
+    let writes = LockIsolated(0)
+    let store = TestStore(initialState: Self.state(hostName: "Office", draft: " Office ")) {
+      RemoteAccessFeature()
+    } withDependencies: {
+      $0[RemoteAccessClient.self].writeHostName = { _ in writes.withValue { $0 += 1 } }
+    }
+    await store.send(.hostNameSubmitted)
+    #expect(writes.value == 0)
+  }
+
+  @Test func submittingANewNameWritesItAndRenamesTheHostOnce() async {
+    let writes = LockIsolated<[String?]>([])
+    let renames = LockIsolated<[String]>([])
+    let onDisk = LockIsolated(Self.configuredFile(hostName: "Office"))
+    let store = TestStore(initialState: Self.state(hostName: "Office", draft: "  Desk  ")) {
+      RemoteAccessFeature()
+    } withDependencies: {
+      $0[RemoteAccessClient.self].writeHostName = { name in
+        writes.withValue { $0.append(name) }
+        onDisk.withValue { $0.hostName = name }
+      }
+      $0[RemoteAccessClient.self].renameHost = { name in renames.withValue { $0.append(name) } }
+      $0[RemoteAccessClient.self].computerName = { "Studio Mac" }
+      $0[RemoteAccessClient.self].fileStatus = { onDisk.value }
+    }
+    await store.send(.hostNameSubmitted) {
+      $0.hostNameDraft = "Desk"
+      $0.isApplying = true
+      $0.isSavingHostName = true
+      $0.hostNameInFlight = "Desk"
+    }
+    await store.receive(\.hostNameSaved) {
+      $0.isApplying = false
+      $0.isSavingHostName = false
+      $0.hostNameInFlight = nil
+      $0.file.hostName = "Desk"
+    }
+    #expect(writes.value == ["Desk"])
+    #expect(renames.value == ["Desk"])
+  }
+
+  @Test func submittingABlankNameRemovesTheKeyAndRenamesToTheComputerName() async {
+    let writes = LockIsolated<[String?]>([])
+    let renames = LockIsolated<[String]>([])
+    let onDisk = LockIsolated(Self.configuredFile(hostName: "Office"))
+    let store = TestStore(initialState: Self.state(hostName: "Office", draft: "   ")) {
+      RemoteAccessFeature()
+    } withDependencies: {
+      $0[RemoteAccessClient.self].writeHostName = { name in
+        writes.withValue { $0.append(name) }
+        onDisk.withValue { $0.hostName = name }
+      }
+      $0[RemoteAccessClient.self].renameHost = { name in renames.withValue { $0.append(name) } }
+      $0[RemoteAccessClient.self].computerName = { "Studio Mac" }
+      $0[RemoteAccessClient.self].fileStatus = { onDisk.value }
+    }
+    await store.send(.hostNameSubmitted) {
+      $0.hostNameDraft = ""
+      $0.isApplying = true
+      $0.isSavingHostName = true
+      $0.hostNameInFlight = ""
+    }
+    await store.receive(\.hostNameSaved) {
+      $0.isApplying = false
+      $0.isSavingHostName = false
+      $0.hostNameInFlight = nil
+      $0.file.hostName = nil
+    }
+    #expect(writes.value == [nil])
+    #expect(renames.value == ["Studio Mac"])
+  }
+
+  @Test func failedHostNameWriteShowsTheErrorKeepsTheDraftAndDoesNotRename() async {
+    let renames = LockIsolated<[String]>([])
+    let store = TestStore(initialState: Self.state(hostName: "Office", draft: "Desk")) {
+      RemoteAccessFeature()
+    } withDependencies: {
+      $0[RemoteAccessClient.self].writeHostName = { _ in throw RemoteAccessConfigFile.WriteError.writeFailed }
+      $0[RemoteAccessClient.self].renameHost = { name in renames.withValue { $0.append(name) } }
+      $0[RemoteAccessClient.self].fileStatus = { Self.configuredFile(hostName: "Office") }
+    }
+    await store.send(.hostNameSubmitted) {
+      $0.isApplying = true
+      $0.isSavingHostName = true
+      $0.hostNameInFlight = "Desk"
+    }
+    let message = RemoteAccessConfigFile.WriteError.writeFailed.localizedDescription
+    await store.receive(\.hostNameSaveFailed) {
+      $0.isApplying = false
+      $0.isSavingHostName = false
+      $0.hostNameInFlight = nil
+      $0.errorMessage = message
+    }
+    // The next poll keeps the unsaved name in the field.
+    await store.send(.refreshed(file: Self.configuredFile(hostName: "Office"), host: Self.running))
+    #expect(renames.value.isEmpty)
+  }
+
+  @Test func submittingANameWithoutConfigurationDoesNothing() async {
+    var state = RemoteAccessFeature.State()
+    state.hostNameDraft = "Desk"
+    let store = TestStore(initialState: state) {
+      RemoteAccessFeature()
+    }
+    await store.send(.hostNameSubmitted)
+  }
+
+  @Test func aToggleDuringANameSaveRunsAfterItAndBothKeysReachTheFile() async throws {
+    let directory = try Self.makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let (config, clientKey) = try Self.writeConfiguredFiles(in: directory)
+    let clock = TestClock()
+    let renames = LockIsolated<[String]>([])
+    var initial = RemoteAccessFeature.State(
+      file: RemoteAccessConfigFile.readStatus(configURL: config, clientKeyURL: clientKey), host: Self.running)
+    initial.hostNameDraft = "Desk"
+    let store = TestStore(initialState: initial) {
+      RemoteAccessFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0[RemoteAccessClient.self].writeHostName = { name in
+        // The name save takes a second, so the toggle lands while it runs.
+        try await clock.sleep(for: .seconds(1))
+        try RemoteAccessConfigFile.writeHostName(name, to: config)
+      }
+      $0[RemoteAccessClient.self].writeFlags = { enabled, lan in
+        try RemoteAccessConfigFile.write(enabled: enabled, lan: lan, to: config)
+      }
+      $0[RemoteAccessClient.self].renameHost = { name in renames.withValue { $0.append(name) } }
+      $0[RemoteAccessClient.self].fileStatus = {
+        RemoteAccessConfigFile.readStatus(configURL: config, clientKeyURL: clientKey)
+      }
+      $0[RemoteAccessClient.self].hostStatus = { Self.running }
+    }
+    await store.send(.hostNameSubmitted) {
+      $0.isApplying = true
+      $0.isSavingHostName = true
+      $0.hostNameInFlight = "Desk"
+    }
+    await store.send(.lanToggled(false)) {
+      $0.file.lan = false
+      $0.isApplyPending = true
+    }
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.hostNameSaved) {
+      $0.isApplyPending = false
+      $0.isSavingHostName = false
+      $0.hostNameInFlight = nil
+      $0.file.hostName = "Desk"
+    }
+    await store.receive(\.applyFinished) {
+      $0.isApplying = false
+    }
+    let object = try Self.readObject(config)
+    #expect(object["hostName"] as? String == "Desk")
+    #expect(object["lan"] as? Bool == false)
+    #expect(object["hostKey"] as? String == "dummy-host-key")
+    #expect(renames.value == ["Desk"])
+  }
+
+  @Test func aNameSubmitDuringAToggleApplyRunsAfterItAndBothKeysReachTheFile() async throws {
+    let directory = try Self.makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let (config, clientKey) = try Self.writeConfiguredFiles(in: directory)
+    let clock = TestClock()
+    let renames = LockIsolated<[String]>([])
+    let store = TestStore(
+      initialState: RemoteAccessFeature.State(
+        file: RemoteAccessConfigFile.readStatus(configURL: config, clientKeyURL: clientKey), host: Self.running)
+    ) {
+      RemoteAccessFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0[RemoteAccessClient.self].writeFlags = { enabled, lan in
+        // The apply takes a second, so the name submit lands while it runs.
+        try await clock.sleep(for: .seconds(1))
+        try RemoteAccessConfigFile.write(enabled: enabled, lan: lan, to: config)
+      }
+      $0[RemoteAccessClient.self].writeHostName = { name in
+        try RemoteAccessConfigFile.writeHostName(name, to: config)
+      }
+      $0[RemoteAccessClient.self].renameHost = { name in renames.withValue { $0.append(name) } }
+      $0[RemoteAccessClient.self].fileStatus = {
+        RemoteAccessConfigFile.readStatus(configURL: config, clientKeyURL: clientKey)
+      }
+      $0[RemoteAccessClient.self].hostStatus = { Self.running }
+    }
+    await store.send(.lanToggled(false)) {
+      $0.file.lan = false
+      $0.isApplying = true
+    }
+    await store.send(.hostNameDraftChanged(" Desk ")) {
+      $0.hostNameDraft = " Desk "
+    }
+    await store.send(.hostNameSubmitted) {
+      $0.hostNameDraft = "Desk"
+      $0.isSavingHostName = true
+      $0.pendingHostName = "Desk"
+    }
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.applyFinished) {
+      $0.pendingHostName = nil
+      $0.hostNameInFlight = "Desk"
+    }
+    await store.receive(\.hostNameSaved) {
+      $0.isApplying = false
+      $0.isSavingHostName = false
+      $0.hostNameInFlight = nil
+      $0.file.hostName = "Desk"
+    }
+    let object = try Self.readObject(config)
+    #expect(object["hostName"] as? String == "Desk")
+    #expect(object["lan"] as? Bool == false)
+    #expect(object["hostKey"] as? String == "dummy-host-key")
+    #expect(renames.value == ["Desk"])
+  }
+
   // MARK: - Config file
 
   @Test func writeKeepsOtherKeysAndRestrictsTheMode() throws {
@@ -234,6 +482,50 @@ struct RemoteAccessSettingsTests {
           hasConnectionKey: true))
     #expect(status.isConfigured)
     #expect(RemoteAccessConfigFile.connectionKey(from: clientKey) == "relay.example.invalid/dummy-client-key")
+  }
+
+  @Test func writeHostNameKeepsOtherKeysRemovesOnBlankAndRestrictsTheMode() throws {
+    let directory = try Self.makeDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let (config, clientKey) = try Self.writeConfiguredFiles(in: directory)
+
+    try RemoteAccessConfigFile.writeHostName("  Office Mac ", to: config)
+    var object = try Self.readObject(config)
+    #expect(object["hostName"] as? String == "Office Mac")
+    #expect(object["enabled"] as? Bool == true)
+    #expect(object["lan"] as? Bool == true)
+    #expect(object["relayURL"] as? String == Self.relayURL)
+    #expect(object["hostKey"] as? String == "dummy-host-key")
+    #expect(object["extra"] as? Int == 7)
+    let mode = try FileManager.default.attributesOfItem(atPath: config.path)[.posixPermissions] as? Int
+    #expect(mode == 0o600)
+    #expect(RemoteAccessConfigFile.readStatus(configURL: config, clientKeyURL: clientKey).hostName == "Office Mac")
+
+    try RemoteAccessConfigFile.writeHostName("   ", to: config)
+    object = try Self.readObject(config)
+    #expect(object["hostName"] == nil)
+    #expect(object["hostKey"] as? String == "dummy-host-key")
+
+    try RemoteAccessConfigFile.writeHostName("Desk", to: config)
+    try RemoteAccessConfigFile.writeHostName(nil, to: config)
+    object = try Self.readObject(config)
+    #expect(object["hostName"] == nil)
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+    #expect(leftovers == ["remote-access.json", "remote-client-key.txt"])
+  }
+
+  nonisolated private static func writeConfiguredFiles(in directory: URL) throws -> (config: URL, clientKey: URL) {
+    let config = directory.appending(path: "remote-access.json")
+    let clientKey = directory.appending(path: "remote-client-key.txt")
+    let original =
+      #"{"enabled": true, "lan": true, "relayURL": "\#(relayURL)", "hostKey": "dummy-host-key", "extra": 7}"#
+    try Data(original.utf8).write(to: config)
+    try Data("relay.example.invalid/dummy-client-key\n".utf8).write(to: clientKey)
+    return (config, clientKey)
+  }
+
+  nonisolated private static func readObject(_ url: URL) throws -> [String: Any] {
+    try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
   }
 
   nonisolated private static func makeDirectory() throws -> URL {
