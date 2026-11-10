@@ -415,9 +415,9 @@ struct RemoteAccessWorktreeNewTests {
     let first = LockIsolated<[String]>([])
     router.lanOpened("phone-1") { frame in first.withValue { $0.append(frame) } }
     Self.send(router, "phone-1", id: 7, name: "feature-x")
-    let pendingID = try #require(store.remoteWorktreeCreations.keys.first)
+    let pendingID = try #require(store.withState(\.remoteWorktreeCreations).keys.first)
     #expect(
-      store.remoteWorktreeCreations[pendingID]
+      store.withState(\.remoteWorktreeCreations)[pendingID]
         == .creating(repositoryID: "/tmp/repo", name: "feature-x", abandoned: false))
     await Task.megaYield()
     await clock.advance(by: .seconds(1))
@@ -427,7 +427,7 @@ struct RemoteAccessWorktreeNewTests {
     await Task.megaYield()
     #expect(first.value.isEmpty)
     #expect(
-      store.remoteWorktreeCreations[pendingID]
+      store.withState(\.remoteWorktreeCreations)[pendingID]
         == .creating(repositoryID: "/tmp/repo", name: "feature-x", abandoned: true))
     // Reconnect and retry the same name in another case while it still runs: worktree_busy at once.
     let second = LockIsolated<[String]>([])
@@ -438,7 +438,7 @@ struct RemoteAccessWorktreeNewTests {
     #expect(json["t"] as? String == "error")
     #expect(json["id"] as? Int == 8)
     #expect(json["code"] as? String == "worktree_busy")
-    #expect(store.remoteWorktreeCreations.count == 1)
+    #expect(store.withState(\.remoteWorktreeCreations).count == 1)
   }
 
   @Test func aRelayConnCloseAbandonsTheCreationToo() async throws {
@@ -447,13 +447,13 @@ struct RemoteAccessWorktreeNewTests {
     defer { router.stop() }
     router.receiveDirect(connID: "relay-1", json: Data(#"{"t":"conn.open"}"#.utf8))
     Self.send(router, "relay-1", id: 3, name: "feature-y")
-    let pendingID = try #require(store.remoteWorktreeCreations.keys.first)
+    let pendingID = try #require(store.withState(\.remoteWorktreeCreations).keys.first)
     await Task.megaYield()
     router.receiveDirect(connID: "relay-1", json: Data(#"{"t":"conn.close"}"#.utf8))
     await Task.megaYield()
     await Task.megaYield()
     #expect(
-      store.remoteWorktreeCreations[pendingID]
+      store.withState(\.remoteWorktreeCreations)[pendingID]
         == .creating(repositoryID: "/tmp/repo", name: "feature-y", abandoned: true))
   }
 

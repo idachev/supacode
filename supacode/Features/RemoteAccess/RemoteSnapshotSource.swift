@@ -224,7 +224,7 @@ final class RemoteSnapshotSource {
   func requestNewWorktree(
     repositoryID raw: String, name: String
   ) -> Result<RemoteWorktreeNewStart, RemoteWorktreeNewRejection> {
-    let state = store.repositories
+    let state = store.withState(\.repositories)
     let repository = state.repositories.first { $0.id.rawValue == raw }
     if let rejection = RemoteWorktreeNewRejection.check(
       found: repository != nil,
@@ -241,7 +241,7 @@ final class RemoteSnapshotSource {
 
   /// Where a remote creation stands; nil once consumed (or never requested).
   func worktreeCreation(pendingID: Worktree.ID) -> AppFeature.RemoteWorktreeCreation? {
-    store.remoteWorktreeCreations[pendingID]
+    store.withState(\.remoteWorktreeCreations)[pendingID]
   }
 
   /// The router is done with this creation and its outcome has settled.
@@ -259,7 +259,7 @@ final class RemoteSnapshotSource {
   /// is still running, whether or not its phone still waits (`worktree_busy`).
   func isWorktreeCreationInFlight(repositoryID: String, name: String) -> Bool {
     AppFeature.RemoteWorktreeCreation.isInFlight(
-      repositoryID: repositoryID, name: name, in: store.remoteWorktreeCreations)
+      repositoryID: repositoryID, name: name, in: store.withState(\.remoteWorktreeCreations))
   }
 
   /// The first terminal tab of a worktree's layout, in `list` order
@@ -277,7 +277,7 @@ final class RemoteSnapshotSource {
   /// Whether the roster lists this worktree (an ssh creation enters it only
   /// after its repository reload).
   func containsWorktree(_ worktreeID: Worktree.ID) -> Bool {
-    store.repositories.repositories.contains { $0.worktrees[id: worktreeID] != nil }
+    store.withState(\.repositories.repositories).contains { $0.worktrees[id: worktreeID] != nil }
   }
 
   /// What the router's `worktree.new` wait reads (`RemoteHostRouter.runWorktreeNew`).
