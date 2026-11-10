@@ -144,7 +144,12 @@ Every request may carry a numeric `id`; the response repeats it.
 ### hello
 
 - client → host `{"t":"hello","v":1}`
-- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"}}`
+- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"},"app":"Supacode 0.11.5 (154)"}`
+- `app` (optional string) is the app build the host runs: `"Supacode <CFBundleShortVersionString>
+  (<CFBundleVersion>)"`, e.g. `"app":"Supacode 0.11.5 (154)"`. If one of the two keys is missing, the
+  label carries what exists (`"Supacode 0.11.5"`); the field is omitted rather than sent empty. It
+  is in the `hello` reply over the relay and over LAN. Optional; omitted by hosts before this
+  change. Clients ignore unknown fields, so old clients are unaffected.
 - `host` is the configured host name, or the Mac's computer name when none is set. `hostId` is
   omitted when the host has none (a legacy host). A client that selected a host ignores `lan` when
   `hostId` is present and differs from that host (see "LAN shortcut").
