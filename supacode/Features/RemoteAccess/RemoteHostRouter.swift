@@ -6,7 +6,7 @@ import SupacodeSettingsShared
 nonisolated private let routerLogger = SupaLogger("RemoteAccess")
 
 /// Answers the phones behind the relay: `hello`, `list`, terminal
-/// `attach` / `detach` / `input`, `tab.new` and `suggest`
+/// `attach` / `detach` / `input` / `resize`, `tab.new` and `suggest`
 /// (`docs/remote-access-protocol.md`). One instance per app, started at launch
 /// when `~/.config/supacode/remote-access.json` enables it.
 @MainActor
@@ -248,20 +248,15 @@ final class RemoteHostRouter {
     case "attach":
       attach(connID: connID, message: message)
     case "detach":
-      // A late detach for a tab the phone already left must not drop the
-      // newer attachment: honor the contentId when it is given.
-      if let raw = message.contentId, case .some(.some(let current)) = clients[connID],
-        UUID(uuidString: raw) != current.contentID
-      {
-        return
-      }
-      detach(connID: connID)
+      detachRequested(connID: connID, message: message)
     case "input":
       input(connID: connID, message: message)
     case "suggest":
       suggest(connID: connID, message: message)
     case "tab.new":
       newTab(connID: connID, message: message)
+    case "resize":
+      resize(connID: connID, message: message)
     default:
       replyError(connID, id: message.id, "unknown message type: \(message.t)")
     }
@@ -425,6 +420,17 @@ final class RemoteHostRouter {
     }
   }
 
+  /// A late detach for a tab the phone already left must not drop the newer
+  /// attachment: honor the contentId when it is given.
+  private func detachRequested(connID: String, message: RemoteInboundMessage) {
+    if let raw = message.contentId, case .some(.some(let current)) = clients[connID],
+      UUID(uuidString: raw) != current.contentID
+    {
+      return
+    }
+    detach(connID: connID)
+  }
+
   private func detach(connID: String) {
     guard case .some(.some(let attachment)) = clients[connID] else { return }
     clients[connID] = .some(nil)
@@ -457,6 +463,24 @@ final class RemoteHostRouter {
     }
     if !attachment.stream.send(Array(data)) {
       replyError(connID, id: message.id, "terminal input failed")
+    }
+  }
+
+  /// Sets the attached terminal's grid to the client's size. No reply: each
+  /// attached client's size poll sends `size` once the PTY has the new grid.
+  /// A request for another content or with a bad size is ignored and logged.
+  private func resize(connID: String, message: RemoteInboundMessage) {
+    var attached: UUID?
+    if case .some(.some(let attachment)) = clients[connID] { attached = attachment.contentID }
+    switch RemoteResizeRequest.resolve(message, attached: attached) {
+    case .failure(.notAttached):
+      routerLogger.info("resize from \(connID) ignored: content \(message.contentId ?? "nil") is not attached")
+    case .failure(.invalidSize):
+      routerLogger.info("resize from \(connID) ignored: cols and rows must both be integers")
+    case .success(let request):
+      if !source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows) {
+        routerLogger.info("resize from \(connID) ignored: the terminal has no live surface")
+      }
     }
   }
 

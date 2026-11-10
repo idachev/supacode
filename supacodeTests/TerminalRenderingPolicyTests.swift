@@ -166,4 +166,44 @@ struct TerminalRenderingPolicyTests {
     #expect(decision == .apply)
   }
 
+  // MARK: - Requested grid hold (remote `resize`)
+
+  @Test func aRequestedGridHoldsWhileThePaneKeepsItsSize() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    let pane = CGSize(width: 1606, height: 966)
+    hold.hold(replacing: pane)
+    // Layout passes that measure the same pane keep the requested grid.
+    #expect(hold.keeps(layoutBackingSize: pane))
+    #expect(hold.keeps(layoutBackingSize: pane))
+    #expect(hold.paneBackingSize == pane)
+  }
+
+  @Test func aRequestedGridEndsAtThePanesNextSizeChange() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    hold.hold(replacing: CGSize(width: 1606, height: 966))
+    #expect(!hold.keeps(layoutBackingSize: CGSize(width: 1206, height: 966)))
+    #expect(hold.paneBackingSize == nil)
+    // Once released, later passes follow the pane as usual.
+    #expect(!hold.keeps(layoutBackingSize: CGSize(width: 1606, height: 966)))
+  }
+
+  @Test func aLaterRequestKeepsThePaneSizeOfTheFirstHold() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    let pane = CGSize(width: 1606, height: 966)
+    hold.hold(replacing: pane)
+    // The second request replaces the applied size with the first request's grid, not the pane's.
+    hold.hold(replacing: CGSize(width: 806, height: 486))
+    #expect(hold.paneBackingSize == pane)
+    #expect(hold.keeps(layoutBackingSize: pane))
+  }
+
+  @Test func showingOrHidingThePaneReleasesTheRequestedGrid() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    #expect(hold.release() == nil)
+    let pane = CGSize(width: 1606, height: 966)
+    hold.hold(replacing: pane)
+    #expect(hold.release() == pane)
+    #expect(hold.release() == nil)
+    #expect(!hold.keeps(layoutBackingSize: pane))
+  }
 }

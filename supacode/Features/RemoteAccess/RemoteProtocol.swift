@@ -42,7 +42,8 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
   var b64: String?
   /// `tab.new`: the worktree to open the tab in.
   var worktreeId: String?
-  /// `tab.new`: the optional start size; see `RemoteTabNewGrid.resolve`.
+  /// `tab.new`: the optional start size (`RemoteTabNewGrid.resolve`);
+  /// `resize`: the requested size (`RemoteResizeRequest.resolve`).
   var cols: RemoteLenientInt?
   var rows: RemoteLenientInt?
   /// `conn.open` from the relay: the phone is on the Mac's network.
@@ -85,6 +86,38 @@ nonisolated struct RemoteTabNewGrid: Equatable, Sendable {
       columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
       rows: min(max(rowCount, rowRange.lowerBound), rowRange.upperBound),
       exact: true)
+  }
+}
+
+/// A client's `resize` of the terminal it is attached to, checked and clamped
+/// to `RemoteTabNewGrid.columnRange` × `RemoteTabNewGrid.rowRange`.
+nonisolated struct RemoteResizeRequest: Equatable, Sendable {
+  let contentID: UUID
+  let columns: Int
+  let rows: Int
+
+  /// Why a `resize` is ignored (logged on the host; the client gets no reply).
+  enum Ignored: Error, Equatable {
+    case notAttached
+    case invalidSize
+  }
+
+  /// The request, or why it is ignored: a content other than `attached` (or
+  /// none attached), or `cols` / `rows` missing or not an integer.
+  static func resolve(_ message: RemoteInboundMessage, attached: UUID?) -> Result<Self, Ignored> {
+    guard let attached, let raw = message.contentId, UUID(uuidString: raw) == attached else {
+      return .failure(.notAttached)
+    }
+    guard let columns = message.cols?.value, let rows = message.rows?.value else {
+      return .failure(.invalidSize)
+    }
+    let columnRange = RemoteTabNewGrid.columnRange
+    let rowRange = RemoteTabNewGrid.rowRange
+    return .success(
+      Self(
+        contentID: attached,
+        columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
+        rows: min(max(rows, rowRange.lowerBound), rowRange.upperBound)))
   }
 }
 

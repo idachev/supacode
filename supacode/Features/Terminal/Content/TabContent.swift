@@ -190,6 +190,13 @@ final class TerminalContent: TabContent {
     surfaceView?.capUnmountedGrid(maxColumns: maxColumns, maxRows: maxRows, exact: exact) ?? false
   }
 
+  /// Sets the grid to exactly `columns` × `rows` for a remote client's
+  /// `resize`; the Mac pane's size returns at its next layout change. Returns
+  /// false while there is no live surface or its cell metrics are unknown.
+  func applyRequestedGrid(columns: Int, rows: Int) -> Bool {
+    surfaceView?.applyRequestedGrid(columns: columns, rows: rows) ?? false
+  }
+
   // Hibernated terminals have no live surface, so nothing is interruptible.
   // A locked tab (completed blocking script) parks its runner alive, so
   // Ghostty keeps reporting confirm-quit for work nothing can lose; the lock

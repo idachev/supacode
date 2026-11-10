@@ -107,6 +107,13 @@ final class RemoteSnapshotSource {
     return content?.capUnmountedGrid(maxColumns: columns, maxRows: rows, exact: exact) ?? false
   }
 
+  /// Sets an existing terminal's grid for a client's `resize`. False while the
+  /// terminal has no live surface (hibernated) or its cell metrics are unknown.
+  func resizeGrid(contentID: UUID, columns: Int, rows: Int) -> Bool {
+    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    return content?.applyRequestedGrid(columns: columns, rows: rows) ?? false
+  }
+
   /// Whether the terminal refuses input (a completed blocking script's parked
   /// shell); the phone must not type where the Mac would not.
   func isReadOnly(contentID: UUID) -> Bool {

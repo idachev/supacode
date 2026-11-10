@@ -221,6 +221,22 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
   (Enter is `\r`, Esc `\u001b`, Ctrl+C `\u0003`, arrows `\u001b[A` … `\u001b[D`).
   Input never resizes the session and never makes the phone the zmx leader.
 
+### resize
+
+- client → host `{"t":"resize","contentId":"<content uuid>","cols":N,"rows":M}` — sets one
+  terminal's grid on demand (a button on the client, never sent automatically).
+- Only for the content this connection is attached to; for any other content it is ignored.
+- `cols` and `rows` are integers; the host clamps them to 20…500 columns and 5…200 rows. A
+  missing `cols` or `rows`, or one that is not an integer, makes the host ignore the request
+  (it logs it).
+- No direct reply. When the grid changed, every client attached to that content gets the usual
+  `{"t":"size","contentId":"…","cols":…,"rows":…}`.
+- The requested size holds until the Mac's own pane for that tab changes layout (a window
+  resize, the pane shown or hidden, a split change, zoom); then the pane's size returns and
+  the clients get `size`. A later `resize` from any client wins again (last request wins).
+- Old hosts answer an unknown `t` with an `error` and send no `size`; the resize simply has no
+  effect.
+
 ### tab.new
 
 - client → host `{"t":"tab.new","id":4,"worktreeId":"<worktree id>"}`, or with a start size
@@ -234,7 +250,7 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
   20…500 columns and 5…200 rows. Without them, or when one is missing or is not an integer,
   it starts at most 120 × 40, not at the size of the whole Mac window. The start size holds
   while the Mac does not show the tab; once the Mac shows it, the terminal takes its pane's
-  size and the client gets a `size` message. There is no resize of an existing tab.
+  size and the client gets a `size` message. An existing tab is resized with `resize`.
 - Old hosts ignore `cols` and `rows` (no version change); the reply is the same either way.
 - An unknown or archived worktree, or a tab that does not start within 10 s, gives
   `{"t":"error","id":4,"message":"…"}`.

@@ -155,4 +155,64 @@ struct RemoteAccessProtocolTests {
     #expect(RemoteAccessConfig.mayHost(bundlePath: "/tmp/supacode.app", override: "1"))
     #expect(!RemoteAccessConfig.mayHost(bundlePath: "/Applications/supacode.app", override: "0"))
   }
+
+  // MARK: - resize
+
+  private static let attachedContent = UUID(uuidString: "6F9619FF-8B86-D011-B42D-00CF4FC964FF")!
+
+  private typealias ResizeOutcome = Result<RemoteResizeRequest, RemoteResizeRequest.Ignored>
+
+  private static func resize(_ json: String, attached: UUID? = attachedContent) throws -> ResizeOutcome {
+    let message = try #require(RemoteJSON.decodeInbound(Data(json.utf8)))
+    return RemoteResizeRequest.resolve(message, attached: attached)
+  }
+
+  @Test func resizeOfTheAttachedContentIsDecoded() throws {
+    let json = #"{"t":"resize","contentId":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","cols":132,"rows":43}"#
+    let message = try #require(RemoteJSON.decodeInbound(Data(json.utf8)))
+    #expect(message.t == "resize")
+    #expect(
+      try Self.resize(json)
+        == .success(RemoteResizeRequest(contentID: Self.attachedContent, columns: 132, rows: 43)))
+    // The content id is matched as a UUID, not as text.
+    let lowercased = #"{"t":"resize","contentId":"6f9619ff-8b86-d011-b42d-00cf4fc964ff","cols":132,"rows":43}"#
+    #expect(
+      try Self.resize(lowercased)
+        == .success(RemoteResizeRequest(contentID: Self.attachedContent, columns: 132, rows: 43)))
+  }
+
+  @Test func resizeIsClampedToTheHostLimits() throws {
+    func resolved(_ cols: Int, _ rows: Int) throws -> ResizeOutcome {
+      try Self.resize(
+        #"{"t":"resize","contentId":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","cols":\#(cols),"rows":\#(rows)}"#)
+    }
+    func request(_ cols: Int, _ rows: Int) -> ResizeOutcome {
+      .success(RemoteResizeRequest(contentID: Self.attachedContent, columns: cols, rows: rows))
+    }
+    #expect(try resolved(19, 4) == request(20, 5))
+    #expect(try resolved(20, 5) == request(20, 5))
+    #expect(try resolved(500, 200) == request(500, 200))
+    #expect(try resolved(501, 201) == request(500, 200))
+    #expect(try resolved(0, -3) == request(20, 5))
+    #expect(try resolved(10_000, 10_000) == request(500, 200))
+  }
+
+  @Test func resizeWithAMissingOrNonIntegerSizeIsIgnored() throws {
+    let id = "6F9619FF-8B86-D011-B42D-00CF4FC964FF"
+    for fields in [
+      #""cols":80"#, #""rows":24"#, #""cols":"80","rows":24"#, #""cols":80.5,"rows":24"#,
+      #""cols":80,"rows":null"#, #""cols":80,"rows":true"#, #""cols":[80],"rows":24"#,
+    ] {
+      #expect(try Self.resize(#"{"t":"resize","contentId":"\#(id)",\#(fields)}"#) == .failure(.invalidSize))
+    }
+  }
+
+  @Test func resizeOfAContentThisConnectionIsNotAttachedToIsIgnored() throws {
+    let other = #"{"t":"resize","contentId":"\#(UUID().uuidString)","cols":80,"rows":24}"#
+    #expect(try Self.resize(other) == .failure(.notAttached))
+    let attachedID = #"{"t":"resize","contentId":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","cols":80,"rows":24}"#
+    #expect(try Self.resize(attachedID, attached: nil) == .failure(.notAttached))
+    #expect(try Self.resize(#"{"t":"resize","cols":80,"rows":24}"#) == .failure(.notAttached))
+    #expect(try Self.resize(#"{"t":"resize","contentId":"tab-1","cols":80,"rows":24}"#) == .failure(.notAttached))
+  }
 }
