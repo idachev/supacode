@@ -25,12 +25,12 @@ struct AppFeatureRemoteWorktreeTests {
 
   @Test(.dependencies) func aRequestCreatesWithTheExplicitNameAndFilesTheOutcome() async {
     let store = makeStore()
+    let pendingID = self.pendingID
     await store.send(
       .remoteWorktreeNewRequested(repositoryID: "/tmp/missing", name: "feature-x", pendingID: pendingID)
     ) {
       $0.remoteWorktreeCreations[pendingID] = .creating(name: "feature-x")
     }
-    let pendingID = self.pendingID
     await store.receive({ action in
       guard
         case .repositories(
