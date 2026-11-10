@@ -184,9 +184,10 @@ final class TerminalContent: TabContent {
   }
 
   /// Caps the grid of a terminal the Mac has not shown yet (a tab the phone
-  /// opened). Returns false while there is no live surface.
-  func capUnmountedGrid(maxColumns: Int, maxRows: Int) -> Bool {
-    surfaceView?.capUnmountedGrid(maxColumns: maxColumns, maxRows: maxRows) ?? false
+  /// opened), or sets it to exactly that size when `exact`. Returns false
+  /// while there is no live surface.
+  func capUnmountedGrid(maxColumns: Int, maxRows: Int, exact: Bool = false) -> Bool {
+    surfaceView?.capUnmountedGrid(maxColumns: maxColumns, maxRows: maxRows, exact: exact) ?? false
   }
 
   // Hibernated terminals have no live surface, so nothing is interruptible.

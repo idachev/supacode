@@ -1080,12 +1080,14 @@ final class GhosttySurfaceView: NSView, Identifiable {
   enum GridCap {
     typealias Grid = (columns: Int, rows: Int)
 
-    /// The backing size that renders at most `limit`; nil when the grid already
-    /// fits or the cell metrics are still unknown.
-    static func backingSize(current: CGSize, grid: Grid, cell: CGSize, limit: Grid) -> CGSize? {
-      guard cell.width > 0, cell.height > 0, grid.columns > limit.columns || grid.rows > limit.rows else { return nil }
-      let extraColumns = max(0, grid.columns - limit.columns)
-      let extraRows = max(0, grid.rows - limit.rows)
+    /// The backing size that renders at most `limit`, or exactly `limit` when
+    /// `exact` (growing too); nil when the grid already fits (or already
+    /// matches) or the cell metrics are still unknown.
+    static func backingSize(current: CGSize, grid: Grid, cell: CGSize, limit: Grid, exact: Bool = false) -> CGSize? {
+      guard cell.width > 0, cell.height > 0 else { return nil }
+      let extraColumns = exact ? grid.columns - limit.columns : max(0, grid.columns - limit.columns)
+      let extraRows = exact ? grid.rows - limit.rows : max(0, grid.rows - limit.rows)
+      guard extraColumns != 0 || extraRows != 0 else { return nil }
       return CGSize(
         width: current.width - CGFloat(extraColumns) * cell.width,
         height: current.height - CGFloat(extraRows) * cell.height
@@ -1094,10 +1096,11 @@ final class GhosttySurfaceView: NSView, Identifiable {
   }
 
   /// Shrinks a surface that was never in a window to at most `maxColumns` ×
-  /// `maxRows`. Once the view is mounted it follows its pane again, so the cap
-  /// only shapes a terminal nobody sees on the Mac. Returns false while the
-  /// core surface or its cell metrics do not exist yet.
-  func capUnmountedGrid(maxColumns: Int, maxRows: Int) -> Bool {
+  /// `maxRows`, or sizes it to exactly that when `exact`. Once the view is
+  /// mounted it follows its pane again, so the cap only shapes a terminal
+  /// nobody sees on the Mac. Returns false while the core surface or its cell
+  /// metrics do not exist yet.
+  func capUnmountedGrid(maxColumns: Int, maxRows: Int, exact: Bool = false) -> Bool {
     guard let surface else { return false }
     guard window == nil, !hasBeenInWindow else { return true }
     let size = ghostty_surface_size(surface)
@@ -1108,7 +1111,8 @@ final class GhosttySurfaceView: NSView, Identifiable {
         current: CGSize(width: CGFloat(size.width_px), height: CGFloat(size.height_px)),
         grid: (Int(size.columns), Int(size.rows)),
         cell: CGSize(width: CGFloat(size.cell_width_px), height: CGFloat(size.cell_height_px)),
-        limit: (maxColumns, maxRows)
+        limit: (maxColumns, maxRows),
+        exact: exact
       )
     else { return true }
     // Off-window backing conversion is 1x, so the point frame is the pixel size.

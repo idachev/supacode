@@ -42,8 +42,50 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
   var b64: String?
   /// `tab.new`: the worktree to open the tab in.
   var worktreeId: String?
+  /// `tab.new`: the optional start size; see `RemoteTabNewGrid.resolve`.
+  var cols: RemoteLenientInt?
+  var rows: RemoteLenientInt?
   /// `conn.open` from the relay: the phone is on the Mac's network.
   var sameNetwork: Bool?
+}
+
+/// An optional integer field that never fails the message: a value that is not
+/// an integer (a string, a fraction, out of range) decodes as nil, so one bad
+/// optional field cannot drop the whole request.
+nonisolated struct RemoteLenientInt: Decodable, Equatable, Sendable {
+  let value: Int?
+
+  init(_ value: Int?) {
+    self.value = value
+  }
+
+  init(from decoder: any Decoder) throws {
+    value = try? decoder.singleValueContainer().decode(Int.self)
+  }
+}
+
+/// The grid a phone-opened tab starts at while the Mac does not show it.
+nonisolated struct RemoteTabNewGrid: Equatable, Sendable {
+  static let columnRange = 20...500
+  static let rowRange = 5...200
+
+  let columns: Int
+  let rows: Int
+  /// True when the phone asked for this size: the terminal takes it exactly,
+  /// growing if needed. False for the default cap, which only shrinks.
+  let exact: Bool
+
+  /// The phone's `cols` × `rows`, clamped to `columnRange` × `rowRange`, when
+  /// both are integers; otherwise the default cap `fallback`.
+  static func resolve(cols: RemoteLenientInt?, rows: RemoteLenientInt?, fallback: (columns: Int, rows: Int)) -> Self {
+    guard let columns = cols?.value, let rowCount = rows?.value else {
+      return Self(columns: fallback.columns, rows: fallback.rows, exact: false)
+    }
+    return Self(
+      columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
+      rows: min(max(rowCount, rowRange.lowerBound), rowRange.upperBound),
+      exact: true)
+  }
 }
 
 // MARK: - Outbound payloads

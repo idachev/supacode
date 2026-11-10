@@ -19,6 +19,62 @@ struct RemoteAccessTabNewTests {
     #expect(RemoteTabNewRejection.check(found: true, isArchived: true, isMissing: true) == .archivedWorktree)
   }
 
+  // MARK: - Start size
+
+  private static func grid(_ json: String) throws -> RemoteTabNewGrid {
+    let message = try #require(RemoteJSON.decodeInbound(Data(json.utf8)))
+    return RemoteTabNewGrid.resolve(cols: message.cols, rows: message.rows, fallback: RemoteHostRouter.newTabGrid)
+  }
+
+  private static let defaultCap = RemoteTabNewGrid(columns: 120, rows: 40, exact: false)
+
+  @Test func aRequestedSizeIsDecodedAndTakenExactly() throws {
+    let message = try #require(
+      RemoteJSON.decodeInbound(Data(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":80,"rows":24}"#.utf8)))
+    #expect(message.worktreeId == "w")
+    #expect(message.cols == RemoteLenientInt(80))
+    #expect(message.rows == RemoteLenientInt(24))
+    #expect(
+      try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":80,"rows":24}"#)
+        == RemoteTabNewGrid(columns: 80, rows: 24, exact: true))
+  }
+
+  @Test func noSizeKeepsTheDefaultCap() throws {
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w"}"#) == Self.defaultCap)
+  }
+
+  @Test func onlyOneOfColsAndRowsKeepsTheDefaultCap() throws {
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":80}"#) == Self.defaultCap)
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","rows":24}"#) == Self.defaultCap)
+  }
+
+  @Test func aSizeThatIsNotAnIntegerKeepsTheRequestAndTheDefaultCap() throws {
+    // A bad optional field must not drop the whole request.
+    let message = try #require(
+      RemoteJSON.decodeInbound(Data(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":"80","rows":24}"#.utf8)))
+    #expect(message.t == "tab.new")
+    #expect(message.id == 4)
+    #expect(message.worktreeId == "w")
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":"80","rows":24}"#) == Self.defaultCap)
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":80.5,"rows":24}"#) == Self.defaultCap)
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":80,"rows":null}"#) == Self.defaultCap)
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":80,"rows":true}"#) == Self.defaultCap)
+    #expect(try Self.grid(#"{"t":"tab.new","id":4,"worktreeId":"w","cols":[80],"rows":24}"#) == Self.defaultCap)
+  }
+
+  @Test func aRequestedSizeIsClampedToTheHostLimits() {
+    func resolve(_ cols: Int, _ rows: Int) -> RemoteTabNewGrid {
+      RemoteTabNewGrid.resolve(
+        cols: RemoteLenientInt(cols), rows: RemoteLenientInt(rows), fallback: RemoteHostRouter.newTabGrid)
+    }
+    #expect(resolve(19, 4) == RemoteTabNewGrid(columns: 20, rows: 5, exact: true))
+    #expect(resolve(20, 5) == RemoteTabNewGrid(columns: 20, rows: 5, exact: true))
+    #expect(resolve(500, 200) == RemoteTabNewGrid(columns: 500, rows: 200, exact: true))
+    #expect(resolve(501, 201) == RemoteTabNewGrid(columns: 500, rows: 200, exact: true))
+    #expect(resolve(0, -3) == RemoteTabNewGrid(columns: 20, rows: 5, exact: true))
+    #expect(resolve(10_000, 10_000) == RemoteTabNewGrid(columns: 500, rows: 200, exact: true))
+  }
+
   @Test func aLocalWorktreeTabStartsInTheWorktreeDirectory() {
     let local = Worktree(
       location: .local(
