@@ -148,7 +148,7 @@ nonisolated enum RemoteResizeResult: Equatable, Sendable {
   /// The `code` of the `error` a failed `resize` gets.
   static let errorCode = "resize_failed"
 
-  nonisolated enum Failure: Equatable, Sendable {
+  nonisolated enum Failure: Error, Equatable, Sendable {
     /// No worktree lists the content any more.
     case contentGone
     /// The terminal had no live surface and could not be started.
