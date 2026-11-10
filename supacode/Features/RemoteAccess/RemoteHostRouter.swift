@@ -18,11 +18,11 @@ final class RemoteHostRouter {
   static let newTabGrid = (columns: 120, rows: 40)
   static let sizePollInterval: Duration = .seconds(2)
   /// How often a `resize` re-reads the session PTY until it has the new grid,
-  /// up to `resizeConfirmAttempts` times. The PTY takes the grid
+  /// for up to `resizeConfirmTimeout` in all. The PTY takes the grid
   /// asynchronously (Ghostty's IO thread, then the `zmx attach` leader, then
   /// the zmx daemon), so the reply waits for the size the stream really has.
   static let resizeSettle: Duration = .milliseconds(150)
-  static let resizeConfirmAttempts = 20
+  static let resizeConfirmTimeout: Duration = .seconds(3)
   /// How long a `resize` of a terminal without a live surface waits for the
   /// woken surface's cell metrics before it answers `resize_failed`; the same
   /// bound as an `attach` waiting for a woken session (`wakeTimeout`).
@@ -53,10 +53,10 @@ final class RemoteHostRouter {
   /// `tab.new` waits in flight per phone, cancelled when that phone's
   /// connection ends so a reused connId never gets a stale answer.
   private var tabNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
-  /// The `resize` per phone in flight (waking the terminal, then reading the
-  /// PTY size); a newer `resize`, a detach or the connection's end cancels it
-  /// (last request wins).
-  private var resizeWaits: [String: Task<Void, Never>] = [:]
+  /// The `resize` in flight per terminal (waking it, then reading the PTY
+  /// size); a newer `resize` of that terminal from any phone, or the
+  /// requester's detach or end, cancels it (last request wins).
+  private var resizeWaits = RemoteResizeWaits()
   /// The grid each attached phone last got (`attached` or `size`), shared by
   /// the poll and a resize's early check so neither sends the same size twice.
   private var sentGrids: [String: SentGrid] = [:]
@@ -525,7 +525,8 @@ final class RemoteHostRouter {
     case .failure(.invalidSize):
       routerLogger.info("resize from \(connID) ignored: cols and rows must both be integers")
     case .success(let request):
-      cancelResizeWait(connID: connID)
+      // Before the new size is applied, so an older wait never retries its size over it.
+      resizeWaits.cancel(contentID: request.contentID)
       let source = self.source
       let clock = self.clock
       let requestID = message.id
@@ -535,7 +536,8 @@ final class RemoteHostRouter {
       }
       // In this turn, so a live terminal's grid changes before the next message.
       let first = attempt()
-      resizeWaits[connID] = Task { [weak self] in
+      let token = UUID()
+      let wait = Task { [weak self] in
         let settled = await Self.settleResize(
           first: first, clock: clock, wake: { source.wake(contentID: request.contentID) }, attempt: attempt)
         let outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
@@ -543,18 +545,18 @@ final class RemoteHostRouter {
         case .failed(let failure):
           outcome = .failure(failure)
         case .applied, .unchanged:
-          // An unchanged grid pushes nothing new to the PTY, so one read decides.
+          // Also for an unchanged grid: the PTY may still be taking an earlier resize.
           let confirmation = await Self.confirmResize(
             grid: (columns: request.columns, rows: request.rows),
-            attempts: settled == .unchanged ? 1 : Self.resizeConfirmAttempts,
-            interval: Self.resizeSettle, clock: clock,
+            interval: Self.resizeSettle, within: Self.resizeConfirmTimeout, clock: clock,
             readSize: { await Self.ptySize(socketPath: socketPath) })
           outcome = .success(confirmation)
         }
         guard !Task.isCancelled, let self else { return }
-        self.resizeWaits[connID] = nil
+        self.resizeWaits.finished(contentID: request.contentID, token: token)
         self.finishResize(connID: connID, request: request, requestID: requestID, outcome: outcome)
       }
+      resizeWaits.start(contentID: request.contentID, connID: connID, token: token, task: wait)
     }
   }
 
@@ -574,11 +576,11 @@ final class RemoteHostRouter {
       switch reply {
       case .size(let size):
         let grid = SentGrid(columns: size.cols, rows: size.rows)
-        // The requester always gets it (the reply it waits for, so the poll's
-        // dedupe is bypassed); the other phones there only when it is news.
+        // Every phone on that terminal gets it, even when it already had the
+        // size: the requester waits for it, and another phone's resize may
+        // have been cancelled by this one (the poll's dedupe is bypassed).
         for (other, entry) in clients {
           guard case .some(let shown) = entry, shown.contentID == request.contentID else { continue }
-          guard other == connID || sentGrids[other] != grid else { continue }
           sentGrids[other] = grid
           self.reply(other, RemoteSizeMessage(contentId: shown.contentKey, cols: grid.columns, rows: grid.rows))
         }
@@ -591,8 +593,7 @@ final class RemoteHostRouter {
 
   /// One frame a settled `resize` sends.
   nonisolated enum ResizeReply: Equatable, Sendable {
-    /// The session PTY's size: to the requester, and to the other phones
-    /// attached to that content whose size it changes.
+    /// The session PTY's size: to every phone attached to that content.
     case size(RemoteSizeMessage)
     /// To the requester only.
     case error(RemoteErrorMessage)
@@ -622,28 +623,52 @@ final class RemoteHostRouter {
     }
   }
 
-  /// Reads the session PTY until it has `grid`: now, then every
-  /// `interval` on `clock`, `attempts` reads in all. `.mismatch` carries the
-  /// last size read; `.unreadable` means no read succeeded.
+  /// Reads the session PTY until it has `grid`: now, then every `interval` on
+  /// `clock`, for at most `timeout` in all (a slow read counts against it).
+  /// `.mismatch` carries the last size read; `.unreadable` means no read succeeded.
   nonisolated static func confirmResize(
     grid: (columns: Int, rows: Int),
-    attempts: Int,
     interval: Duration,
+    within timeout: Duration,
     clock: any Clock<Duration>,
-    readSize: @Sendable () async -> (columns: Int, rows: Int)?
+    readSize: @escaping @Sendable () async -> (columns: Int, rows: Int)?
   ) async -> RemoteResizeConfirmation {
-    var last: (columns: Int, rows: Int)?
-    for index in 0..<max(1, attempts) {
-      if index > 0 {
+    let (events, continuation) = AsyncStream.makeStream(of: ResizeConfirmEvent.self)
+    // Not a loop with its own deadline check: a read may block past the deadline.
+    let reader = Task {
+      while !Task.isCancelled {
+        let size = await readSize()
+        continuation.yield(.read(columns: size?.columns, rows: size?.rows))
         try? await clock.sleep(for: interval)
-        if Task.isCancelled { break }
       }
-      guard let size = await readSize() else { continue }
-      if size.columns == grid.columns, size.rows == grid.rows { return .matched }
-      last = size
     }
+    let deadline = Task {
+      try? await clock.sleep(for: timeout)
+      continuation.yield(.deadline)
+    }
+    var matched = false
+    var last: (columns: Int, rows: Int)?
+    for await event in events {
+      guard case .read(let columns, let rows) = event else { break }
+      guard let columns, let rows else { continue }
+      if columns == grid.columns, rows == grid.rows {
+        matched = true
+        break
+      }
+      last = (columns, rows)
+    }
+    reader.cancel()
+    deadline.cancel()
+    continuation.finish()
+    if matched { return .matched }
     guard let last else { return .unreadable }
     return .mismatch(columns: last.columns, rows: last.rows)
+  }
+
+  nonisolated enum ResizeConfirmEvent: Sendable {
+    /// One PTY read; nil sizes when it failed.
+    case read(columns: Int?, rows: Int?)
+    case deadline
   }
 
   /// Finishes a `resize` whose first try (`first`) found no live surface or no
@@ -682,7 +707,7 @@ final class RemoteHostRouter {
   }
 
   private func cancelResizeWait(connID: String) {
-    resizeWaits.removeValue(forKey: connID)?.cancel()
+    resizeWaits.cancel(connID: connID)
   }
 
   /// The relay socket dropped: its phones are gone, LAN phones stay.

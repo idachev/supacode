@@ -231,9 +231,8 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
   (it logs it).
 - Replies (a valid request for the attached content gets one of these). Every `size` is the size
   the session's PTY really has (what the `out` stream renders at), read after the change:
-  - The PTY takes the size (within about 3 s): the requesting client gets
-    `{"t":"size","contentId":"…","cols":…,"rows":…}` with that size, even when it already had it;
-    every other client attached to that content gets it when its size changes.
+  - The PTY takes the size (within about 3 s): every client attached to that content gets
+    `{"t":"size","contentId":"…","cols":…,"rows":…}` with that size, even when it already had it.
   - The grid already has that size: the same `size`, at once.
   - The terminal has no live surface on the Mac (its tab was hidden long enough to hibernate, or
     has not been shown since Supacode started; `attach` still works then): the host starts it in
@@ -245,8 +244,9 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
     time, or the PTY size cannot be read): the requesting client gets
     `{"t":"error","id":null,"message":"…","code":"resize_failed","contentId":"…"}`
     (`id` echoes the request's `id` when it had one; `message` is a short English reason).
-  - A newer `resize` from the same client, a `detach` or an `attach` of another content cancels a
-    pending one; the cancelled request gets no reply.
+  - A newer `resize` of the same terminal from any client, or the requester's `detach` or `attach`
+    of another content, cancels a pending one; the cancelled request gets no reply of its own (the
+    newer one's `size` reaches every attached client).
 - The requested size holds until the Mac's own pane for that tab changes layout (a window
   resize, the pane shown or hidden, a split change, zoom); then the pane's size returns and
   the clients get `size`. A later `resize` from any client wins again (last request wins).

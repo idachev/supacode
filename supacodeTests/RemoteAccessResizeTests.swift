@@ -77,8 +77,8 @@ struct RemoteAccessResizeTests {
     let reads = LockIsolated(0)
     let wait = Task {
       await RemoteHostRouter.confirmResize(
-        grid: (columns: 139, rows: 56), attempts: RemoteHostRouter.resizeConfirmAttempts,
-        interval: RemoteHostRouter.resizeSettle, clock: clock,
+        grid: (columns: 139, rows: 56), interval: RemoteHostRouter.resizeSettle,
+        within: RemoteHostRouter.resizeConfirmTimeout, clock: clock,
         readSize: {
           reads.withValue { $0 += 1 }
           // The PTY follows the grid after two reads.
@@ -151,11 +151,12 @@ struct RemoteAccessResizeTests {
     let clock = TestClock()
     let wait = Task {
       await RemoteHostRouter.confirmResize(
-        grid: (columns: 139, rows: 56), attempts: 3, interval: RemoteHostRouter.resizeSettle, clock: clock,
+        grid: (columns: 139, rows: 56), interval: RemoteHostRouter.resizeSettle,
+        within: RemoteHostRouter.resizeConfirmTimeout, clock: clock,
         readSize: { (columns: 122, rows: 47) })
     }
     await Task.megaYield()
-    await clock.advance(by: RemoteHostRouter.resizeSettle * 2)
+    await clock.advance(by: RemoteHostRouter.resizeConfirmTimeout)
     let confirmation = await wait.value
     #expect(confirmation == .mismatch(columns: 122, rows: 47))
     let replies = RemoteHostRouter.resizeReplies(
@@ -167,9 +168,14 @@ struct RemoteAccessResizeTests {
 
   @Test func aPTYSizeThatCannotBeReadIsAnError() async throws {
     let clock = TestClock()
-    let confirmation = await RemoteHostRouter.confirmResize(
-      grid: (columns: 139, rows: 56), attempts: 1, interval: RemoteHostRouter.resizeSettle, clock: clock,
-      readSize: { nil })
+    let wait = Task {
+      await RemoteHostRouter.confirmResize(
+        grid: (columns: 139, rows: 56), interval: RemoteHostRouter.resizeSettle,
+        within: RemoteHostRouter.resizeConfirmTimeout, clock: clock, readSize: { nil })
+    }
+    await Task.megaYield()
+    await clock.advance(by: RemoteHostRouter.resizeConfirmTimeout)
+    let confirmation = await wait.value
     #expect(confirmation == .unreadable)
     let replies = RemoteHostRouter.resizeReplies(
       for: .success(confirmation), request: Self.request, contentKey: Self.contentKey, requestID: nil)
@@ -183,14 +189,102 @@ struct RemoteAccessResizeTests {
     let settled = await RemoteHostRouter.settleResize(
       first: .unchanged, clock: clock, wake: { true }, attempt: { .unchanged })
     #expect(settled == .unchanged)
-    // One read, no clock: the reply needs no `advance`.
+    // The first read matches, so the reply needs no `advance`.
     let confirmation = await RemoteHostRouter.confirmResize(
-      grid: (columns: 139, rows: 56), attempts: 1, interval: RemoteHostRouter.resizeSettle, clock: clock,
-      readSize: { (columns: 139, rows: 56) })
+      grid: (columns: 139, rows: 56), interval: RemoteHostRouter.resizeSettle,
+      within: RemoteHostRouter.resizeConfirmTimeout, clock: clock, readSize: { (columns: 139, rows: 56) })
     #expect(confirmation == .matched)
     let replies = RemoteHostRouter.resizeReplies(
       for: .success(confirmation), request: Self.request, contentKey: Self.contentKey, requestID: nil)
     #expect(replies == [.size(RemoteSizeMessage(contentId: Self.contentKey, cols: 139, rows: 56))])
+  }
+
+  @Test func aSameSizeResizeWaitsForAPTYStillTakingAnEarlierResize() async {
+    // ЗД3 review F1: the grid already has the size, the PTY follows a moment later.
+    let clock = TestClock()
+    let reads = LockIsolated(0)
+    let wait = Task {
+      await RemoteHostRouter.confirmResize(
+        grid: (columns: 139, rows: 56), interval: RemoteHostRouter.resizeSettle,
+        within: RemoteHostRouter.resizeConfirmTimeout, clock: clock,
+        readSize: {
+          reads.withValue { $0 += 1 }
+          return reads.value >= 2 ? (columns: 139, rows: 56) : (columns: 122, rows: 47)
+        })
+    }
+    await Task.megaYield()
+    await clock.advance(by: RemoteHostRouter.resizeSettle)
+    #expect(await wait.value == .matched)
+  }
+
+  @Test func aReadThatHangsEndsAtTheOverallDeadline() async {
+    // ЗД3 review F3: a slow PTY read counts against the deadline.
+    let clock = TestClock()
+    let gate = AsyncStream<Void>.makeStream()
+    let wait = Task {
+      await RemoteHostRouter.confirmResize(
+        grid: (columns: 139, rows: 56), interval: RemoteHostRouter.resizeSettle,
+        within: RemoteHostRouter.resizeConfirmTimeout, clock: clock,
+        readSize: {
+          for await _ in gate.stream {}
+          return nil
+        })
+    }
+    await Task.megaYield()
+    await clock.advance(by: RemoteHostRouter.resizeConfirmTimeout)
+    #expect(await wait.value == .unreadable)
+    gate.continuation.finish()
+  }
+
+  // MARK: - Waits per terminal (ЗД3 review F2)
+
+  private static func parked() -> (task: Task<Void, Never>, release: AsyncStream<Void>.Continuation) {
+    let gate = AsyncStream<Void>.makeStream()
+    let task = Task<Void, Never> { for await _ in gate.stream {} }
+    return (task, gate.continuation)
+  }
+
+  @Test func anotherPhonesResizeOfTheSameTerminalCancelsTheOlderWait() {
+    var waits = RemoteResizeWaits()
+    let first = Self.parked()
+    let second = Self.parked()
+    defer {
+      first.release.finish()
+      second.release.finish()
+    }
+    let firstToken = UUID()
+    waits.start(contentID: Self.contentID, connID: "A", token: firstToken, task: first.task)
+    // The router cancels before it applies the newer size.
+    waits.cancel(contentID: Self.contentID)
+    #expect(first.task.isCancelled)
+    waits.start(contentID: Self.contentID, connID: "B", token: UUID(), task: second.task)
+    // A's late finish must not forget B's wait.
+    waits.finished(contentID: Self.contentID, token: firstToken)
+    #expect(waits.pendingConnID(contentID: Self.contentID) == "B")
+    // A leaving does not cancel B's wait.
+    waits.cancel(connID: "A")
+    #expect(!second.task.isCancelled)
+    #expect(waits.pendingConnID(contentID: Self.contentID) == "B")
+    waits.cancel(connID: "B")
+    #expect(second.task.isCancelled)
+    #expect(waits.pendingConnID(contentID: Self.contentID) == nil)
+  }
+
+  @Test func waitsOfDifferentTerminalsAreIndependent() {
+    var waits = RemoteResizeWaits()
+    let first = Self.parked()
+    let second = Self.parked()
+    defer {
+      first.release.finish()
+      second.release.finish()
+    }
+    let other = UUID()
+    waits.start(contentID: Self.contentID, connID: "A", token: UUID(), task: first.task)
+    waits.start(contentID: other, connID: "A", token: UUID(), task: second.task)
+    waits.cancel(contentID: other)
+    #expect(second.task.isCancelled)
+    #expect(!first.task.isCancelled)
+    #expect(waits.pendingConnID(contentID: Self.contentID) == "A")
   }
 
   // MARK: - PTY size

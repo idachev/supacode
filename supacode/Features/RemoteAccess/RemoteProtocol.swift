@@ -182,6 +182,49 @@ nonisolated enum RemoteResizeConfirmation: Equatable, Sendable {
   case unreadable
 }
 
+/// The `resize` in flight per terminal, so a newer request of the same
+/// terminal from any phone cancels an older one before it is applied (an older
+/// wait's retry would otherwise put its size back over the newer one).
+nonisolated struct RemoteResizeWaits {
+  private struct Wait {
+    let connID: String
+    let token: UUID
+    let task: Task<Void, Never>
+  }
+
+  private var byContent: [UUID: Wait] = [:]
+
+  /// Records `task` as the wait for `contentID`, cancelling the one it replaces.
+  mutating func start(contentID: UUID, connID: String, token: UUID, task: Task<Void, Never>) {
+    cancel(contentID: contentID)
+    byContent[contentID] = Wait(connID: connID, token: token, task: task)
+  }
+
+  /// Cancels the wait for `contentID`, whichever phone asked for it.
+  mutating func cancel(contentID: UUID) {
+    byContent.removeValue(forKey: contentID)?.task.cancel()
+  }
+
+  /// Cancels the waits `connID` asked for (it detached or left).
+  mutating func cancel(connID: String) {
+    for (contentID, wait) in byContent where wait.connID == connID {
+      wait.task.cancel()
+      byContent[contentID] = nil
+    }
+  }
+
+  /// Forgets a finished wait, unless a newer one replaced it.
+  mutating func finished(contentID: UUID, token: UUID) {
+    guard byContent[contentID]?.token == token else { return }
+    byContent[contentID] = nil
+  }
+
+  /// The phone whose wait for `contentID` is in flight.
+  func pendingConnID(contentID: UUID) -> String? {
+    byContent[contentID]?.connID
+  }
+}
+
 // MARK: - Outbound payloads
 
 nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
