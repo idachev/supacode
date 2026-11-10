@@ -346,7 +346,7 @@ does, and gives the client the worktree's first terminal tab.
 | `worktree_busy` | a `worktree.new` for the same repository and (case-insensitive) name is still being created on this host (its client may have gone or timed out) | `a worktree with this branch is already being created` |
 | `worktree_unsupported` | a folder (non-git) entry; a repository being removed | `worktrees are only supported for git repositories`, `the repository is being removed` |
 | `worktree_failed` | any app-side failure: name checks, license, git error, guard rejection, cancelled on the Mac | `"<title>: <message>"` for a name/git failure (e.g. `Branch name already exists: Choose a different branch name and try again.`), the bare message for a rejection, `Worktree creation was cancelled on the Mac.` for a Mac cancel |
-| `worktree_timeout` | no outcome within 300 s (ssh 290 s) | `worktree creation is still running on the Mac; it will appear in the list when it finishes` |
+| `worktree_timeout` | no outcome within 300 s (ssh 290 s) | `worktree creation is still running on the Mac; the outcome is unknown and the worktree may appear in the list later` |
 
 - Old hosts answer `{"t":"error","id":7,"message":"unknown message type: worktree.new"}` with no
   `code`; they also send no `canCreateWorktree`, so clients show no button for them.

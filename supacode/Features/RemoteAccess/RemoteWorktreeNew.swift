@@ -269,7 +269,9 @@ extension RemoteHostRouter {
       return .error(
         RemoteErrorMessage(
           id: requestID,
-          message: "worktree creation is still running on the Mac; it will appear in the list when it finishes",
+          message:
+            "worktree creation is still running on the Mac; the outcome is unknown and the worktree may "
+            + "appear in the list later",
           code: RemoteWorktreeNewErrorCode.timeout))
     case .cancelled:
       return nil
