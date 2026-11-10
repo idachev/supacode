@@ -31,7 +31,8 @@ stops for good.
 2. The phone sees every known Mac with its name and online state, picks one, and switches.
 3. The phone remembers the last picked Mac.
 4. Renaming a Mac in Settings shows on the phone within seconds, without dropping its terminals.
-5. Old Supacode builds and old phone builds keep working against the new relay during rollout.
+5. Old Supacode builds keep working against the new relay where that is cheap (СВ1). Old phone
+   builds are not supported: the APK is only on the owner's phone and he updates it at once (ОТ2).
 
 ## Non-goals
 
@@ -47,8 +48,8 @@ stops for good.
 - **host name** — what the phone shows for a Mac (ИМ1). May change at any time.
 - **bound host** — the one host a phone connection talks to. Every client socket is bound to
   exactly one hostId for routing.
-- **auto client** — a client socket that did not ask for a host (`/client` without `host`): an old
-  phone, or a new phone that has no saved choice yet (СВ2).
+- **unbound client** — a client socket that did not ask for a host (`/client` without `host`): it
+  gets the host list and talks to no host (СВ2).
 - **legacy host** — a Supacode build that connects without an id. The relay files it as hostId
   `default`.
 
@@ -89,17 +90,17 @@ a warning once, and the relay files it as the legacy host `default` (СВ1).
 
 **ИД2. Id and name travel in the `/host` URL query.**
 `wss://relay.example.com/host?id=<hostId>&name=<percent-encoded host name>`. The query is built
-from the configured `relayURL` (which ends in `/host`) with `URLComponents`, keeping any query the
-URL already has.
+from the configured `relayURL` (which ends in `/host`) with `URLComponents`: any existing `id` and `name`
+items are replaced, every other query item is kept.
 
 Why: the relay knows the host's identity at accept time, before any frame, so replacement within
 one hostId (РЛ2) happens in `acceptHost` with no "socket without identity yet" state, and the
-WebSocket tags (fixed at accept under the Hibernation API) can carry the id. The old Worker ignores
+socket's attachment carries the id from accept on. The old Worker ignores
 unknown query parameters, so a new Supacode works against an old relay (it just stays the single
 host).
 
 Rejected: a first frame `{"t":"host.hello","id":…}` from the host. It needs a pending state in the
-Durable Object, cannot put the id in the socket's tags, and an old relay would forward it as a
+Durable Object, and an old relay would forward it as a
 frame with a bogus connId.
 
 **ИД3. A rename is a host→relay control frame on the reserved connId `@`.**
@@ -124,9 +125,17 @@ is authoritative). An empty result means "no name" and the field is omitted.
 ### Relay
 
 **РЛ1. One Durable Object with several host slots.** Keep `idFromName("default")` and the class
-`RelayDO`. A host socket gets the tags `host` and `h:<hostId>`; a client socket keeps `client` and
-`c:<connId>`. The client's bound hostId lives in its attachment, not in a tag, because tags are
-fixed at accept and an auto client may be re-bound (СВ2).
+`RelayDO`. Tags stay as today: `host` for a host socket, `client` and `c:<connId>` for a client
+socket. The host's hostId and name and the client's bound hostId live in the attachments, not in
+tags, because sockets accepted before the deploy keep their old tags. Host sockets are found by the `host` tag and filtered by the attachment's
+hostId.
+
+Sockets from before the deploy: with Cloudflare's default deferred code update a hibernated object
+adopts the new code with its WebSockets still open (the 30 s `ping` is auto-answered and does not
+wake it). So the new code must accept the old attachments: a host attachment without `hostId`
+(`{generation, ip}`) counts as `default` with no name, so an old Mac stays reachable through the
+deploy. A client attachment without `hostId` (`{connId, ip}`, an old phone) counts as unbound (СВ2);
+old phones are not supported (ОТ2).
 
 Why: the host list with online state and names is answered from one place with no cross-object
 calls; a personal relay has a few Macs and one or two phones; the class and its id do not change,
@@ -134,20 +143,20 @@ so there is no Durable Object migration and `wrangler.example.jsonc` stays as is
 
 Rejected: one Durable Object per host plus a registry object. Every online/offline/rename event
 becomes an RPC to the registry, every phone needs a second socket (or a registry push) for the
-list, auto binding needs a lookup before routing, and it adds a migration for a load that one
+list, and it adds a migration for a load that one
 object serves easily.
 
-Tag limits: the Hibernation API allows several tags per socket with a length limit; two short tags
-per socket are well inside it (limits not re-checked for this spec, see "Not confirmed").
+Tag limits (Cloudflare docs, `acceptWebSocket`): at most 10 tags per socket, 256 characters each;
+the relay keeps using at most two short tags.
 
 **РЛ2. Replacement only within one hostId.** `acceptHost` closes (4000, `replaced`, after the
-`replaced` text notice) only the sockets tagged `h:<hostId>`. The "false → true edge" that makes a
+`replaced` text notice) only the host sockets whose attachment has the same hostId. The "false → true edge" that makes a
 phone re-attach goes only to clients bound to that hostId. A host with another id is never
 touched.
 
 **РЛ3. Everything per host.**
 - `conn.open` (with `sameNetwork` computed from that client's IP and the IP of its bound host) goes
-  to the bound host when a client connects or is re-bound, and, when a host (re)connects, for every
+  to the bound host when a client connects, and, when a host (re)connects, for every
   client bound to it.
 - `conn.close` goes only to the client's bound host, and only when that host is online.
 - host → client: the relay delivers `<connId>\n<json>` only when the client `connId` is bound to
@@ -173,13 +182,14 @@ messages for the old host may still be in flight, and an old relay would forward
 host as an unknown message.
 
 An unknown but valid `host` binds anyway (offline): the phone shows it offline and the list lets the
-owner pick another. Such a client is never re-bound.
+owner pick another. No client is ever re-bound: the binding is fixed for the socket's life.
 
 **РЛ5. Known hosts are remembered in Durable Object storage.** On every host accept, rename and
 disconnect the relay writes `host:<hostId>` → `{"name"?: string, "lastSeen": <ms>}` (SQLite-backed
 storage, already the class's backend; the async `ctx.storage` or the sync `ctx.storage.kv` API, the
 implementer's choice). Offline hosts not seen for 30 days are pruned when the list is built; at
-most 20 entries are kept (the oldest offline ones go first). The legacy id `default` is listed only
+most 20 offline entries are kept (the oldest go first); online hosts are always listed and do not
+count toward the cap. The legacy id `default` is listed only
 while it is online and is never kept offline, so a Mac that upgrades from a legacy build does not
 leave a „Mac без име“ ghost for 30 days.
 
@@ -193,44 +203,41 @@ renames of offline ones); in-memory only (lost when the object hibernates or res
 rejects with `400 bad host id` a `/host?id=` or `/client?host=` value that does not match
 `^[A-Za-z0-9_-]{1,64}$`. `name` is never a reason to reject: the relay decodes it, normalizes and
 cuts it (ИД4), so a long or Cyrillic name cannot lock a host out with retries. A missing parameter is
-valid (legacy, auto). A 400 does not count as a failed key in `GuardDO`.
+valid (legacy host, unbound client). A 400 does not count as a failed key in `GuardDO`.
 
 ### Compatibility and rollout
 
 **СВ1. Legacy host.** `/host` without `id` is filed as hostId `default`, with no name. It replaces
 only another `default` socket. On the phone it shows as „Mac без име“ until it is upgraded.
 
-**СВ2. Auto clients (no `host` in the URL).**
-- At connect the relay binds the socket to the first of: `default` if online; else the online host
-  that connected most recently; else the known host with the newest `lastSeen`; else `default`.
-- An auto client whose bound host is offline is re-bound when any host comes online: its attachment
-  takes the new hostId, the host gets `conn.open`, the phone gets a `relay` message with
-  `hostOnline:true` and the new `host`. An auto client bound to an online host is never moved.
-- With two Macs online, an old phone therefore talks to whichever the rule picked, until that Mac
-  goes offline and the phone's socket is re-bound or reconnects. This is accepted for the short
-  rollout window; the new phone always sends `host` once it has a choice.
+**СВ2. A client without `host` is unbound.** `/client` without `host` binds to no host: the relay
+sends `{"t":"relay","hostOnline":false,"hosts":[…]}` without `host`, sends no `conn.open` anywhere,
+and answers any message from it with the usual `host offline` error. It gets every list update
+(ПР1). The phone uses it only when it has no valid selection (АН2) and reconnects with `?host=` once
+it picks.
 
-Why: an old phone with one Mac (the whole pre-upgrade world) follows that Mac through its upgrade
-from `default` to a real id without any action. A new phone on first start gets a sensible host and
-learns its id from `host` (ПР1).
+Why: the simplest rule that serves the new phone's first start, and the relay keeps one routing path
+(bound host or none). There is no old phone to serve (ОТ2 revised).
 
-Rejected: rejecting auto clients (breaks old phones on the first deploy); binding them always to
-`default` (an old phone goes dark the moment its Mac upgrades); re-binding auto clients that are on
-an online host (their attachments on that host would be lost without the phone seeing an edge).
+Rejected: an automatic binding with re-binding when hosts come and go (it only served old phones
+and needed its own pick order, re-bind events and tests); rejecting the upgrade with an error (the
+phone would need a second request just to read the list).
 
 **СВ3. New parts against old parts.**
 
 | Relay | Supacode | Phone | Result |
 |---|---|---|---|
-| new | old | old | one host `default`, old phone auto-bound to it: as today |
-| new | new | old | each Mac has its id; old phone auto-bound (СВ2) |
 | new | new | new | full feature |
 | old | new | new | old relay ignores `id`, `name`, `host`; one host slot as today; the phone gets `relay` without `hosts` and runs single-host (АН1); Supacode's `@` frames are dropped |
 | new | old | new | the phone sees one host `default` „Mac без име“ |
 
-**СВ4. Rollout order.** 1) Deploy the relay. 2) Install the new Supacode on the Mac that hosts today,
-then on the other Macs (copy the two config files first, see ДК1). 3) Install the new phone build.
-Any step may be delayed or rolled back on its own; СВ3 covers every mix. A second Mac may host
+An old phone against the new relay is unbound and sees "Mac offline" until it is updated; accepted
+(ОТ2 revised).
+
+**СВ4. Rollout order.** 1) Deploy the relay and install the new phone build right after it (the old
+phone does not work with the new relay). 2) Install the new Supacode on the Mac that hosts today,
+then on the other Macs (copy the two config files first, see ДК1). The Macs may lag or roll back on
+their own; СВ3 covers those mixes. A second Mac may host
 only after step 1 (the old relay has one slot) and only with the new Supacode (an old build files
 as `default` and would evict the other old build).
 
@@ -250,13 +257,13 @@ as `default` and would evict the other old build).
   `name` is omitted when unknown.
 - Sent right after the client connects; whenever the bound host goes online or offline (with the
   false → true edge on replacement, РЛ2); whenever the list changes (a host connects, disconnects,
-  renames, is pruned); and after a re-bind (СВ2). Each client gets its own copy (its own `host` and
-  `hostOnline`).
+  renames, is pruned). Each client gets its own copy (its own `host` and `hostOnline`); `host` is
+  omitted for an unbound client (СВ2).
 - A phone must act only on `hostOnline` edges, as today (`RelayClient.onHostOnline` already does:
   `hello` only on false → true). Repeated `hostOnline:true` messages carry list updates only.
 
-Why the same `t`: old phones decode `relay` with `ignoreUnknownKeys = true` and react only to
-edges, so the extra fields and repeats are harmless. Rejected: a separate `relay.hosts` message
+Why the same `t`: one status message carries everything a client needs about the relay, and the
+phone's decoder (`ignoreUnknownKeys = true`) already reacts only to `hostOnline` edges. Rejected: a separate `relay.hosts` message
 (two messages to keep in step, and the bound `host` would still need a home).
 
 **ПР2. `hello` gains `hostId`.** `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{…}}`.
@@ -323,38 +330,48 @@ and keeps mode 0600 (today's code, `RemoteAccessSettingsClient.swift:97-117`).
   the last saved `file.hostName ?? ""`) and no save runs, so the 2 s poll never overwrites typing.
 - `hostNameSubmitted`: trim; when equal to the saved value, do nothing; else write (blank removes the
   key), then `renameHost(displayName(draft, computerName))`, then `hostNameSaved`. Ignored when
-  `!file.isConfigured`. While a toggle apply runs (`isApplying`) the submit waits and runs after it,
-  so two writes of the same file never race. Failure sets `errorMessage` and keeps the draft.
+  `!file.isConfigured`. Failure sets `errorMessage` and keeps the draft.
+- One write at a time, in both orders: a name save and a toggle apply share one in-flight flag
+  (`isApplying`). A name submit during an apply, or a toggle during a name save, is queued and runs
+  when the running write ends (latest value per key wins), so two read-modify-writes of the file
+  never overlap and neither undoes the other's key.
 - Tests (TestStore, `supacodeTests/RemoteAccessSettingsTests.swift`): refresh during typing keeps the
   draft; submit unchanged writes nothing; submit new name writes and renames once; blank removes the
   key and renames to the computer name; write failure shows the error and does not rename; submit
-  while not configured does nothing.
+  while not configured does nothing; a toggle during a name save and a name submit during a toggle
+  apply both run after the running write and both keys end up on disk.
 
 **СУ6. Settings view.** In `RemoteAccessSettingsView`, a "Mac name" `TextField` in the first toggles
 section, placeholder = computer name, `.onSubmit` sends `hostNameSubmitted` (also on focus loss),
 `.help("The name Supacode Remote shows for this Mac; applies right away")`, disabled when the file
-is not configured, secondary text "Shown in Supacode Remote's list of Macs." No custom colors or
+is not configured, secondary text "Shown in Supacode Remote's list of Macs." The existing footer for
+a copy that does not host becomes "Changes are saved to the configuration file; this copy of Supacode
+does not host. The Mac name reaches the phone when the hosting app starts again." No custom colors or
 font sizes.
 
 **СУ7. A hand edit of `hostName` in the file** applies on the next host start (app launch or a
-Settings toggle), like `lan` today. Not watched live (see open item).
+Settings toggle), like `lan` today; not watched live (owner decision ОТ3 = ОП13). A rename saved
+from a copy of Supacode that does not host (`mayHost` false, e.g. a dev build next to the installed
+app) is the same as a hand edit: the file changes, the hosting app picks it up on its next host
+start; `renameHost` is a no-op there.
 
 ### Android (Supacode Remote)
 
-**АН1. Protocol.** `RelayStatus(hostOnline, host: String? = null, hosts: List<HostInfo> = emptyList())`,
+**АН1. Protocol.** `RelayStatus(hostOnline, host: String? = null, hosts: List<HostInfo>? = null)`,
 `HostInfo(id: String, name: String? = null, online: Boolean = false)`,
-`HelloReply.hostId: String? = null`. A `relay` message without `hosts` (old relay) means single-host
-mode: no host list, no switcher, no `host` query.
+`HelloReply.hostId: String? = null`. `hosts` stays nullable so a missing field (old relay) differs from
+an empty list (new relay that knows no host yet). A `relay` message with `hosts == null` means
+single-host mode: no host list, no switcher, no `host` query, no selection checks; the saved
+selection is kept for when a new relay comes back.
 
 **АН2. Selection.** `SettingsStore` gets `selectedHostId: StateFlow<String?>` and
 `setSelectedHostId(String?)` (plain preferences, not secret). `RelayUrl.clientUrl(base, hostId)`
-appends `?host=<id>` when the id is set. With no saved id the phone connects as an auto client and
-saves `host` from the first `relay` message that has `hosts` and `hostOnline:true`, then reconnects
-with `?host=<saved>` so the relay can no longer re-bind it (СВ2). It never saves `default`: with only
-a legacy Mac it stays an auto client, so it follows that Mac when it upgrades. Whenever a `relay`
-message's `host` differs from a saved selection, the phone reconnects with `?host=<saved>`.
+appends `?host=<id>` when the id is set. The phone has no valid selection when none is saved, or when
+a `relay` message with `hosts != null` does not list the saved id (pruned, or the legacy `default`
+after its Mac upgraded). Then: exactly one host online → select it (АН3); otherwise open „Mac-ове“.
+With no saved id it connects without `host` (unbound, СВ2) only to read the list.
 
-**АН3. Switch.** `RelayClient.selectHost(id)`: save the id, close the LAN session, close the relay
+**АН3. Switch.** `RelayClient.selectHost(id)`: save the id (`default` too), close the LAN session, close the relay
 socket (1000), reset `hostOnline` and `hostSession`, reconnect with the new URL. `RelayClient`
 exposes `hosts: StateFlow<List<HostInfo>>` and `boundHostId: StateFlow<String?>`. A `hello` whose
 `hostId` differs from the bound host gets no LAN attempt (ПР2). `SessionsRepository` clears its list
@@ -402,9 +419,10 @@ which it drops today) survive a key rotation. `phone-sim.mjs` gets `--host <id>`
 - **Relay (vitest).** `RelayDO` has no tests today and the package has no Workers test pool, only
   pure tests (`frames.test.ts`, `guard.test.ts`). Move the decisions into a pure module
   `src/hosts.ts` and test it in `test/hosts.test.ts`: id/name validation and normalization
-  (РЛ6, ИД4); auto pick order (СВ2); re-bind of offline auto clients only; recipients of a host frame
+  (РЛ6, ИД4); unbound client (СВ2: list without `host`, no `conn.open`, `host offline`
+  error); attachments from before the deploy (no `hostId`) count as host `default` / unbound client; recipients of a host frame
   (bound only, `*` per host, foreign connId dropped, `@` handled); replacement scope (РЛ2); `relay`
-  message per client (ПР1, sort, omitted name); known-host pruning (30 days, cap 20). `RelayDO` keeps
+  message per client (ПР1, sort, omitted name); known-host pruning (30 days, cap 20 offline, online never pruned). `RelayDO` keeps
   only socket and storage plumbing around it. DO-level tests with `@cloudflare/vitest-pool-workers`
   stay a TODO.
 - **Swift.** `RemoteAccessConfigHostTests` (new): `hostName` decoding, `hostID` vector (fixed UUID →
@@ -415,7 +433,9 @@ which it drops today) survive a key rotation. `phone-sim.mjs` gets `--host <id>`
   renamed name after `rename(to:)`.
 - **Android (JVM).** `ProtocolCodecTest`: `relay` with and without `hosts`/`host`, `HostInfo` without
   `name`, hello `hostId`. `RelayUrlTest`: `?host=` encoding, none when null. `RelayClientTest`:
-  `selectHost` reconnects with the new URL and resets `hostSession`; auto adoption of `host`; list-only
+  `selectHost` reconnects with the new URL and resets `hostSession`; no valid selection with one online
+  host selects it, with several opens „Mac-ове“; saved id missing from `hosts` counts as no
+  selection; `hosts` missing vs empty; list-only
   `relay` repeats do not send `hello`; old relay → single-host. `RelayLanTest`: `hello` with a foreign
   `hostId` starts no LAN. `AwaitingTrackerTest`: reset on switch.
 
@@ -437,18 +457,17 @@ Each task can start now against it; the dependency column is only for live end-t
 `RemoteAccessConfigHostTests.swift`, so only ЗД3 edits `RemoteAccessSettingsTests.swift`. ЗД5 and ЗД6 meet
 at the `RelayClient` API named in АН3; ЗД6 may stub it until ЗД5 lands.
 
-## Open items for the owner
+## Owner decisions on the open items (closed 2026-11-10)
 
-- **ОТ1.** Alerts only from the selected Mac (АН6). Recommendation: accept for now; watching all Macs
-  is a later, relay-free change.
-- **ОТ2.** An old phone with two upgraded Macs online talks to the one СВ2 picks. Recommendation:
-  accept; upgrade the phone right after the Macs.
-- **ОТ3.** A hand edit of `hostName` applies on the next host start (СУ7). Recommendation: accept; the
-  Settings field is the supported path.
+- **ОТ1 = ОП9.** Notifications only from the selected Mac (АН6).
+- **ОТ2 revised (owner, 2026-11-10).** No compatibility for old phones: the APK is only on the
+  owner's phone and he updates it at once. The old-phone auto binding is dropped; a client without
+  `host` is unbound (СВ2).
+- **ОТ3 = ОП13.** Accepted: a hand edit of `hostName` applies on the next host start (СУ7).
+- **ДК2 = ОП15.** Approved: `gen-keys.mjs` keeps every existing key, which also stops it dropping `lan`.
 
 ## Not confirmed
 
-- Hibernation API tag count and length limits (РЛ1) were not re-read in the Cloudflare docs.
 - `HardwareInfo.uuid` is non-nil on every Mac the owner uses (ИД1 fallback covers nil).
 - That no Android code other than `RelayClient.onHostOnline` reacts to a repeated
   `hostOnline:true` (checked only in `RelayClient.kt` and `Protocol.kt`).
