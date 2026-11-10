@@ -414,6 +414,38 @@ struct RemoteAccessResizeTests {
     #expect(RemoteHostRouter.redrawInput(for: .failure(.notReady), isReadOnly: false).isEmpty)
   }
 
+  @Test func theRedrawGoesThroughTheFirstOpenStreamOnly() {
+    // A stream whose `attach` has not started it yet has no socket: its real
+    // `send` fails, so the next attached stream of that terminal takes it.
+    let notStarted = ZmxRemoteStream(socketPath: "/nonexistent/supacode-zd9.sock")
+    defer { notStarted.stop() }
+    let second = LockIsolated<[[UInt8]]>([])
+    let third = LockIsolated<[[UInt8]]>([])
+    let wrote = RemoteHostRouter.writeOnce(
+      RemoteHostRouter.redrawKey,
+      through: [
+        { notStarted.send($0) },
+        { bytes in
+          second.withValue { $0.append(bytes) }
+          return true
+        },
+        { bytes in
+          third.withValue { $0.append(bytes) }
+          return true
+        },
+      ])
+    #expect(wrote)
+    #expect(second.value == [[0x0C]])
+    #expect(third.value.isEmpty)
+  }
+
+  @Test func aRedrawNoStreamTakesReportsFailure() {
+    let notStarted = ZmxRemoteStream(socketPath: "/nonexistent/supacode-zd9.sock")
+    defer { notStarted.stop() }
+    #expect(!RemoteHostRouter.writeOnce(RemoteHostRouter.redrawKey, through: [{ notStarted.send($0) }]))
+    #expect(!RemoteHostRouter.writeOnce(RemoteHostRouter.redrawKey, through: []))
+  }
+
   // MARK: - PTY size
 
   @Test func aProcessWithoutATerminalHasNone() {

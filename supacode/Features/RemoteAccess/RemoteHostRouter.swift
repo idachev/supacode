@@ -601,8 +601,9 @@ final class RemoteHostRouter {
   }
 
   /// Answers a settled `resize`, unless the phone left that terminal meanwhile,
-  /// then writes the redraw key (`redrawInput(for:isReadOnly:)`) once, through
-  /// the requester's stream exactly as its `input` would.
+  /// then writes the redraw key (`redrawInput(for:isReadOnly:)`) once, as an
+  /// `input` would: through the requester's stream, or the first other open
+  /// stream of that terminal when the requester's is not open (`writeOnce`).
   private func finishResize(
     connID: String,
     request: RemoteResizeRequest,
@@ -632,9 +633,26 @@ final class RemoteHostRouter {
       }
     }
     let redraw = Self.redrawInput(for: outcome, isReadOnly: source.isReadOnly(contentID: request.contentID))
-    if !redraw.isEmpty, !attachment.stream.send(redraw) {
-      routerLogger.info("resize from \(connID): the redraw input failed")
+    guard !redraw.isEmpty else { return }
+    // The requester's stream may not be open yet (an `attach` still measuring
+    // the grid) or already closed; any other phone's stream on that terminal
+    // reaches the same zmx session.
+    let others = clients.compactMap { other, entry -> (String, ZmxRemoteStream)? in
+      guard other != connID, case .some(let shown) = entry, shown.contentID == request.contentID else { return nil }
+      return (other, shown.stream)
     }
+    .sorted { $0.0 < $1.0 }
+    .map(\.1)
+    let senders = ([attachment.stream] + others).map { stream in { (bytes: [UInt8]) in stream.send(bytes) } }
+    if !Self.writeOnce(redraw, through: senders) {
+      routerLogger.info("resize from \(connID): no open stream took the redraw input")
+    }
+  }
+
+  /// Writes `bytes` through the first of `senders` that takes them (each is a
+  /// stream's `send`), so the terminal gets them once. False when none did.
+  nonisolated static func writeOnce(_ bytes: [UInt8], through senders: [([UInt8]) -> Bool]) -> Bool {
+    senders.contains { send in send(bytes) }
   }
 
   /// One frame a settled `resize` sends.
