@@ -70,7 +70,8 @@ if (!force && existing && existsSync(clientKeyPath)) {
 // The phone gets one connection key: the relay's host, a slash, then the
 // client key (see docs/remote-access.md). The APK holds no relay address.
 writeFileSync(clientKeyPath, connectionKey(relayURL, clientKey) + "\n", { mode: 0o600 });
-writeFileSync(configPath, JSON.stringify({ enabled: existing?.enabled ?? true, relayURL, hostKey }, null, 2) + "\n", { mode: 0o600 });
+// Every other key (`hostName`, `lan`, …) survives a rewrite or a key rotation.
+writeFileSync(configPath, JSON.stringify({ ...existing, enabled: existing?.enabled ?? true, relayURL, hostKey }, null, 2) + "\n", { mode: 0o600 });
 chmodSync(configPath, 0o600);
 chmodSync(clientKeyPath, 0o600);
 process.stdout.write(JSON.stringify({ HOST_KEY_SHA256: sha256(hostKey), CLIENT_KEY_SHA256: sha256(clientKey) }) + "\n");
