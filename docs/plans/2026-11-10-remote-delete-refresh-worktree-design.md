@@ -187,7 +187,7 @@ Line numbers are `supacode/Features/...` unless the path says otherwise.
 | `worktree_invalid` | `worktree.delete needs a worktreeId`, `no such worktree` | `worktreeId` missing or empty; unknown, archived (ОВ12), or a pending (`pending:…`) id |
 | `worktree_unsupported` | `the main worktree cannot be deleted`, `folders cannot be deleted from the remote`, `the repository is being removed` | main worktree; folder (non-git) entry; repository in `removingRepositoryIDs` |
 | `worktree_busy` | `the worktree is busy (being created, archived or deleted)` | row lifecycle not `.idle` (setup script running, archiving, deleting, delete script running), or a remote delete of it is still in flight; also when the re-check after the dirty check finds this (D4) |
-| `worktree_dirty` | `the worktree has uncommitted changes or untracked files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` | the dirty check (D4) found at least one status entry, or commits on a detached HEAD that no branch, tag or remote ref holds (message then: `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first`) |
+| `worktree_dirty` | `the worktree has uncommitted changes, untracked or ignored files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` (ignored directories are not listed) | the dirty check (D4) found at least one status entry, or commits on a detached HEAD that no branch, tag or remote ref holds (message then: `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first`) |
 | `worktree_failed` | `Delete script failed (exit code N).`, `Delete cancelled.`, `Unable to delete worktree: <git message>`, `The worktree could not be found. It may have already been removed.`, `could not check the worktree for changes: <error>`, `the worktree left the list before it was deleted (removed outside Supacode, or its repository was removed)` | the app reported a failure, the check failed, or the worktree vanished without a delete result |
 | `worktree_timeout` | `the delete is still running on the Mac; the worktree may disappear from the list later` | no outcome within `worktreeDeleteTimeout` (300 s) |
 | `refresh_timeout` | `the refresh is still running on the Mac; send list again later` | `worktrees.refresh`: no load finished within 60 s |
@@ -271,11 +271,20 @@ D4. AppFeature (core, next to the `worktree.new` arms; core runs before the repo
     nothing to lose; the Mac also skips the script for it, `RepositoriesFeature.swift:1378`), which
     goes straight to the delete step below.
     - Command: `git -C <worktree working directory> --no-optional-locks status --porcelain=v1 -z
-      --untracked-files=all` (new `GitClient` method, e.g. `worktreeChanges(at:) async throws ->
-      [String]`, next to `fileStatus(at:)`, `GitClient.swift:1168-1184`, which uses the same flags
-      family). Every output entry counts: staged or unstaged changes to tracked files, conflicts,
-      and untracked files. Ignored files (`.gitignore`) do not count (no `--ignored`), so build output
-      does not block. Dirty = at least one entry.
+      --untracked-files=all --ignored=matching` (new `GitClient` method, e.g.
+      `worktreeChanges(at:) async throws -> WorktreeDirtyState`, next to `fileStatus(at:)`,
+      `GitClient.swift:1168-1184`, which uses the same `--untracked-files=all --ignored=matching`
+      pair; its comment, `:1165-1167`, notes that `--ignored=matching` reports a wholly ignored
+      directory as one entry). Rule per NUL-separated entry (`XY<space>path`):
+      - `!! <path>` with `<path>` ending in `/` (a directory that is ignored as a whole, e.g.
+        `node_modules/`, `build/`, `.venv/`) does **not** count;
+      - `!! <path>` not ending in `/` (an ignored file, e.g. `.env`, `config/local.json`, also a file
+        inside a non-ignored directory matched by a file pattern such as `*.log`) **counts**
+        (owner/main decision on Codex r2 F4);
+      - every other entry counts: staged or unstaged changes to tracked files, conflicts (`UU` …),
+        untracked files (`??`). (`-z` keeps rename entries as two NUL fields; the second field is
+        skipped, not counted twice.)
+      Dirty = at least one counted entry, or detached commits (below).
     - Unpushed commits do **not** block: the branch is never deleted (ОВ6), so its commits stay
       reachable.
     - Detached HEAD (Codex r2 F3): commits reachable only from the worktree's HEAD would become
@@ -301,10 +310,29 @@ D4. AppFeature (core, next to the `worktree.new` arms; core runs before the repo
       `.repositories(.deleteSidebarItemConfirmed(worktreeID, repositoryID, background: true,
       keepBranch: true))`, as the CLI does with `bypassConfirmation` (`AppFeature.swift:3886-3887`).
       The Mac shows no confirmation alert: the client confirmed.
-    - The check and the delete are not atomic: changes written after the check (by an agent, or by
-      the delete script itself) are still removed by the forced `git worktree remove`. Accepted: the
-      window is the delete script's run time, the same window the Mac has between its alert and
-      the removal.
+    - Second check before removal (main decision on Codex r2 F2, option (c)): the delete script can
+      run for minutes while an agent keeps writing, so when a delete script ran for a remote delete
+      the same check (status rule + detached commits) runs again right before `removeWorktree`.
+      Mechanism in `RepositoriesFeature`: `.deleteScriptCompleted` with exit 0 for an id in
+      `branchKeepingDeleteIDs` (= a remote delete) inserts the id into a new
+      `State.dirtyRecheckDeleteIDs: Set<Worktree.ID>`; `.deleteWorktreeApply` for an id in that set
+      runs the check first inside its `.run` effect, before calling `removeWorktree` (which is what
+      relocates the directory and runs `git worktree remove --force --force`,
+      `GitClient.swift:1328-1330`, `:1535-1553`), with the host-aware `deleteClient`
+      (`RepositoriesFeature.swift:1520`). No script (empty script) → no second check: the first is
+      milliseconds old.
+      - Dirty → new action `.deleteWorktreeAbortedDirty(worktreeID:, message:)`: row lifecycle back
+        to `.idle` (as `.deleteWorktreeFailed` does, `RepositoriesFeature.swift:1680-1683`), both ids
+        removed from `branchKeepingDeleteIDs` and `dirtyRecheckDeleteIDs`, **nothing removed** (no
+        relocation, no `git worktree remove`, no branch change), no Mac alert (like every
+        `worktree_dirty`). The delete script's own effects have already happened and stay. AppFeature
+        core settles the entry `.failed(worktree_dirty, <same message as the first check>)`.
+      - Check error → `.deleteWorktreeFailed("could not check the worktree for changes: <error>")`:
+        the existing path (Mac alert "Unable to delete worktree", row `.idle`, nothing removed); the
+        phone gets `worktree_failed` "Unable to delete worktree: could not check the worktree for
+        changes: …".
+      - Clean → `removeWorktree` as before. The remaining window is the time between this check and
+        git's removal (one git call), accepted.
   - **Branch never deleted (ОВ6, decided).** The branch decision is taken late, in
     `.deleteWorktreeApply` (`RepositoriesFeature.swift:1516-1528`: it reads
     `settingsFile.global.deleteBranchOnDeleteWorktree` and passes it to
@@ -430,12 +458,18 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
   `worktreeDeletion(_:)`, consume/abandon, `requestRefreshWorktrees`, generation read, all via
   `withState`), `RemoteHostRouter` (two cases, waits, cancel on disconnect), `GitClient`
   (`worktreeChanges(at:)`, local and ssh), `RepositoriesFeature` (`branchKeepingDeleteIDs`,
-  `keepBranch` on `.deleteSidebarItemConfirmed`, `loadGeneration` and the generation parameters),
+  `keepBranch` on `.deleteSidebarItemConfirmed`, `dirtyRecheckDeleteIDs`, the second check in
+  `.deleteWorktreeApply`, `.deleteWorktreeAbortedDirty`, `loadGeneration` and the generation
+  parameters; Codex r2 F5: also clear the id from both sets in the `.deleteScriptCompleted` exit-0
+  branch whose repository is gone, `RepositoriesFeature.swift:1471-1480`, and drop ids that are no
+  longer in the roster on `.repositoriesLoaded`),
   `AppFeature` (`remoteWorktreeDeletions`, request/checked/consume/abandon actions, the dirty-check
   effect, outcome updates in the existing arms, the two explicit early-exit outcomes, the
   `repositoriesChanged` backstop). Tests with `TestClock`, no `Task.sleep`: success only via
-  `.worktreeDeleted`; dirty (tracked change, untracked file) → `worktree_dirty`, ignored file only →
-  deletes; detached HEAD with a commit on no ref → `worktree_dirty`, attached branch with unpushed
+  `.worktreeDeleted`; dirty (tracked change, untracked file, ignored file such as `.env`) → `worktree_dirty`; only
+  wholly ignored directories (`node_modules/`) → deletes; second check: a file written during the
+  delete script → `worktree_dirty`, row `.idle`, directory untouched, no Mac alert; no script → no
+  second check; detached HEAD with a commit on no ref → `worktree_dirty`, attached branch with unpushed
   commits → deletes; a clean request passes its own re-check (not `worktree_busy`); check error → `worktree_failed`; orphan skips the check; re-check after the check refuses a
   row that became busy; branch kept with the setting on (`removeWorktree` called with
   `deleteBranch: false`) and Mac deletes unchanged; `deleteWorktreeFailed`, script exit ≠ 0 / nil, the
@@ -466,7 +500,9 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
   branch, whatever `deleteBranchOnDeleteWorktree` says (D4, `keepBranch`). Rejected: follow the Mac
   setting; a per-request field.
 - ОВ7 Dirty worktree — decided by the owner (ОП2): refuse with `worktree_dirty` when `git status`
-  shows uncommitted changes or untracked files (D4); no force flag in v1. Unpushed commits do not
+  shows uncommitted changes, untracked files, or (main, Codex r2 F4) ignored files outside wholly
+  ignored directories, or a detached HEAD holds commits on no ref; checked again before removal when
+  a delete script ran (main, Codex r2 F2) (D4); no force flag in v1. Unpushed commits do not
   block, because the branch is kept (ОВ6). Rejected: mirror the Mac (no check); a `force` field.
 - ОВ8 Mac focus — decided by the owner (ОП1): no focus change on the Mac. The host sends
   `background: true` (D4). From the code: `background` only becomes `focusing: !background` for the
