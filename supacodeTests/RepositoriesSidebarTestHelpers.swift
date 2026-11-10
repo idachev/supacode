@@ -46,6 +46,7 @@ extension RepositoriesFeature.State {
   @MainActor
   private mutating func expectCachesConverged() {
     let structure = sidebarStructure
+    let filteredStructure = filteredSidebarStructure
     let selectionSlice = sidebarSelectionSlice
     let selectedSlice = selectedWorktreeSlice
     let notificationGroups = toolbarNotificationGroupsCache
@@ -55,6 +56,7 @@ extension RepositoriesFeature.State {
 
     let message = "Declared CacheInvalidations were insufficient: a full recompute changed"
     #expect(sidebarStructure == structure, "\(message) sidebarStructure.")
+    #expect(filteredSidebarStructure == filteredStructure, "\(message) filteredSidebarStructure.")
     #expect(sidebarSelectionSlice == selectionSlice, "\(message) sidebarSelectionSlice.")
     #expect(selectedWorktreeSlice == selectedSlice, "\(message) selectedWorktreeSlice.")
     #expect(toolbarNotificationGroupsCache == notificationGroups, "\(message) toolbarNotificationGroupsCache.")
@@ -63,6 +65,7 @@ extension RepositoriesFeature.State {
     // Restore, so a shortfall surfaces as this assertion rather than as an
     // unrelated TestStore diff in every test that sends the offending action.
     sidebarStructure = structure
+    filteredSidebarStructure = filteredStructure
     sidebarSelectionSlice = selectionSlice
     selectedWorktreeSlice = selectedSlice
     toolbarNotificationGroupsCache = notificationGroups
