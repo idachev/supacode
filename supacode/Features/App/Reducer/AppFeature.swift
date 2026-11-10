@@ -4170,9 +4170,6 @@ struct AppFeature {
     )
   }
 
-  /// Binds a pending worktree-new ack (registered with its pending id before the
-  /// real worktree id was known) to the created worktree id, so its first tab
-  /// resolves it.
   /// Moves a remote `worktree.new` entry out of `.creating`; an unknown
   /// (never requested or already consumed) or already settled entry is left alone.
   private func settleRemoteWorktreeCreation(
@@ -4215,6 +4212,9 @@ struct AppFeature {
     )
   }
 
+  /// Binds a pending worktree-new ack (registered with its pending id before the
+  /// real worktree id was known) to the created worktree id, so its first tab
+  /// resolves it.
   private func bindWorktreeNewAck(
     pendingID: Worktree.ID, to worktreeID: Worktree.ID, state: inout State
   ) {

@@ -251,8 +251,14 @@ final class RemoteSnapshotSource {
 
   /// The first terminal tab of a worktree's layout, in `list` order
   /// (`tabs(in:runtime:)`), so `worktree.new`'s `tabId` / `contentId` match the next `list`.
-  func firstTerminalTab(of worktreeID: Worktree.ID) -> RemoteTab? {
-    tabs(of: worktreeID).first
+  func firstTerminalTab(of worktreeID: Worktree.ID) -> RemoteWorktreeNewTab? {
+    guard let layout = terminalManager.layoutState(for: worktreeID)?.layout else { return nil }
+    return Self.firstTerminalTab(in: layout, runtime: ContentRuntime.liveValue)
+  }
+
+  /// The first entry of `tabs(in:runtime:)`, as `worktree.new` reports it.
+  static func firstTerminalTab(in layout: PaneLayout, runtime: ContentRuntime) -> RemoteWorktreeNewTab? {
+    tabs(in: layout, runtime: runtime).first.map { RemoteWorktreeNewTab(tabId: $0.id, contentId: $0.contentId) }
   }
 
   /// Whether the roster lists this worktree (an ssh creation enters it only
@@ -267,7 +273,7 @@ final class RemoteSnapshotSource {
     RemoteWorktreeNewProbes(
       creation: { [weak self] in self?.worktreeCreation(pendingID: pendingID) },
       firstTab: { [weak self] worktreeID in
-        self?.firstTerminalTab(of: worktreeID).map { RemoteWorktreeNewTab(tabId: $0.id, contentId: $0.contentId) }
+        self?.firstTerminalTab(of: worktreeID)
       },
       openTab: { [weak self] worktreeID in
         guard let self, self.containsWorktree(worktreeID) else { return nil }
