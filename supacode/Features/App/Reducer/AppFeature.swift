@@ -1723,7 +1723,7 @@ struct AppFeature {
       case .remoteWorktreeCreationAbandoned(let pendingID):
         RemoteWorktreeCreation.abandon(pendingID, in: &state.remoteWorktreeCreations)
         return .none
-      case .repositories(.createRandomWorktreeSucceeded(let worktree, _, let pendingID)):
+      case .repositories(.createRandomWorktreeSucceeded(let worktree, _, let pendingID, _)):
         // Bind this creation's ack (matched by its pending id) to the real
         // worktree id so its first tab resolves it.
         bindWorktreeNewAck(pendingID: pendingID, to: worktree.id, state: &state)
@@ -1737,7 +1737,7 @@ struct AppFeature {
           state: &state)
         return .none
 
-      case .repositories(.createRandomWorktreeFailed(let title, let message, let pendingID, _, _, _, _)):
+      case .repositories(.createRandomWorktreeFailed(let title, let message, let pendingID, _, _, _, _, _)):
         // Core runs before the repositories scope, so a Mac cancel's flag is still set here.
         let cancelledOnMac = state.repositories.cancelRequestedPendingIDs.contains(pendingID)
         settleRemoteWorktreeCreation(
