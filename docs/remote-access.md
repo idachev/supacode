@@ -66,7 +66,7 @@ default one); the examples use `personal`.
    node scripts/phone-sim.mjs
    ```
 
-   Without `--host` the simulator is not bound to a Mac: it prints only the `HOSTS` list. Take the
+   Without `--host` the simulator is not bound to a Mac: among its output is the `HOSTS` list. Take the
    `id` of your Mac from it and run again:
 
    ```sh
@@ -101,16 +101,17 @@ One relay and one key pair serve every Mac. The Mac's identity on the relay (`ho
 from its hardware, so a copied config does not make two Macs evict each other.
 
 1. Copy `~/.config/supacode/remote-access.json` and `~/.config/supacode/remote-client-key.txt` to
-   the same folder on the new Mac, over a private channel (they hold the keys). Set mode 0600 on
-   both:
+   the same folder on the new Mac, over a private channel (they hold the keys). If the first Mac's
+   file has a `hostName`, the copy carries it: delete that key from the copy now, before Supacode
+   starts, to show the new Mac's computer name (a hand edit after the start applies only at the next
+   host start). Set mode 0600 on both:
 
    ```sh
    chmod 600 ~/.config/supacode/remote-access.json ~/.config/supacode/remote-client-key.txt
    ```
 
 2. Install Supacode under `/Applications` (only the installed app hosts) and start it.
-3. The copied file carries the first Mac's `hostName`. Set a new name in Settings → Remote Access →
-   "Mac name", or delete the `hostName` key from the copy to show this Mac's computer name.
+3. Or set a new name in Settings → Remote Access → "Mac name"; it applies at once.
 4. On the phone, open „Mac-ове“ and pick the Mac.
 
 Do not run `node scripts/gen-keys.mjs --force` (in `remote-relay/`) on the new Mac: it mints new keys, which stop every
