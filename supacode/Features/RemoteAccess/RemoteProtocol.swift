@@ -97,6 +97,7 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
   let rows: Int
 
   /// Why a `resize` is ignored (logged on the host; the client gets no reply).
+  /// A valid request the host cannot apply is answered instead (`Failure`).
   nonisolated enum Ignored: Error, Equatable {
     case notAttached
     case invalidSize
@@ -119,6 +120,66 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
         columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
         rows: min(max(rows, rowRange.lowerBound), rowRange.upperBound)))
   }
+}
+
+/// One try at applying a `resize` to a terminal (`RemoteSnapshotSource.resizeGrid`).
+nonisolated enum RemoteResizeAttempt: Equatable, Sendable {
+  /// The grid changes to the requested size; the PTY follows asynchronously.
+  case applied
+  /// The grid already has the requested size.
+  case unchanged
+  /// The surface exists but its cell metrics do not yet; try again.
+  case notReady
+  /// No live surface (never started since launch, or hibernated); wake it first.
+  case noSurface
+  /// No live surface, and the last start of the session failed.
+  case failedToStart
+}
+
+/// How the app side of a valid `resize` ended: the grid changed, already had
+/// that size, or the size cannot be applied (the requester gets an `error`
+/// with `code` `resize_failed`). The reply then follows the session PTY
+/// (`RemoteResizeConfirmation`).
+nonisolated enum RemoteResizeResult: Equatable, Sendable {
+  case applied
+  case unchanged
+  case failed(Failure)
+
+  /// The `code` of the `error` a failed `resize` gets.
+  static let errorCode = "resize_failed"
+
+  nonisolated enum Failure: Equatable, Sendable {
+    /// No worktree lists the content any more.
+    case contentGone
+    /// The terminal had no live surface and could not be started.
+    case wakeFailed
+    /// The surface did not report cell metrics within `RemoteHostRouter.resizeReadyTimeout`.
+    case notReady
+    /// The app's grid changed but the session PTY kept another size.
+    case sessionKeptItsSize
+    /// The session PTY's size could not be read.
+    case sizeUnreadable
+
+    /// The `message` of the `error` frame.
+    var message: String {
+      switch self {
+      case .contentGone: "the terminal is gone"
+      case .wakeFailed: "the terminal did not start on the Mac"
+      case .notReady: "the terminal was not ready on the Mac in time"
+      case .sessionKeptItsSize: "the terminal session did not take the new size"
+      case .sizeUnreadable: "could not read the terminal session's size"
+      }
+    }
+  }
+}
+
+/// Whether the session PTY took a `resize`'s grid (`RemoteHostRouter.confirmResize`).
+nonisolated enum RemoteResizeConfirmation: Equatable, Sendable {
+  case matched
+  /// The PTY has another size: the last one read.
+  case mismatch(columns: Int, rows: Int)
+  /// No read of the PTY size succeeded.
+  case unreadable
 }
 
 // MARK: - Outbound payloads
@@ -154,6 +215,10 @@ nonisolated struct RemoteErrorMessage: Encodable, Equatable, Sendable {
   var t = "error"
   let id: Int?
   let message: String
+  /// A machine-readable reason (e.g. `resize_failed`); omitted when none.
+  var code: String?
+  /// The terminal the error is about, for messages without an `id` (`resize`); omitted when none.
+  var contentId: String?
 
   // Encode `id` as an explicit null so clients can match on it.
   func encode(to encoder: any Encoder) throws {
@@ -161,10 +226,12 @@ nonisolated struct RemoteErrorMessage: Encodable, Equatable, Sendable {
     try container.encode(t, forKey: .t)
     try container.encode(id, forKey: .id)
     try container.encode(message, forKey: .message)
+    try container.encodeIfPresent(code, forKey: .code)
+    try container.encodeIfPresent(contentId, forKey: .contentId)
   }
 
   private enum CodingKeys: String, CodingKey {
-    case t, id, message
+    case t, id, message, code, contentId
   }
 }
 

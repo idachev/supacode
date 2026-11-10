@@ -229,13 +229,30 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 - `cols` and `rows` are integers within the 64-bit range; the host clamps them to 20…500 columns and 5…200 rows. A
   missing `cols` or `rows`, or one that is not an integer, makes the host ignore the request
   (it logs it).
-- No direct reply. When the grid changed, every client attached to that content gets the usual
-  `{"t":"size","contentId":"…","cols":…,"rows":…}`.
+- Replies (a valid request for the attached content gets one of these). Every `size` is the size
+  the session's PTY really has (what the `out` stream renders at), read after the change:
+  - The PTY takes the size (within about 3 s): the requesting client gets
+    `{"t":"size","contentId":"…","cols":…,"rows":…}` with that size, even when it already had it;
+    every other client attached to that content gets it when its size changes.
+  - The grid already has that size: the same `size`, at once.
+  - The terminal has no live surface on the Mac (its tab was hidden long enough to hibernate, or
+    has not been shown since Supacode started; `attach` still works then): the host starts it in
+    the background, off screen, and applies the size once the terminal is ready, within about
+    6 s; then `size` as above. The Mac does not switch to the tab.
+  - The PTY keeps another size: a `size` with the size it has, then an `error` as below. A later
+    change of the PTY still arrives as the usual `size`.
+  - The host cannot apply it (the tab is gone, the terminal did not start, it was not ready in
+    time, or the PTY size cannot be read): the requesting client gets
+    `{"t":"error","id":null,"message":"…","code":"resize_failed","contentId":"…"}`
+    (`id` echoes the request's `id` when it had one; `message` is a short English reason).
+  - A newer `resize` from the same client, a `detach` or an `attach` of another content cancels a
+    pending one; the cancelled request gets no reply.
 - The requested size holds until the Mac's own pane for that tab changes layout (a window
   resize, the pane shown or hidden, a split change, zoom); then the pane's size returns and
   the clients get `size`. A later `resize` from any client wins again (last request wins).
 - Old hosts answer an unknown `t` with an `error` and send no `size`; the resize simply has no
-  effect.
+  effect. Hosts before `resize_failed` send nothing when a resize cannot be applied, and nothing
+  for a resize to the current size.
 
 ### tab.new
 
@@ -267,6 +284,9 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 ### errors
 
 - host → client `{"t":"error","id":<request id or null>,"message":"…"}`.
+- Optional fields, omitted when absent: `code`, a machine-readable reason (today only
+  `resize_failed`), and `contentId`, the terminal the error is about (for requests without an `id`).
+  Clients must ignore codes they do not know and fall back to `message`.
 
 ## LAN shortcut
 
