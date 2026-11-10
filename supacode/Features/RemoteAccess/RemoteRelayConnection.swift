@@ -1,5 +1,7 @@
+import CryptoKit
 import Foundation
 import SupacodeSettingsShared
+import SystemConfiguration
 
 nonisolated private let relayLogger = SupaLogger("RemoteAccess")
 
@@ -13,17 +15,97 @@ nonisolated struct RemoteAccessConfig: Decodable, Equatable, Sendable {
   /// The LAN shortcut for phones on the Mac's network; on unless set to false.
   var lan: Bool { lanSetting ?? true }
   private let lanSetting: Bool?
+  /// The name Supacode Remote shows for this Mac, raw from the file; nil when
+  /// missing or not a string. `displayName(configured:computerName:)` applies it.
+  let hostName: String?
 
   private enum CodingKeys: String, CodingKey {
-    case enabled, relayURL, hostKey
+    case enabled, relayURL, hostKey, hostName
     case lanSetting = "lan"
   }
 
-  init(enabled: Bool, relayURL: URL, hostKey: String, lan: Bool? = nil) {
+  init(enabled: Bool, relayURL: URL, hostKey: String, lan: Bool? = nil, hostName: String? = nil) {
     self.enabled = enabled
     self.relayURL = relayURL
     self.hostKey = hostKey
     self.lanSetting = lan
+    self.hostName = hostName
+  }
+
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    enabled = try container.decode(Bool.self, forKey: .enabled)
+    relayURL = try container.decode(URL.self, forKey: .relayURL)
+    hostKey = try container.decode(String.self, forKey: .hostKey)
+    lanSetting = try container.decodeIfPresent(Bool.self, forKey: .lanSetting)
+    // A hand-edited name of the wrong type must not turn remote access off.
+    hostName = try? container.decodeIfPresent(String.self, forKey: .hostName)
+  }
+
+  // MARK: - Host identity and name (docs/plans/2026-11-10-remote-multi-host-design.md)
+
+  /// The longest host name sent; the relay cuts again and its cut is authoritative.
+  static let maxHostNameLength = 64
+
+  /// This Mac's stable relay id (ИД1): the first 16 lowercase hex characters of
+  /// SHA-256 over a fixed prefix and the hardware UUID, so a copied config file
+  /// never makes two Macs share an id and the raw UUID never reaches the relay.
+  /// nil when there is no hardware UUID; the relay then files the Mac as `default`.
+  static func hostID(hardwareUUID: String?) -> String? {
+    guard let hardwareUUID, !hardwareUUID.isEmpty else { return nil }
+    let digest = SHA256.hash(data: Data(("supacode-remote-host-v1:" + hardwareUUID).utf8))
+    let hex = digest.map { String(format: "%02x", $0) }.joined()
+    return String(hex.prefix(16))
+  }
+
+  /// The id of the Mac this process runs on.
+  static var currentHostID: String? { hostID(hardwareUUID: HardwareInfo.uuid) }
+
+  /// The Mac's computer name from the system configuration store, which does
+  /// no network lookup (`Host.current()` can block on name resolution).
+  static var computerName: String {
+    (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? "Mac"
+  }
+
+  /// A host name by the ИД4 rules: control characters (category Cc, so emoji
+  /// joiners survive) become spaces, surrounding whitespace is trimmed, the
+  /// result is cut to `maxHostNameLength` characters. nil when nothing is left.
+  static func normalizedHostName(_ raw: String?) -> String? {
+    guard let raw else { return nil }
+    let spaced = String(
+      String.UnicodeScalarView(
+        raw.unicodeScalars.map { $0.properties.generalCategory == .control ? " " : $0 }))
+    let trimmed = spaced.trimmingCharacters(in: .whitespacesAndNewlines)
+    let cut = String(trimmed.prefix(maxHostNameLength))
+    return cut.isEmpty ? nil : cut
+  }
+
+  /// The name this Mac goes by (ИД4): the configured name, or the computer name
+  /// when it is missing or blank. Empty only when both are blank.
+  static func displayName(configured: String?, computerName: String) -> String {
+    normalizedHostName(configured) ?? normalizedHostName(computerName) ?? ""
+  }
+
+  /// Query characters left unescaped: RFC 3986 unreserved only, so `+`, `&`,
+  /// `=` and `#` in a name never change how the relay splits the query.
+  private static let queryValueAllowed = CharacterSet(
+    charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+  /// The relay `/host` URL with this Mac's `id` and `name` in the query (ИД2):
+  /// existing `id` and `name` items are replaced, every other item is kept. `id`
+  /// is omitted when nil, `name` when it normalizes to nothing.
+  static func hostURL(base: URL, hostID: String?, name: String) -> URL {
+    guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return base }
+    // Compare decoded names: the relay reads `%69d` as `id`.
+    var items = (components.percentEncodedQueryItems ?? []).filter {
+      let name = $0.name.removingPercentEncoding ?? $0.name
+      return name != "id" && name != "name"
+    }
+    let encode = { (value: String) in value.addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? "" }
+    if let hostID { items.append(URLQueryItem(name: "id", value: encode(hostID))) }
+    if let name = normalizedHostName(name) { items.append(URLQueryItem(name: "name", value: encode(name))) }
+    components.percentEncodedQueryItems = items.isEmpty ? nil : items
+    return components.url ?? base
   }
 
   static var clientKeyFileURL: URL {
@@ -46,8 +128,8 @@ nonisolated struct RemoteAccessConfig: Decodable, Equatable, Sendable {
   /// Forces remote access on (`1`) or off (`0`) for this process.
   static let overrideVariable = "SUPACODE_REMOTE_ACCESS"
 
-  /// The relay keeps one host and every Supacode on the Mac reads the same
-  /// config, so a second copy (a dev build from DerivedData, an agent's test
+  /// The relay keeps one host per Mac and every Supacode on the Mac reads the
+  /// same config, so a second copy (a dev build from DerivedData, an agent's test
   /// instance) would take the phone away from the real app. Only the app
   /// installed under `/Applications` (or `~/Applications`) hosts, unless the
   /// override variable says otherwise.
@@ -85,6 +167,10 @@ final class RemoteRelayConnection {
   static let replacedNotice = "replaced"
 
   private let config: RemoteAccessConfig
+  /// This Mac's relay id (ИД1); nil connects as the legacy host `default`.
+  private let hostID: String?
+  /// The name sent in the URL of every new attempt; `rename(_:)` updates it.
+  private(set) var hostName: String
   private let session = URLSession(configuration: .default)
   private var task: URLSessionWebSocketTask?
   private var loop: Task<Void, Never>?
@@ -96,10 +182,14 @@ final class RemoteRelayConnection {
 
   init(
     config: RemoteAccessConfig,
+    hostID: String?,
+    hostName: String,
     onText: @escaping (String) -> Void,
     onConnectionChange: @escaping (Bool) -> Void
   ) {
     self.config = config
+    self.hostID = hostID
+    self.hostName = hostName
     self.onText = onText
     self.onConnectionChange = onConnectionChange
   }
@@ -126,10 +216,22 @@ final class RemoteRelayConnection {
     }
   }
 
+  /// Stores the name for the next attempt's URL and, while a socket is open
+  /// or opening, tells the relay at once with the `@` control frame (ИД3), so
+  /// no phone loses its terminals over a rename.
+  func rename(_ name: String) {
+    hostName = name
+    guard task != nil else { return }
+    send(RemoteHostFrame.renameFrame(name: name))
+    relayLogger.info("Remote access host renamed")
+  }
+
   private func run() async {
     var attempt = 0
     while !Task.isCancelled {
-      var request = URLRequest(url: config.relayURL)
+      // Built per attempt, so a reconnect carries the latest name. Never logged:
+      // the relay URL is private.
+      var request = URLRequest(url: RemoteAccessConfig.hostURL(base: config.relayURL, hostID: hostID, name: hostName))
       request.setValue("Bearer \(config.hostKey)", forHTTPHeaderField: "Authorization")
       let socket = session.webSocketTask(with: request)
       socket.maximumMessageSize = 32 << 20
@@ -184,8 +286,9 @@ final class RemoteRelayConnection {
         isConnected = false
         onConnectionChange(false)
       }
-      // Another Supacode took over the host slot (the relay keeps one host).
-      // Reconnecting would replace it in turn and the two would flap forever.
+      // Another Supacode with this Mac's id took over the host slot (the relay
+      // keeps one socket per host id). Reconnecting would replace it in turn and
+      // the two would flap forever.
       if replaced {
         relayLogger.warning("Another Supacode instance is the remote access host now; this one stops")
         loop = nil

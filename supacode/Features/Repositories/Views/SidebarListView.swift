@@ -21,7 +21,8 @@ struct SidebarListView: View {
 
   var body: some View {
     let state = store.state
-    let structure = state.sidebarStructure
+    // The filtered structure while the filter field has text, else the full one.
+    let structure = state.visibleSidebarStructure
     let currentSelections = state.sidebarSelections
     let selection = Binding<Set<SidebarSelection>>(
       get: { currentSelections },
@@ -45,6 +46,21 @@ struct SidebarListView: View {
       shortcutHintByID = [:]
     }
 
+    // No reordering while filtered: the hidden sections would make a drop
+    // position ambiguous.
+    let moveSections: ((IndexSet, Int) -> Void)? =
+      structure.isFiltered
+      ? nil
+      : { offsets, destination in
+        if let mutation = structure.nativeGroupDrop(offsets: offsets, destination: destination) {
+          store.send(.repositoryGroupsChanged(mutation))
+        } else if sectionSort.allowsReordering,
+          let drop = structure.nativeRepositoryDrop(offsets: offsets, destination: destination)
+        {
+          store.send(.repositoryDropped(drop.repositoryIDs, relativeTo: drop.targetID, after: drop.after))
+        }
+      }
+
     return ScrollViewReader { scrollProxy in
       List(selection: selection) {
         ForEach(structure.sections) { section in
@@ -63,17 +79,16 @@ struct SidebarListView: View {
             return RepositoryGroupDragItem(repositoryID: id.rawValue).itemProvider()
           }
         }
-        .onMove { offsets, destination in
-          if let mutation = structure.nativeGroupDrop(offsets: offsets, destination: destination) {
-            store.send(.repositoryGroupsChanged(mutation))
-          } else if sectionSort.allowsReordering,
-            let drop = structure.nativeRepositoryDrop(offsets: offsets, destination: destination)
-          {
-            store.send(.repositoryDropped(drop.repositoryIDs, relativeTo: drop.targetID, after: drop.after))
-          }
-        }
+        .onMove(perform: moveSections)
       }
       .listStyle(.sidebar)
+      .overlay {
+        if structure.isFiltered, structure.sections.isEmpty {
+          ContentUnavailableView.search(
+            text: state.sidebarFilterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+          )
+        }
+      }
       .onChange(of: settingsFile.repositoryGroups) { _, _ in
         store.send(.repositoryGroupsReloaded)
       }
@@ -174,8 +189,11 @@ private struct SidebarSectionDispatcher: View {
       RepositoryGroupHeader(
         group: group, surface: .sidebar,
         repositoryIDs: Set(store.state.orderedRepositoryIDs().map(\.rawValue))
-      ) {
-        store.send(.repositoryGroupsChanged($0))
+      ) { mutation in
+        // While filtering the group shows a forced-expanded copy; a chevron
+        // click would only rewrite the stored state the user cannot see.
+        if structure.isFiltered, case .sidebarExpanded = mutation { return }
+        store.send(.repositoryGroupsChanged(mutation))
       }
     case .placeholder:
       SidebarPlaceholderView()
@@ -230,6 +248,7 @@ private struct SidebarSectionDispatcher: View {
       if let repository = store.state.repositories[id: repositoryID] {
         SidebarGitRepositorySection(
           repository: repository,
+          isFiltered: structure.isFiltered,
           groupIndent: groupIndent,
           groups: groups,
           hoistSummary: structure.hoistSummaryByRepositoryID[repositoryID],
@@ -244,6 +263,9 @@ private struct SidebarSectionDispatcher: View {
 
 private struct SidebarGitRepositorySection: View {
   let repository: Repository
+  /// While filtering the section shows expanded and ignores toggles, so the
+  /// stored expansion comes back unchanged when the filter is cleared.
+  let isFiltered: Bool
   let groupIndent: CGFloat
   let groups: [SidebarItemGroup]
   /// Non-nil when one or more of this repo's rows were hoisted into the
@@ -262,7 +284,8 @@ private struct SidebarGitRepositorySection: View {
         groups: groups,
         shortcutHintByID: shortcutHintByID,
         store: store,
-        terminalManager: terminalManager
+        terminalManager: terminalManager,
+        isFiltered: isFiltered
       )
       .padding(.leading, groupIndent)
       if let hoistSummary {
@@ -299,8 +322,9 @@ private struct SidebarGitRepositorySection: View {
 
   private var repositoryExpansionBinding: Binding<Bool> {
     Binding(
-      get: { store.state.isRepositoryExpanded(repository.id) },
+      get: { isFiltered || store.state.isRepositoryExpanded(repository.id) },
       set: { isExpanded in
+        guard !isFiltered else { return }
         store.send(.repositoryExpansionChanged(repository.id, isExpanded: isExpanded))
       }
     )

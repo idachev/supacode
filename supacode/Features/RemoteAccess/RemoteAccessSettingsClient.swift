@@ -21,6 +21,8 @@ nonisolated struct RemoteAccessFileStatus: Equatable, Sendable {
   var relayURL: String?
   var hasHostKey: Bool
   var hasConnectionKey: Bool
+  /// `hostName` as written in the file (not trimmed); nil when the key is missing or not a string.
+  var hostName: String?
 
   static let missing = Self(
     presence: .missing, enabled: false, lan: true, relayURL: nil, hasHostKey: false, hasConnectionKey: false)
@@ -90,19 +92,42 @@ nonisolated enum RemoteAccessConfigFile {
       lan: object["lan"] as? Bool ?? true,
       relayURL: relayURL,
       hasHostKey: (object["hostKey"] as? String).map { !$0.isEmpty } ?? false,
-      hasConnectionKey: hasConnectionKey
+      hasConnectionKey: hasConnectionKey,
+      hostName: object["hostName"] as? String
     )
   }
 
-  /// Sets `enabled` and `lan`, keeps every other key, and replaces the file
-  /// atomically with mode 0600 (it holds the host key).
+  /// Sets `enabled` and `lan` and keeps every other key.
   static func write(enabled: Bool, lan: Bool, to url: URL = RemoteAccessConfig.defaultFileURL) throws {
+    try update(to: url) { object in
+      object["enabled"] = enabled
+      object["lan"] = lan
+    }
+    settingsLogger.info("Remote access settings saved: enabled \(enabled), LAN \(lan)")
+  }
+
+  /// Sets `hostName` to the trimmed name, or removes the key when the name is
+  /// nil or blank (the host then uses the computer name). Keeps every other key.
+  static func writeHostName(_ name: String?, to url: URL = RemoteAccessConfig.defaultFileURL) throws {
+    let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    try update(to: url) { object in
+      object["hostName"] = trimmed.isEmpty ? nil : trimmed
+    }
+    settingsLogger.info("Remote access host name \(trimmed.isEmpty ? "removed" : "saved")")
+  }
+
+  /// Reads the file, lets `mutate` change its keys, and replaces the file
+  /// atomically with mode 0600 (it holds the host key). Keys `mutate` does not
+  /// touch stay as they are.
+  static func update(
+    to url: URL = RemoteAccessConfig.defaultFileURL,
+    _ mutate: (inout [String: Any]) -> Void
+  ) throws {
     guard
       let data = try? Data(contentsOf: url),
       var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { throw WriteError.notConfigured }
-    object["enabled"] = enabled
-    object["lan"] = lan
+    mutate(&object)
     let output = try JSONSerialization.data(
       withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     let fileManager = FileManager.default
@@ -114,7 +139,6 @@ nonisolated enum RemoteAccessConfigFile {
       throw WriteError.writeFailed
     }
     try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    settingsLogger.info("Remote access settings saved: enabled \(enabled), LAN \(lan)")
   }
 
   /// The phone's whole connection key (`<relay host>/<client key>`), trimmed.
@@ -129,9 +153,16 @@ nonisolated enum RemoteAccessConfigFile {
 nonisolated struct RemoteAccessClient: Sendable {
   var fileStatus: @Sendable () -> RemoteAccessFileStatus
   var writeFlags: @Sendable (_ enabled: Bool, _ lan: Bool) async throws -> Void
+  /// Writes `hostName`; nil or blank removes the key.
+  var writeHostName: @Sendable (String?) async throws -> Void
   var hostStatus: @MainActor @Sendable () -> RemoteAccessHostStatus
   /// Stops the host and starts it again from the file as it is now.
   var restartHost: @MainActor @Sendable () -> Void
+  /// Sends the new host name to the running host without a restart; a no-op
+  /// when this copy does not host.
+  var renameHost: @MainActor @Sendable (String) -> Void
+  /// The Mac's computer name: the host name when the file sets none.
+  var computerName: @Sendable () -> String
   /// Copies the connection key to the general pasteboard; false when there is none.
   var copyConnectionKey: @MainActor @Sendable () -> Bool
   var revealConfigFolder: @MainActor @Sendable () -> Void
@@ -141,8 +172,11 @@ nonisolated extension RemoteAccessClient: DependencyKey {
   static let liveValue = Self(
     fileStatus: { RemoteAccessConfigFile.readStatus() },
     writeFlags: { try RemoteAccessConfigFile.write(enabled: $0, lan: $1) },
+    writeHostName: { try RemoteAccessConfigFile.writeHostName($0) },
     hostStatus: { RemoteAccessHostController.shared.status },
     restartHost: { RemoteAccessHostController.shared.restart() },
+    renameHost: { RemoteAccessHostController.shared.rename(to: $0) },
+    computerName: { RemoteAccessConfig.computerName },
     copyConnectionKey: {
       guard let key = RemoteAccessConfigFile.connectionKey() else { return false }
       let pasteboard = NSPasteboard.general
@@ -162,8 +196,11 @@ nonisolated extension RemoteAccessClient: DependencyKey {
   static let testValue = Self(
     fileStatus: { .missing },
     writeFlags: { _, _ in },
+    writeHostName: { _ in },
     hostStatus: { .stopped },
     restartHost: {},
+    renameHost: { _ in },
+    computerName: { "" },
     copyConnectionKey: { false },
     revealConfigFolder: {}
   )

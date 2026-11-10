@@ -14,6 +14,9 @@ paths:
   `supacodeGitTests`, `supacodeFeatureTests` or `supacodeTerminalTests`, and `-only-testing:` needs that target name:
   `DEVELOPER_DIR="$(./scripts/select-developer-dir.sh)" xcodebuild test -workspace supacode.xcworkspace -scheme supacode-tests -destination platform=macOS -derivedDataPath .build/DerivedData -only-testing:supacodeFeatureTests/AppFeatureCommandAckTests`.
   The failure output names the target (`✘ supacodeFeatureTests / ...`).
+  A single Swift Testing test needs its `()`: `-only-testing:supacodeFeatureTests/RepositoriesFeatureTests/requestArchiveWorktreeShowsConfirmation()`.
+  Without `()` no test runs and xcodebuild still prints `** TEST SUCCEEDED **`; a suite name
+  alone needs no `()`. **Why:** on 2026-11-10 three reruns "passed" with 0 tests executed.
 - **`@Shared` settings leak between tests.** Tests run in one process, and `@Shared` settings
   (for example `deleteScript`) are process-global. A test that changes one sets it back with
   `defer`, or later tests see the changed value. **Why:** this leak came back twice, once as a

@@ -107,6 +107,46 @@ struct RemoteAccessProtocolTests {
     #expect(RemoteHostRouter.lastLines(text, count: 10) == "one\n  two\nthree")
   }
 
+  @Test func helloCarriesTheHostIDWhenThereIsOne() throws {
+    let hello = RemoteHelloMessage(host: "Office Mac", hostId: "5ff84c3b79a7faaa")
+    let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
+    #expect(json.count == 4)
+    #expect(json["t"] as? String == "hello")
+    #expect(json["v"] as? Int == 1)
+    #expect(json["host"] as? String == "Office Mac")
+    #expect(json["hostId"] as? String == "5ff84c3b79a7faaa")
+  }
+
+  @Test func helloWithoutAHostIDOmitsTheField() throws {
+    let hello = RemoteHelloMessage(host: "Office Mac")
+    let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
+    #expect(json.count == 3)
+    #expect(!json.keys.contains("hostId"))
+    #expect(!json.keys.contains("lan"))
+  }
+
+  @Test func renameFrameGoesToTheControlConnID() throws {
+    let text = RemoteHostFrame.renameFrame(name: "Office Mac")
+    #expect(text.hasPrefix("@\n"))
+    let parsed = try #require(RemoteHostFrame.parse(text))
+    #expect(parsed.connID == RemoteHostFrame.controlConnID)
+    // Field by field: JSONEncoder does not promise a key order.
+    let json = try #require(try JSONSerialization.jsonObject(with: parsed.json) as? [String: Any])
+    #expect(json.count == 2)
+    #expect(json["t"] as? String == "host.name")
+    #expect(json["name"] as? String == "Office Mac")
+  }
+
+  @Test func renameFrameNormalizesTheNameAndOmitsAnEmptyOne() throws {
+    let normalized = try #require(RemoteHostFrame.parse(RemoteHostFrame.renameFrame(name: " a\tb ")))
+    let json = try #require(try JSONSerialization.jsonObject(with: normalized.json) as? [String: Any])
+    #expect(json["name"] as? String == "a b")
+    let empty = try #require(RemoteHostFrame.parse(RemoteHostFrame.renameFrame(name: "  ")))
+    let emptyJSON = try #require(try JSONSerialization.jsonObject(with: empty.json) as? [String: Any])
+    #expect(emptyJSON.count == 1)
+    #expect(emptyJSON["t"] as? String == "host.name")
+  }
+
   @Test func onlyTheInstalledAppHostsUnlessOverridden() {
     #expect(RemoteAccessConfig.mayHost(bundlePath: "/Applications/supacode.app", override: nil))
     #expect(
@@ -114,5 +154,65 @@ struct RemoteAccessProtocolTests {
         bundlePath: "/Users/x/supacode/.build/DerivedData/Build/Products/Debug/supacode.app", override: nil))
     #expect(RemoteAccessConfig.mayHost(bundlePath: "/tmp/supacode.app", override: "1"))
     #expect(!RemoteAccessConfig.mayHost(bundlePath: "/Applications/supacode.app", override: "0"))
+  }
+
+  // MARK: - resize
+
+  private static let attachedContent = UUID(uuidString: "6F9619FF-8B86-D011-B42D-00CF4FC964FF")!
+
+  private typealias ResizeOutcome = Result<RemoteResizeRequest, RemoteResizeRequest.Ignored>
+
+  private static func resize(_ json: String, attached: UUID? = attachedContent) throws -> ResizeOutcome {
+    let message = try #require(RemoteJSON.decodeInbound(Data(json.utf8)))
+    return RemoteResizeRequest.resolve(message, attached: attached)
+  }
+
+  @Test func resizeOfTheAttachedContentIsDecoded() throws {
+    let json = #"{"t":"resize","contentId":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","cols":132,"rows":43}"#
+    let message = try #require(RemoteJSON.decodeInbound(Data(json.utf8)))
+    #expect(message.t == "resize")
+    #expect(
+      try Self.resize(json)
+        == .success(RemoteResizeRequest(contentID: Self.attachedContent, columns: 132, rows: 43)))
+    // The content id is matched as a UUID, not as text.
+    let lowercased = #"{"t":"resize","contentId":"6f9619ff-8b86-d011-b42d-00cf4fc964ff","cols":132,"rows":43}"#
+    #expect(
+      try Self.resize(lowercased)
+        == .success(RemoteResizeRequest(contentID: Self.attachedContent, columns: 132, rows: 43)))
+  }
+
+  @Test func resizeIsClampedToTheHostLimits() throws {
+    func resolved(_ cols: Int, _ rows: Int) throws -> ResizeOutcome {
+      try Self.resize(
+        #"{"t":"resize","contentId":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","cols":\#(cols),"rows":\#(rows)}"#)
+    }
+    func request(_ cols: Int, _ rows: Int) -> ResizeOutcome {
+      .success(RemoteResizeRequest(contentID: Self.attachedContent, columns: cols, rows: rows))
+    }
+    #expect(try resolved(19, 4) == request(20, 5))
+    #expect(try resolved(20, 5) == request(20, 5))
+    #expect(try resolved(500, 200) == request(500, 200))
+    #expect(try resolved(501, 201) == request(500, 200))
+    #expect(try resolved(0, -3) == request(20, 5))
+    #expect(try resolved(10_000, 10_000) == request(500, 200))
+  }
+
+  @Test func resizeWithAMissingOrNonIntegerSizeIsIgnored() throws {
+    let id = "6F9619FF-8B86-D011-B42D-00CF4FC964FF"
+    for fields in [
+      #""cols":80"#, #""rows":24"#, #""cols":"80","rows":24"#, #""cols":80.5,"rows":24"#,
+      #""cols":80,"rows":null"#, #""cols":80,"rows":true"#, #""cols":[80],"rows":24"#,
+    ] {
+      #expect(try Self.resize(#"{"t":"resize","contentId":"\#(id)",\#(fields)}"#) == .failure(.invalidSize))
+    }
+  }
+
+  @Test func resizeOfAContentThisConnectionIsNotAttachedToIsIgnored() throws {
+    let other = #"{"t":"resize","contentId":"\#(UUID().uuidString)","cols":80,"rows":24}"#
+    #expect(try Self.resize(other) == .failure(.notAttached))
+    let attachedID = #"{"t":"resize","contentId":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","cols":80,"rows":24}"#
+    #expect(try Self.resize(attachedID, attached: nil) == .failure(.notAttached))
+    #expect(try Self.resize(#"{"t":"resize","cols":80,"rows":24}"#) == .failure(.notAttached))
+    #expect(try Self.resize(#"{"t":"resize","contentId":"tab-1","cols":80,"rows":24}"#) == .failure(.notAttached))
   }
 }

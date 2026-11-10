@@ -1,4 +1,5 @@
 // Pure helpers for the relay framing in docs/remote-access-protocol.md.
+import type { HostInfo } from "./hosts";
 
 /** A host frame is `<connId>\n<json>`. Returns null when the prefix is missing. */
 export function parseHostFrame(text: string): { connId: string; json: string } | null {
@@ -49,8 +50,16 @@ export function connOpen(sameNet: boolean): string {
   return JSON.stringify({ t: "conn.open", sameNetwork: sameNet });
 }
 
-export function relayStatus(hostOnline: boolean): string {
-  return JSON.stringify({ t: "relay", hostOnline });
+/**
+ * The relay status message (ПР1). `host` is the client's bound hostId (omitted
+ * for an unbound client) and `hosts` every known host; both are omitted when
+ * not given.
+ */
+export function relayStatus(hostOnline: boolean, extra: { host?: string; hosts?: HostInfo[] } = {}): string {
+  const message: { t: "relay"; hostOnline: boolean; host?: string; hosts?: HostInfo[] } = { t: "relay", hostOnline };
+  if (extra.host !== undefined) message.host = extra.host;
+  if (extra.hosts !== undefined) message.hosts = extra.hosts;
+  return JSON.stringify(message);
 }
 
 export function hostOfflineError(id: number | null): string {

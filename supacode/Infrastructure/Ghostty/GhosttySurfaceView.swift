@@ -101,6 +101,8 @@ final class GhosttySurfaceView: NSView, Identifiable {
   // Only ever holds sizes actually pushed to ghostty_surface_set_size; a rejected
   // degenerate size must be re-evaluated on the next layout pass.
   private var lastAppliedBackingSize: CGSize = .zero
+  // A remote client's `resize` held over the pane's own size; see RequestedGridHold.
+  private var requestedGridHold = RequestedGridHold()
   private var lastPerformKeyEvent: TimeInterval?
   private var currentCursor: NSCursor = .iBeam
   private var focused = false
@@ -518,6 +520,8 @@ final class GhosttySurfaceView: NSView, Identifiable {
     if window != nil {
       hasBeenInWindow = true
     }
+    // Shown or hidden is a layout change of the pane: a held remote grid ends.
+    releaseRequestedGrid()
     updateScreenObservers()
     updateContentScale()
     notifySizeChanged()
@@ -1036,6 +1040,8 @@ final class GhosttySurfaceView: NSView, Identifiable {
     // halve the applied size and poison the hibernation freeze.
     guard window != nil || !hasBeenInWindow else { return }
     let backingSize = convertToBacking(contentSize ?? bounds.size)
+    // A remote client's grid holds while the pane keeps the size it had then.
+    if requestedGridHold.keeps(layoutBackingSize: backingSize) { return }
     let currentSize = ghostty_surface_size(surface)
     let decision = ResizePolicy.decision(
       backingSize: backingSize,
@@ -1045,11 +1051,45 @@ final class GhosttySurfaceView: NSView, Identifiable {
     )
     guard decision == .apply else { return }
     lastAppliedBackingSize = backingSize
+    pushSurfaceSize(backingSize)
+  }
+
+  private func pushSurfaceSize(_ backingSize: CGSize) {
+    guard let surface else { return }
     ghostty_surface_set_size(
       surface,
       UInt32(max(1, Int(backingSize.width.rounded(.down)))),
       UInt32(max(1, Int(backingSize.height.rounded(.down))))
     )
+  }
+
+  /// A grid a remote client asked for (`resize`), held over the pane's own
+  /// size until the pane's next layout change: a layout pass that measures a
+  /// different size, or the view leaving or joining a window.
+  struct RequestedGridHold: Equatable {
+    /// The pane's backing size the held grid replaced; nil while nothing is held.
+    private(set) var paneBackingSize: CGSize?
+
+    /// Starts a hold over `paneBackingSize`. A hold already active keeps its
+    /// pane size, so a second request never records the first one as the pane's.
+    mutating func hold(replacing paneBackingSize: CGSize) {
+      if self.paneBackingSize == nil { self.paneBackingSize = paneBackingSize }
+    }
+
+    /// A layout pass measured `backingSize`. True keeps the requested grid (the
+    /// pane did not change); false ends any hold, so the pane's size applies.
+    mutating func keeps(layoutBackingSize backingSize: CGSize) -> Bool {
+      guard let pane = paneBackingSize else { return false }
+      if backingSize == pane { return true }
+      paneBackingSize = nil
+      return false
+    }
+
+    /// Ends the hold; the pane size it replaced, or nil when nothing was held.
+    mutating func release() -> CGSize? {
+      defer { paneBackingSize = nil }
+      return paneBackingSize
+    }
   }
 
   enum ResizePolicy {
@@ -1080,12 +1120,14 @@ final class GhosttySurfaceView: NSView, Identifiable {
   enum GridCap {
     typealias Grid = (columns: Int, rows: Int)
 
-    /// The backing size that renders at most `limit`; nil when the grid already
-    /// fits or the cell metrics are still unknown.
-    static func backingSize(current: CGSize, grid: Grid, cell: CGSize, limit: Grid) -> CGSize? {
-      guard cell.width > 0, cell.height > 0, grid.columns > limit.columns || grid.rows > limit.rows else { return nil }
-      let extraColumns = max(0, grid.columns - limit.columns)
-      let extraRows = max(0, grid.rows - limit.rows)
+    /// The backing size that renders at most `limit`, or exactly `limit` when
+    /// `exact` (growing too); nil when the grid already fits (or already
+    /// matches) or the cell metrics are still unknown.
+    static func backingSize(current: CGSize, grid: Grid, cell: CGSize, limit: Grid, exact: Bool = false) -> CGSize? {
+      guard cell.width > 0, cell.height > 0 else { return nil }
+      let extraColumns = exact ? grid.columns - limit.columns : max(0, grid.columns - limit.columns)
+      let extraRows = exact ? grid.rows - limit.rows : max(0, grid.rows - limit.rows)
+      guard extraColumns != 0 || extraRows != 0 else { return nil }
       return CGSize(
         width: current.width - CGFloat(extraColumns) * cell.width,
         height: current.height - CGFloat(extraRows) * cell.height
@@ -1094,10 +1136,11 @@ final class GhosttySurfaceView: NSView, Identifiable {
   }
 
   /// Shrinks a surface that was never in a window to at most `maxColumns` ×
-  /// `maxRows`. Once the view is mounted it follows its pane again, so the cap
-  /// only shapes a terminal nobody sees on the Mac. Returns false while the
-  /// core surface or its cell metrics do not exist yet.
-  func capUnmountedGrid(maxColumns: Int, maxRows: Int) -> Bool {
+  /// `maxRows`, or sizes it to exactly that when `exact`. Once the view is
+  /// mounted it follows its pane again, so the cap only shapes a terminal
+  /// nobody sees on the Mac. Returns false while the core surface or its cell
+  /// metrics do not exist yet.
+  func capUnmountedGrid(maxColumns: Int, maxRows: Int, exact: Bool = false) -> Bool {
     guard let surface else { return false }
     guard window == nil, !hasBeenInWindow else { return true }
     let size = ghostty_surface_size(surface)
@@ -1108,13 +1151,50 @@ final class GhosttySurfaceView: NSView, Identifiable {
         current: CGSize(width: CGFloat(size.width_px), height: CGFloat(size.height_px)),
         grid: (Int(size.columns), Int(size.rows)),
         cell: CGSize(width: CGFloat(size.cell_width_px), height: CGFloat(size.cell_height_px)),
-        limit: (maxColumns, maxRows)
+        limit: (maxColumns, maxRows),
+        exact: exact
       )
     else { return true }
     // Off-window backing conversion is 1x, so the point frame is the pixel size.
     setFrameSize(capped)
     updateSurfaceSize()
     return true
+  }
+
+  /// Sets the grid to exactly `columns` × `rows` for a remote client's
+  /// `resize`. A surface the Mac never showed takes it as its start size (see
+  /// `capUnmountedGrid`); a shown one holds it over its pane's size until the
+  /// pane's next layout change (`RequestedGridHold`). Returns false while the
+  /// core surface or its cell metrics do not exist yet.
+  func applyRequestedGrid(columns: Int, rows: Int) -> Bool {
+    guard let surface else { return false }
+    guard window != nil || hasBeenInWindow else {
+      return capUnmountedGrid(maxColumns: columns, maxRows: rows, exact: true)
+    }
+    let size = ghostty_surface_size(surface)
+    guard size.cell_width_px > 0, size.cell_height_px > 0 else { return false }
+    guard
+      let requested = GridCap.backingSize(
+        current: CGSize(width: CGFloat(size.width_px), height: CGFloat(size.height_px)),
+        grid: (Int(size.columns), Int(size.rows)),
+        cell: CGSize(width: CGFloat(size.cell_width_px), height: CGFloat(size.cell_height_px)),
+        limit: (columns, rows),
+        exact: true
+      )
+    else { return true }
+    requestedGridHold.hold(replacing: lastAppliedBackingSize)
+    // Recorded as applied, so the hibernation freeze pairs it with the grid it renders.
+    lastAppliedBackingSize = requested
+    pushSurfaceSize(requested)
+    return true
+  }
+
+  /// Ends a held remote grid and puts the pane's size back; a window the view
+  /// joins then re-measures it in the layout pass that follows.
+  private func releaseRequestedGrid() {
+    guard let pane = requestedGridHold.release() else { return }
+    lastAppliedBackingSize = pane
+    pushSurfaceSize(pane)
   }
 
   func updateCellSize(width: UInt32, height: UInt32) {

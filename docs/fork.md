@@ -98,6 +98,34 @@ The change lives in `computeHighlightHoists` and `computeSidebarStructure`
 - The tests `pinnedActiveRowMovesIntoActiveAboveThePinnedSection` and
   `entriesRenderInActiveThenPinnedThenUnreadOrder` fail if a merge brings back the upstream order.
 
+## Sidebar Filter Field
+
+A filter field sits above the sidebar list (⇧⌘F focuses it, **View > Filter Sidebar**; Esc
+clears it and focuses the selected worktree's terminal, as in the web app). It finds rows with
+the same rules as the Android and web apps of Supacode Remote:
+
+- One trimmed, lowercased needle; no tokens, no diacritic folding.
+- A substring match, or a fuzzy one: 0 edits for up to 3 characters, 1 for 4-5, 2 for 6 and
+  more (missing, extra, changed letter or two swapped neighbours).
+- Searched: the repository's displayed name, and a row's title (custom, else displayed name),
+  worktree name and branch. Not searched: tab titles, paths, group names.
+- A repository name match keeps all its rows. Otherwise only matching rows stay; an empty
+  repository, group or Active / Pinned section disappears. Groups, repositories and branch
+  folders show expanded while filtering, without changing their stored collapsed state.
+- ⌃1..⌃9 and next / previous worktree walk the visible (filtered) rows, collapsed or not.
+  Repository and worktree reordering is off while filtering, and the group / branch-folder
+  chevrons do not change the stored collapse state.
+
+`SidebarFilter` (`supacode/Features/Repositories/BusinessLogic/SidebarFilter.swift`) holds the
+matcher. `recomputeSidebarStructureIfChanged` builds `filteredSidebarStructure` next to the
+unfiltered `sidebarStructure`, which stays the source for the remote snapshot and drag order.
+
+### Keeping It On Upstream Merges
+
+- Keep the `filter:` parameter of `computeSidebarStructure`, applied after
+  `computeHighlightHoists` (the menu bar reuses that function unfiltered).
+- `SidebarFilterTests` locks the matching rules.
+
 ## Terminal Layout: Splits in Each Tab
 
 Upstream #786 (`58438348`) replaced the old "split per tab" terminal layout with "tabs per

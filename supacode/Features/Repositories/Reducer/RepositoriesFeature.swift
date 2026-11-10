@@ -273,6 +273,15 @@ struct RepositoriesFeature {
     /// in the recompute helper keeps a no-op rebuild from invalidating
     /// SwiftUI when the user-visible layout didn't actually change.
     var sidebarStructure: SidebarStructure = .placeholder
+    /// Text of the sidebar filter field. Matching rules mirror Supacode Remote
+    /// (see `SidebarFilter`); an empty or whitespace-only query filters nothing.
+    var sidebarFilterQuery = ""
+    /// Whether the sidebar filter field has keyboard focus; ⇧⌘F sets it.
+    var isSidebarFilterFocused = false
+    /// The structure the sidebar shows while `sidebarFilterQuery` has text;
+    /// nil otherwise. Rebuilt with `sidebarStructure` in the post-reduce hook,
+    /// which stays unfiltered (the remote snapshot and drag order read it).
+    var filteredSidebarStructure: SidebarStructure?
     /// Cached projection of the focused row's display fields. The detail body
     /// reads this directly instead of `sidebarItems[id: id]` so per-leaf agent
     /// / notification mutations on the focused row don't invalidate the
@@ -384,6 +393,13 @@ struct RepositoriesFeature {
     /// structure so repo/folder sections follow the selected sort. Does not
     /// rewrite `sidebar.sections`.
     case sidebarSectionSortChanged
+    /// The sidebar filter field's text changed (typing, the clear button, Esc).
+    case sidebarFilterQueryChanged(String)
+    /// The sidebar filter field gained or lost focus, or ⇧⌘F asked for it.
+    case sidebarFilterFocusChanged(Bool)
+    /// Esc in the sidebar filter field: clear it and hand focus to the selected
+    /// worktree's terminal, as the web app of Supacode Remote does.
+    case sidebarFilterEscaped
     case setOpenPanelPresented(Bool)
     case requestAddRemoteRepository
     case requestEditRemoteRepository(Repository.ID)
@@ -3725,6 +3741,23 @@ struct RepositoriesFeature {
         // and rebuilds `sidebarStructure` in the selected display order.
         return .none
 
+      case .sidebarFilterQueryChanged(let query):
+        // The post-reduce hook rebuilds `filteredSidebarStructure`.
+        state.sidebarFilterQuery = query
+        return .none
+
+      case .sidebarFilterFocusChanged(let isFocused):
+        state.isSidebarFilterFocused = isFocused
+        return .none
+
+      case .sidebarFilterEscaped:
+        state.sidebarFilterQuery = ""
+        state.isSidebarFilterFocused = false
+        guard let worktreeID = state.selectedWorktreeID, state.sidebarItems[id: worktreeID] != nil else {
+          return .none
+        }
+        return .send(.sidebarItems(.element(id: worktreeID, action: .focusTerminalRequested)))
+
       case .setOpenPanelPresented(let isPresented):
         state.isOpenPanelPresented = isPresented
         return .none
@@ -4125,7 +4158,7 @@ struct RepositoriesFeature {
         // Snapshot-driven menu items capture only the slot index, so the
         // current `hotkeySlots` lookup happens here at action time. Out-of-range
         // slots beep so the user gets feedback that the shortcut hit nothing.
-        let slots = state.sidebarStructure.hotkeySlots
+        let slots = state.visibleSidebarStructure.hotkeySlots
         guard slots.indices.contains(index) else {
           return .run { _ in NSSound.beep() }
         }
@@ -5878,7 +5911,7 @@ extension RepositoriesFeature.State {
     // slot picker all bind to the same visual ordering. The post-reduce
     // hook keeps the cache fresh for every structure-affecting action,
     // including in tests, so reading the cache here is always live.
-    let ids = sidebarStructure.hotkeySlots.map(\.id)
+    let ids = visibleSidebarStructure.hotkeySlots.map(\.id)
     guard !ids.isEmpty else { return nil }
     if let currentID = selectedWorktreeID, let currentIndex = ids.firstIndex(of: currentID) {
       return ids[(currentIndex + offset + ids.count) % ids.count]

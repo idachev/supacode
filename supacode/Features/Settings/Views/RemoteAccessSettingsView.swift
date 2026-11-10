@@ -4,6 +4,7 @@ import SwiftUI
 
 struct RemoteAccessSettingsView: View {
   let store: StoreOf<RemoteAccessFeature>
+  @FocusState private var isHostNameFocused: Bool
 
   var body: some View {
     Form {
@@ -30,9 +31,27 @@ struct RemoteAccessSettingsView: View {
         }
         .help("Let phones on this network connect directly; applies right away")
         .disabled(!store.file.enabled)
+        TextField(
+          text: Binding(get: { store.hostNameDraft }, set: { store.send(.hostNameDraftChanged($0)) }),
+          prompt: Text(store.computerName)
+        ) {
+          Text("Mac name")
+          Text("Shown in Supacode Remote's list of Macs.")
+        }
+        .focused($isHostNameFocused)
+        .onSubmit { store.send(.hostNameSubmitted) }
+        .onChange(of: isHostNameFocused) { _, isFocused in
+          if !isFocused { store.send(.hostNameSubmitted) }
+        }
+        .help("The name Supacode Remote shows for this Mac; applies right away")
       } footer: {
         if !store.host.mayHost {
-          Text("Changes are saved to the configuration file; this copy of Supacode does not host.")
+          Text(
+            """
+            Changes are saved to the configuration file; this copy of Supacode does not host. \
+            The Mac name reaches the phone when the hosting app starts again.
+            """
+          )
         }
       }
       .disabled(!store.file.isConfigured)

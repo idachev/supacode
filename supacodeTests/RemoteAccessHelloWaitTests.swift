@@ -1,4 +1,5 @@
 import Clocks
+import ComposableArchitecture
 import ConcurrencyExtras
 import Foundation
 import Testing
@@ -7,9 +8,42 @@ import Testing
 
 /// The bounded wait a same-network `hello` takes while the LAN endpoint starts
 /// (`RemoteHostRouter.finishes(_:within:clock:)`), driven by a `TestClock`.
-/// The router itself needs a live app store, so only its helpers are tested here.
+/// The `hello` name tests build a router on an inert store; nothing starts.
 @Suite(.serialized)
 struct RemoteAccessHelloWaitTests {
+  @MainActor
+  @Test func helloUsesTheRenamedName() {
+    let router = RemoteHostRouter(
+      source: RemoteSnapshotSource(
+        store: Store(initialState: AppFeature.State()) { EmptyReducer<AppFeature.State, AppFeature.Action>() },
+        terminalManager: WorktreeTerminalManager(runtime: GhosttyRuntime())
+      ),
+      hostName: "iMac",
+      hostID: "5ff84c3b79a7faaa"
+    )
+    defer { router.stop() }
+    #expect(router.helloMessage(for: "c1") == RemoteHelloMessage(host: "iMac", hostId: "5ff84c3b79a7faaa"))
+    router.rename(to: "  Office Mac ")
+    #expect(router.hostName == "Office Mac")
+    #expect(router.helloMessage(for: "c1") == RemoteHelloMessage(host: "Office Mac", hostId: "5ff84c3b79a7faaa"))
+  }
+
+  @MainActor
+  @Test func aBlankRenameFallsBackToTheComputerName() {
+    let router = RemoteHostRouter(
+      source: RemoteSnapshotSource(
+        store: Store(initialState: AppFeature.State()) { EmptyReducer<AppFeature.State, AppFeature.Action>() },
+        terminalManager: WorktreeTerminalManager(runtime: GhosttyRuntime())
+      ),
+      hostName: "Office Mac",
+      hostID: nil
+    )
+    defer { router.stop() }
+    router.rename(to: " ")
+    let expected = RemoteAccessConfig.displayName(configured: nil, computerName: RemoteAccessConfig.computerName)
+    #expect(router.helloMessage(for: "c1") == RemoteHelloMessage(host: expected))
+  }
+
   @Test func onlySameNetworkPhonesWaitAndOnlyWhileTheLANStarts() {
     #expect(RemoteHostRouter.helloWaitsForLAN(sameNetwork: true, lanStarting: true))
     #expect(!RemoteHostRouter.helloWaitsForLAN(sameNetwork: true, lanStarting: false))

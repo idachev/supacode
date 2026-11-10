@@ -31,6 +31,39 @@ struct TerminalRenderingPolicyTests {
     #expect(unmeasured == nil)
   }
 
+  @Test func anExactGridGrowsByWholeCellsAndKeepsThePadding() {
+    // 80 × 24 cells of 8 × 16 px plus a 6 px padding remainder, asked for 200 × 60.
+    let sized = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 80 * 8 + 6, height: 24 * 16 + 6),
+      grid: (80, 24), cell: CGSize(width: 8, height: 16), limit: (200, 60), exact: true)
+    #expect(sized == CGSize(width: 200 * 8 + 6, height: 60 * 16 + 6))
+  }
+
+  @Test func anExactGridGrowsOneAxisAndShrinksTheOther() {
+    let sized = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 403 * 8 + 6, height: 24 * 16 + 6),
+      grid: (403, 24), cell: CGSize(width: 8, height: 16), limit: (100, 50), exact: true)
+    #expect(sized == CGSize(width: 100 * 8 + 6, height: 50 * 16 + 6))
+  }
+
+  @Test func anExactGridLeavesAMatchingOrUnmeasuredGridAlone() {
+    let matching = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 806, height: 486),
+      grid: (100, 30), cell: CGSize(width: 8, height: 16), limit: (100, 30), exact: true)
+    #expect(matching == nil)
+    let unmeasured = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 640, height: 384),
+      grid: (80, 24), cell: CGSize(width: 0, height: 0), limit: (200, 60), exact: true)
+    #expect(unmeasured == nil)
+  }
+
+  @Test func theDefaultCapNeverGrowsASmallGrid() {
+    let capped = GhosttySurfaceView.GridCap.backingSize(
+      current: CGSize(width: 80 * 8 + 6, height: 24 * 16 + 6),
+      grid: (80, 24), cell: CGSize(width: 8, height: 16), limit: (120, 40))
+    #expect(capped == nil)
+  }
+
   @Test func resizeSkipsOnlySizesThatWereActuallyApplied() {
     let applied = CGSize(width: 1600, height: 1200)
     let decision = GhosttySurfaceView.ResizePolicy.decision(
@@ -133,4 +166,54 @@ struct TerminalRenderingPolicyTests {
     #expect(decision == .apply)
   }
 
+  // MARK: - Requested grid hold (remote `resize`)
+  // `keeps` and `release` are mutating, so they run outside `#expect`.
+
+  @Test func aRequestedGridHoldsWhileThePaneKeepsItsSize() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    let pane = CGSize(width: 1606, height: 966)
+    hold.hold(replacing: pane)
+    // Layout passes that measure the same pane keep the requested grid.
+    let firstPass = hold.keeps(layoutBackingSize: pane)
+    let secondPass = hold.keeps(layoutBackingSize: pane)
+    #expect(firstPass)
+    #expect(secondPass)
+    #expect(hold.paneBackingSize == pane)
+  }
+
+  @Test func aRequestedGridEndsAtThePanesNextSizeChange() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    hold.hold(replacing: CGSize(width: 1606, height: 966))
+    let resized = hold.keeps(layoutBackingSize: CGSize(width: 1206, height: 966))
+    #expect(!resized)
+    #expect(hold.paneBackingSize == nil)
+    // Once released, later passes follow the pane as usual.
+    let later = hold.keeps(layoutBackingSize: CGSize(width: 1606, height: 966))
+    #expect(!later)
+  }
+
+  @Test func aLaterRequestKeepsThePaneSizeOfTheFirstHold() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    let pane = CGSize(width: 1606, height: 966)
+    hold.hold(replacing: pane)
+    // The second request replaces the applied size with the first request's grid, not the pane's.
+    hold.hold(replacing: CGSize(width: 806, height: 486))
+    #expect(hold.paneBackingSize == pane)
+    let kept = hold.keeps(layoutBackingSize: pane)
+    #expect(kept)
+  }
+
+  @Test func showingOrHidingThePaneReleasesTheRequestedGrid() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    let nothingHeld = hold.release()
+    #expect(nothingHeld == nil)
+    let pane = CGSize(width: 1606, height: 966)
+    hold.hold(replacing: pane)
+    let released = hold.release()
+    let releasedAgain = hold.release()
+    #expect(released == pane)
+    #expect(releasedAgain == nil)
+    let kept = hold.keeps(layoutBackingSize: pane)
+    #expect(!kept)
+  }
 }

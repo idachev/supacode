@@ -9,6 +9,8 @@ import Foundation
 nonisolated enum RemoteHostFrame {
   /// The connId that broadcasts a host frame to every phone.
   static let broadcastConnID = "*"
+  /// The reserved connId of host → relay control frames (ИД3); never a phone's.
+  static let controlConnID = "@"
 
   static func parse(_ text: String) -> (connID: String, json: Data)? {
     guard let newline = text.firstIndex(of: "\n"), newline != text.startIndex else { return nil }
@@ -19,6 +21,13 @@ nonisolated enum RemoteHostFrame {
 
   static func encode(connID: String, payload: Data) -> String {
     connID + "\n" + (String(bytes: payload, encoding: .utf8) ?? "{}")
+  }
+
+  /// `@\n{"t":"host.name","name":…}`: tells the relay this Mac's new name
+  /// without a reconnect. The name is normalized (ИД4) and omitted when empty.
+  static func renameFrame(name: String) -> String {
+    let message = RemoteHostNameMessage(name: RemoteAccessConfig.normalizedHostName(name))
+    return encode(connID: controlConnID, payload: RemoteJSON.encode(message))
   }
 }
 
@@ -33,8 +42,83 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
   var b64: String?
   /// `tab.new`: the worktree to open the tab in.
   var worktreeId: String?
+  /// `tab.new`: the optional start size (`RemoteTabNewGrid.resolve`);
+  /// `resize`: the requested size (`RemoteResizeRequest.resolve`).
+  var cols: RemoteLenientInt?
+  var rows: RemoteLenientInt?
   /// `conn.open` from the relay: the phone is on the Mac's network.
   var sameNetwork: Bool?
+}
+
+/// An optional integer field that never fails the message: a value that is not
+/// an integer (a string, a fraction, out of range) decodes as nil, so one bad
+/// optional field cannot drop the whole request.
+nonisolated struct RemoteLenientInt: Decodable, Equatable, Sendable {
+  let value: Int?
+
+  init(_ value: Int?) {
+    self.value = value
+  }
+
+  init(from decoder: any Decoder) throws {
+    value = try? decoder.singleValueContainer().decode(Int.self)
+  }
+}
+
+/// The grid a phone-opened tab starts at while the Mac does not show it.
+nonisolated struct RemoteTabNewGrid: Equatable, Sendable {
+  static let columnRange = 20...500
+  static let rowRange = 5...200
+
+  let columns: Int
+  let rows: Int
+  /// True when the phone asked for this size: the terminal takes it exactly,
+  /// growing if needed. False for the default cap, which only shrinks.
+  let exact: Bool
+
+  /// The phone's `cols` × `rows`, clamped to `columnRange` × `rowRange`, when
+  /// both are integers; otherwise the default cap `fallback`.
+  static func resolve(cols: RemoteLenientInt?, rows: RemoteLenientInt?, fallback: (columns: Int, rows: Int)) -> Self {
+    guard let columns = cols?.value, let rowCount = rows?.value else {
+      return Self(columns: fallback.columns, rows: fallback.rows, exact: false)
+    }
+    return Self(
+      columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
+      rows: min(max(rowCount, rowRange.lowerBound), rowRange.upperBound),
+      exact: true)
+  }
+}
+
+/// A client's `resize` of the terminal it is attached to, checked and clamped
+/// to `RemoteTabNewGrid.columnRange` × `RemoteTabNewGrid.rowRange`.
+nonisolated struct RemoteResizeRequest: Equatable, Sendable {
+  let contentID: UUID
+  let columns: Int
+  let rows: Int
+
+  /// Why a `resize` is ignored (logged on the host; the client gets no reply).
+  nonisolated enum Ignored: Error, Equatable {
+    case notAttached
+    case invalidSize
+  }
+
+  /// The request, or why it is ignored: a content other than `attached` (or
+  /// none attached), or `cols` / `rows` missing or not an integer.
+  static func resolve(_ message: RemoteInboundMessage, attached: UUID?) -> Result<Self, Ignored> {
+    guard let attached, let raw = message.contentId, UUID(uuidString: raw) == attached else {
+      return .failure(.notAttached)
+    }
+    guard let columns = message.cols?.value, let rows = message.rows?.value else {
+      return .failure(.invalidSize)
+    }
+    let columnRange = RemoteTabNewGrid.columnRange
+    let rowRange = RemoteTabNewGrid.rowRange
+    return .success(
+      Self(
+        contentID: attached,
+        columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
+        rows: min(max(rows, rowRange.lowerBound), rowRange.upperBound)))
+  }
 }
 
 // MARK: - Outbound payloads
@@ -42,9 +126,19 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
 nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
   var t = "hello"
   var v = 1
+  /// The host name (ИД4): the configured name or the computer name.
   let host: String
+  /// This Mac's relay id (ИД1); omitted when it has none.
+  var hostId: String?
   /// Where a phone on the Mac's network can try the LAN shortcut; omitted otherwise.
   var lan: RemoteLANCandidate?
+}
+
+/// The host → relay rename control frame's body (ИД3), sent on `controlConnID`.
+nonisolated struct RemoteHostNameMessage: Encodable, Equatable, Sendable {
+  var t = "host.name"
+  /// Omitted when the name normalizes to nothing.
+  var name: String?
 }
 
 nonisolated struct RemoteLANCandidate: Encodable, Equatable, Sendable {

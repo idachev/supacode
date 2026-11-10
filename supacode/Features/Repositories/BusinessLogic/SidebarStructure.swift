@@ -299,6 +299,9 @@ struct SidebarStructure: Equatable, Sendable {
   /// Persisted repository order used to resolve identity-based drop targets
   /// into the index space of the sidebar sections.
   var reorderableRepositoryIDs: [Repository.ID]
+  /// True for the structure built for a non-empty sidebar filter: groups and
+  /// repository sections render expanded, and repository drag is off.
+  var isFiltered: Bool = false
 
   /// Group headers share the List's native move gesture with repository sections.
   /// Child sections do not count as group positions.
@@ -397,6 +400,26 @@ extension RepositoriesFeature.State {
     if new != sidebarStructure {
       sidebarStructure = new
     }
+    // The unfiltered structure above stays the source for the remote snapshot
+    // and drag order; the filtered one is what the sidebar shows while the
+    // filter field has text.
+    let filtered = SidebarFilter(query: sidebarFilterQuery).map {
+      computeSidebarStructure(
+        groupPinned: groupPinned,
+        groupActive: groupActive,
+        sectionSort: sectionSort,
+        filter: $0
+      )
+    }
+    if filtered != filteredSidebarStructure {
+      filteredSidebarStructure = filtered
+    }
+  }
+
+  /// What the sidebar renders and what ⌃1..⌃9 and next / previous worktree
+  /// walk: the filtered structure while the filter has text, else the full one.
+  var visibleSidebarStructure: SidebarStructure {
+    filteredSidebarStructure ?? sidebarStructure
   }
 
   /// Refreshes the cached `selectedWorktreeSlice` from the focused row, using
@@ -527,7 +550,7 @@ extension RepositoriesFeature.Action {
     case .repositoryGroupCreation(.confirm),
       .repositoryGroupsChanged, .repositoryGroupsReloaded, .revealSelectedWorktreeInSidebar,
       .sidebarGroupingTogglesChanged, .sidebarNestByBranchChanged,
-      .sidebarSectionSortChanged,
+      .sidebarSectionSortChanged, .sidebarFilterQueryChanged, .sidebarFilterEscaped,
       .repositoryExpansionChanged, .branchNestExpansionChanged,
       .setAllSidebarGroupsExpanded,
       .setMoveNotifiedWorktreeToTop,
@@ -684,6 +707,7 @@ extension RepositoriesFeature.Action {
       .openRepositories,
       .revealHoistedWorktreeInSidebar,
       .consumePendingSidebarReveal,
+      .sidebarFilterFocusChanged,
       .createRandomWorktree,
       .promptedWorktreeCreationDataLoaded, .promptedWorktreeBranchesLoaded,
       .startPromptedWorktreeCreation,
@@ -797,7 +821,8 @@ extension RepositoriesFeature.State {
   func computeSidebarStructure(
     groupPinned: Bool,
     groupActive: Bool,
-    sectionSort: SidebarSectionSort = .default
+    sectionSort: SidebarSectionSort = .default,
+    filter: SidebarFilter? = nil
   ) -> SidebarStructure {
     if !isInitialLoadComplete, repositories.isEmpty {
       return SidebarStructure(
@@ -814,39 +839,69 @@ extension RepositoriesFeature.State {
     let hoists = computeHighlightHoists(groupPinned: groupPinned, groupActive: groupActive)
     let repoSections = buildRepositorySections(hoisted: hoists.hoistedSet, sectionSort: sectionSort)
 
-    var sections: [SidebarStructure.Section] = []
-    if !hoists.active.isEmpty {
-      sections.append(.highlight(kind: .active, rowIDs: hoists.active))
+    // Filtering runs on the built pieces, never inside `computeHighlightHoists`
+    // (the menu bar reuses it). Hidden hoisted rows stay in `hoistedSet`, so
+    // they do not fall back into their repository section.
+    var activeRowIDs = hoists.active
+    var pinnedRowIDs = hoists.pinned
+    var repositorySections = repoSections.sections
+    if let filter {
+      let matched = sidebarFilterMatchedRepositoryIDs(filter)
+      activeRowIDs = activeRowIDs.filter {
+        sidebarFilterKeepsRow($0, filter: filter, matchedRepositoryIDs: matched)
+      }
+      pinnedRowIDs = pinnedRowIDs.filter {
+        sidebarFilterKeepsRow($0, filter: filter, matchedRepositoryIDs: matched)
+      }
+      repositorySections = repositorySections.compactMap {
+        sidebarFilteredSection($0, filter: filter, matchedRepositoryIDs: matched)
+      }
     }
-    if !hoists.pinned.isEmpty {
-      sections.append(.highlight(kind: .pinned, rowIDs: hoists.pinned))
+
+    var sections: [SidebarStructure.Section] = []
+    if !activeRowIDs.isEmpty {
+      sections.append(.highlight(kind: .active, rowIDs: activeRowIDs))
+    }
+    if !pinnedRowIDs.isEmpty {
+      sections.append(.highlight(kind: .pinned, rowIDs: pinnedRowIDs))
     }
     var groupedRepositoryIDs: Set<String> = []
     for group in settingsFile.repositoryGroups {
-      sections.append(.repositoryGroup(group))
-      let members = repoSections.sections.filter { section in
+      let members = repositorySections.filter { section in
         guard let id = section.repositoryID?.rawValue else { return false }
         return group.repositoryIDs.contains(id) && !groupedRepositoryIDs.contains(id)
       }
       groupedRepositoryIDs.formUnion(group.repositoryIDs)
+      if filter != nil {
+        // While filtering, a group without a match disappears with its header,
+        // and one with a match shows expanded without touching its stored state.
+        guard !members.isEmpty else { continue }
+        var shown = group
+        shown.sidebarCollapsed = false
+        sections.append(.repositoryGroup(shown))
+        sections.append(contentsOf: members)
+        continue
+      }
+      sections.append(.repositoryGroup(group))
       if !group.sidebarCollapsed { sections.append(contentsOf: members) }
     }
     sections.append(
-      contentsOf: repoSections.sections.filter {
+      contentsOf: repositorySections.filter {
         guard let id = $0.repositoryID?.rawValue else { return true }
         return !groupedRepositoryIDs.contains(id)
       })
 
     let hotkey = computeHotkeyOrdering(
-      pinnedHoisted: hoists.pinned,
-      activeHoisted: hoists.active,
+      pinnedHoisted: pinnedRowIDs,
+      activeHoisted: activeRowIDs,
       hoisted: hoists.hoistedSet,
-      sections: sections
+      sections: sections,
+      ignoringCollapse: filter != nil
     )
 
     let highlightProjections = computeRepositoryHighlightProjections(
-      pinnedHoisted: hoists.pinned,
-      activeHoisted: hoists.active
+      pinnedHoisted: pinnedRowIDs,
+      activeHoisted: activeRowIDs
     )
 
     return SidebarStructure(
@@ -857,7 +912,8 @@ extension RepositoriesFeature.State {
       slotByID: hotkey.slotByID,
       repositoryHighlightByID: highlightProjections.tags,
       hoistSummaryByRepositoryID: highlightProjections.summaries,
-      reorderableRepositoryIDs: repoSections.reorderableRepositoryIDs
+      reorderableRepositoryIDs: repoSections.reorderableRepositoryIDs,
+      isFiltered: filter != nil
     )
   }
 
@@ -1054,9 +1110,10 @@ extension RepositoriesFeature.State {
     pinnedHoisted: [Worktree.ID],
     activeHoisted: [Worktree.ID],
     hoisted: Set<Worktree.ID>,
-    sections: [SidebarStructure.Section]
+    sections: [SidebarStructure.Section],
+    ignoringCollapse: Bool = false
   ) -> HotkeyOrdering {
-    let perRepoVisibleIDs = hotkeyEligibleIDs(in: sections)
+    let perRepoVisibleIDs = hotkeyEligibleIDs(in: sections, ignoringCollapse: ignoringCollapse)
     var order: [Worktree.ID] = []
     order.reserveCapacity(pinnedHoisted.count + activeHoisted.count + perRepoVisibleIDs.count)
     order.append(contentsOf: activeHoisted)
@@ -1139,7 +1196,22 @@ extension RepositoriesFeature.State {
   /// the same top-down order the user sees them. Skips group headers (only
   /// leaves get hotkeys) and falls back to `orderedSidebarItemIDs` for repo
   /// sections where branch nesting hides some rows inside collapsed groups.
-  private func hotkeyEligibleIDs(in sections: [SidebarStructure.Section]) -> [Worktree.ID] {
+  /// `ignoringCollapse` is set for the filtered structure: the sidebar then
+  /// shows every repository and branch folder expanded, so every row of the
+  /// filtered sections gets a slot regardless of the stored collapse state.
+  private func hotkeyEligibleIDs(
+    in sections: [SidebarStructure.Section],
+    ignoringCollapse: Bool = false
+  ) -> [Worktree.ID] {
+    if ignoringCollapse {
+      return sections.flatMap { section -> [Worktree.ID] in
+        switch section {
+        case .folder(_, let rowID): [rowID]
+        case .repository(_, let groups): groups.flatMap(\.rowIDs)
+        case .repositoryGroup, .highlight, .placeholder, .failedRepository, .environmentBlockedRepository: []
+        }
+      }
+    }
     let expandedRepoIDs = expandedRepositoryIDs
     let nestingFilter = orderedSidebarItemIDs(includingRepositoryIDs: expandedRepoIDs)
     let visibleSet = Set(nestingFilter)

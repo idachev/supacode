@@ -1,5 +1,6 @@
 import { bearerKey, sha256Hex, timingSafeEqualHex } from "./frames";
 import type { GuardDO } from "./guard";
+import { parseConnectRequest } from "./hosts";
 import type { RelayDO } from "./relay";
 
 export { GuardDO } from "./guard";
@@ -36,6 +37,8 @@ export default {
       return new Response(nowBlocked ? "blocked" : "unauthorized", { status: nowBlocked ? 403 : 401 });
     }
     if (hasFailures) await guard.succeeded();
+    // РЛ6: after the key check, so a bad id never counts as a failed key.
+    if (!parseConnectRequest(new URL(request.url))) return new Response("bad host id", { status: 400 });
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }
