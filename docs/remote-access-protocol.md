@@ -177,7 +177,8 @@ Every request may carry a numeric `id`; the response repeats it.
 
 ```json
 {"t":"list","id":1,"repos":[
-  {"id":"<repository id>","name":"supacode","group":"<sidebar group name, omitted when none>","worktrees":[
+  {"id":"<repository id>","name":"supacode","group":"<sidebar group name, omitted when none>",
+   "canCreateWorktree":true,"worktrees":[
     {"id":"<worktree id>","name":"remote-access","branch":"remote-access",
      "status":"main|pinned|unpinned","focused":true,"title":"<custom title or null>",
      "working":true,"tabs":[
@@ -205,7 +206,11 @@ Every request may carry a numeric `id`; the response repeats it.
   sidebar's state and only a hint for the phone's initial state.
 - `repository` is an ungrouped repository.
 - Each repository has `rowIds`: the worktree ids the sidebar shows under it, in order, without the
-  rows hoisted into Active / Pinned. A repository section renders these rows.
+  rows hoisted into Active / Pinned. A repository section renders these rows. While a worktree is
+  being created, `rowIds` (or an Active / Pinned section's `worktreeIds`) can hold its pending row's
+  id (`pending:…`) with no matching entry in `worktrees`; clients skip row ids they cannot resolve.
+- Each repository has `canCreateWorktree`: true for a git repository (local or ssh) that is not
+  being removed, so the client may offer `worktree.new` for it. Absent (an older host) means false.
 
 Optional fields (`group`, `title`, `collapsed`, …) are omitted when they have no value. Archived worktrees are left out. Order follows the sidebar: per repository main first, then
 pinned, then the rest. `contentId` is the id the terminal messages use. `agent` is the raw
@@ -293,6 +298,87 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 - The phone attaches to `contentId` itself. There is no `tab.close`: the user ends the shell
   (`exit`) to close a tab.
 
+### worktree.new
+
+Creates a worktree in a repository the way Supacode's own per-repository "New Worktree" button
+does, and gives the client the worktree's first terminal tab.
+
+- client → host
+  `{"t":"worktree.new","id":7,"repositoryId":"<repository id from list>","name":"feature-x","cols":N,"rows":M}`
+  - `repositoryId` (string, required): `repos[].id` from `list`.
+  - `name` (string, required): the branch name. The host trims it. Missing, not a string, empty
+    after trimming, or over 200 UTF-8 bytes after trimming gives `worktree_invalid`. There is no
+    random name: clients always send one.
+  - `cols`, `rows` (optional integers, sent together): resolved as in `tab.new`, best effort only.
+    For a local repository the Mac selects the new worktree and shows its tab, so the tab takes the
+    Mac pane's size; the client learns the real grid from `attached` and later `size` messages and
+    does not resize after. For an ssh repository the first tab is a background tab that starts at
+    this size, as with `tab.new`.
+  - `id` (optional integer): echoed in the reply or error (`null` when omitted). A message whose
+    `id` is not an integer is dropped with no reply (the general decoder rule); `repositoryId` and
+    `name` of another type are answered with `worktree_invalid`.
+  - The directory name follows the branch name; v1 has no directory/path override, title, colour,
+    base ref or upstream choice. The repository's own settings (base directory, base ref, fetch
+    before creation, copied files) apply, and the Mac's own name and git checks decide.
+- host → client, success:
+  `{"t":"worktree.new","id":7,"repositoryId":"…","worktreeId":"<worktree id>","name":"feature-x","tabId":"<tab uuid>","contentId":"<content uuid>"}`
+  - Sent once the worktree exists and its first terminal tab is in the worktree's layout. The
+    client attaches to `contentId` itself.
+  - `worktreeId` and `name` are always present and are the values `list` uses for
+    `repos[].worktrees[].id` / `.name`; `name` is the trimmed branch name. `tabId` and `contentId`
+    match the next `list`'s `tabs[].id` / `tabs[].contentId`.
+  - `tabId` and `contentId` are omitted together when the worktree was created but its first tab
+    failed or did not appear in time (10 s local, 20 s ssh). This is still a success: the client
+    shows the worktree and may send `tab.new` itself.
+- Local repository: Supacode opens the first tab itself (and runs the repository's setup script in
+  it), so the reply reuses that tab and never opens a second one. The Mac selects the new worktree
+  as its own button does, unless the Mac user selected another one meanwhile. ssh repository: as
+  the Mac's own button, no pending row and no selection change; the host opens the first tab once
+  the repository reload lists the worktree.
+- Failures from the app also show the Mac's normal alert (except a cancelled creation and a missing
+  license, which opens the purchase sheet). Errors the host decides itself (`worktree_invalid`,
+  `worktree_unsupported`, `worktree_busy`) never reach the app and show nothing on the Mac.
+- Errors: `{"t":"error","id":7,"message":"…","code":"<code>"}`
+
+| code | when | message |
+|---|---|---|
+| `worktree_invalid` | `repositoryId` missing, not a string, or unknown; `name` missing, not a string, empty after trimming, or over 200 bytes | e.g. `worktree.new needs a repositoryId`, `no such repository`, `worktree.new needs a branch name`, `the branch name is too long` |
+| `worktree_busy` | another `worktree.new` for the same repository and (case-insensitive) name is still waiting on this host | `a worktree with this branch is already being created` |
+| `worktree_unsupported` | a folder (non-git) entry; a repository being removed | `worktrees are only supported for git repositories`, `the repository is being removed` |
+| `worktree_failed` | any app-side failure: name checks, license, git error, guard rejection, cancelled on the Mac | `"<title>: <message>"` for a name/git failure (e.g. `Branch name already exists: Choose a different branch name and try again.`), the bare message for a rejection, `Worktree creation was cancelled on the Mac.` for a Mac cancel |
+| `worktree_timeout` | no outcome within 300 s (ssh 290 s) | `worktree creation is still running on the Mac; it will appear in the list when it finishes` |
+
+- Old hosts answer `{"t":"error","id":7,"message":"unknown message type: worktree.new"}` with no
+  `code`; they also send no `canCreateWorktree`, so clients show no button for them.
+
+Client contract:
+
+- К1 Request id: every reply and every `worktree_*` error carries the request's `id` (explicit
+  `null` when the request had none), except a message dropped by the decoder rule above.
+- К2 Lost connection: a wait belongs to its connection. `conn.close`, a LAN socket closing and
+  the relay socket dropping end the waits of those clients, and a path switch (LAN ↔ relay) is a
+  new connection. The host never re-sends a reply and never cancels the creation. The client shows
+  "Connection lost; the worktree may still appear in the list", does not retry, and refreshes
+  `list` after reconnecting. A retry with the same name would fail ("Branch name already exists",
+  or "already being created" while the first still runs).
+- К3 Reply time: the host answers within 310 s of receiving the request: at most 300 s local /
+  290 s ssh for the app's outcome (license check included), then at most 10 s local / 20 s ssh for
+  the first tab, plus well under 1 s of scheduling slack. Errors the host decides itself are
+  immediate. A client timeout of 320 s from sending is safe; after it the client treats the request
+  like К2.
+- К3a Correlating a late result: errors carry only `id`, so the client keeps the `repositoryId`
+  and `name` it sent. Names are unique per repository (case-insensitive), so after a timeout or a
+  lost connection the client finds the worktree in a later `list` as the entry of that repository
+  whose `name` equals the sent name (case-insensitive).
+- К4 Ids: `worktreeId` is the same string as `list`'s `repos[].worktrees[].id`. For a local
+  worktree it is its working directory path; for an ssh repository it is the host authority plus
+  the normalized remote path, on both sides.
+- К5 Next `list`: local, yes: any `list` sent after the reply has the worktree in
+  `repos[].worktrees` and in `rowIds` (or an Active / Pinned section). ssh: a reply with `tabId`
+  means the worktree was already in the roster, so the next `list` has it; a reply without
+  `tabId` may come before the ssh roster reload finishes, and the worktree then shows in a later
+  `list`.
+
 ### suggest
 
 - client → host `{"t":"suggest","id":3,"contentId":"…"}`
@@ -303,8 +389,9 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 ### errors
 
 - host → client `{"t":"error","id":<request id or null>,"message":"…"}`.
-- Optional fields, omitted when absent: `code`, a machine-readable reason (today only
-  `resize_failed`), and `contentId`, the terminal the error is about (for requests without an `id`).
+- Optional fields, omitted when absent: `code`, a machine-readable reason (`resize_failed`, and
+  for `worktree.new` `worktree_invalid`, `worktree_busy`, `worktree_unsupported`, `worktree_failed`,
+  `worktree_timeout`), and `contentId`, the terminal the error is about (for requests without an `id`).
   Clients must ignore codes they do not know and fall back to `message`.
 
 ## LAN shortcut
