@@ -17,6 +17,11 @@ final class RemoteHostRouter {
   /// Mac window or screen.
   static let newTabGrid = (columns: 120, rows: 40)
   static let sizePollInterval: Duration = .seconds(2)
+  /// How long after a `resize` the attached phones' PTY size is checked, so
+  /// the reply does not wait for the next poll. The PTY takes the new grid
+  /// asynchronously (Ghostty's IO thread, then zmx); a slower one is still
+  /// caught by the poll.
+  static let resizeSettle: Duration = .milliseconds(150)
   static let suggestionContextRows = 80
   static let wakeTimeout: Duration = .seconds(6)
   /// How long a `tab.new` waits for the new tab to appear in the layout.
@@ -28,6 +33,8 @@ final class RemoteHostRouter {
 
   private struct Attachment {
     let contentID: UUID
+    let contentKey: String
+    let socketPath: String
     let stream: ZmxRemoteStream
     let pump: Task<Void, Never>
     let sizeWatch: Task<Void, Never>
@@ -40,6 +47,13 @@ final class RemoteHostRouter {
   /// `tab.new` waits in flight per phone, cancelled when that phone's
   /// connection ends so a reused connId never gets a stale answer.
   private var tabNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
+  /// The grid each attached phone last got (`attached` or `size`), shared by
+  /// the poll and a resize's early check so neither sends the same size twice.
+  private var sentGrids: [String: SentGrid] = [:]
+  private struct SentGrid: Equatable {
+    let columns: Int
+    let rows: Int
+  }
   /// Phones with a suggestion in flight.
   private var suggesting: Set<String> = []
   /// Relay phones the relay saw on the Mac's own network (`conn.open`).
@@ -362,24 +376,53 @@ final class RemoteHostRouter {
           reason: needsWake ? "the terminal did not start on the Mac" : "session not running")
         return
       }
-      var last = await self.measureGrid(contentID: contentID, socketPath: socketPath)
+      let first = await self.measureGrid(contentID: contentID, socketPath: socketPath)
       guard !Task.isCancelled, self.isCurrent(connID: connID, stream: stream) else { return }
+      self.sentGrids[connID] = SentGrid(columns: first.columns, rows: first.rows)
       self.reply(
-        connID, RemoteAttachedMessage(id: requestID, contentId: contentKey, cols: last.columns, rows: last.rows))
+        connID, RemoteAttachedMessage(id: requestID, contentId: contentKey, cols: first.columns, rows: first.rows))
       stream.start(scrollbackRows: scrollback)
       while !Task.isCancelled {
         try? await Task.sleep(for: Self.sizePollInterval)
         guard !Task.isCancelled else { return }
-        // A slow or failed PTY read keeps the last size instead of flapping to
-        // the view grid or the fallback.
-        guard let current = await Self.ptySize(socketPath: socketPath) else { continue }
-        if current != last {
-          last = current
-          self.reply(connID, RemoteSizeMessage(contentId: contentKey, cols: current.columns, rows: current.rows))
-        }
+        await self.sendSizeIfChanged(connID: connID, stream: stream)
       }
     }
-    clients[connID] = .some(Attachment(contentID: contentID, stream: stream, pump: pump, sizeWatch: lifecycle))
+    clients[connID] = .some(
+      Attachment(
+        contentID: contentID, contentKey: contentKey, socketPath: socketPath,
+        stream: stream, pump: pump, sizeWatch: lifecycle))
+  }
+
+  /// Reads the PTY grid and sends `size` when it differs from the one the
+  /// phone last got. A slow or failed PTY read keeps the last size instead of
+  /// flapping to the view grid or the fallback.
+  private func sendSizeIfChanged(connID: String, stream: ZmxRemoteStream) async {
+    guard case .some(.some(let attachment)) = clients[connID], attachment.stream === stream else { return }
+    guard let current = await Self.ptySize(socketPath: attachment.socketPath) else { return }
+    // The phone may have detached or attached elsewhere during the read.
+    guard isCurrent(connID: connID, stream: stream) else { return }
+    let grid = SentGrid(columns: current.columns, rows: current.rows)
+    guard sentGrids[connID] != grid else { return }
+    sentGrids[connID] = grid
+    reply(connID, RemoteSizeMessage(contentId: attachment.contentKey, cols: grid.columns, rows: grid.rows))
+  }
+
+  /// After a resize, checks every phone attached to that content once,
+  /// `resizeSettle` later, instead of at its next poll.
+  private func checkSizeSoon(contentID: UUID) {
+    let clock = self.clock
+    Task { [weak self] in
+      try? await clock.sleep(for: Self.resizeSettle)
+      guard let self else { return }
+      let attached = self.clients.compactMap { connID, entry -> (String, ZmxRemoteStream)? in
+        guard case .some(let attachment) = entry, attachment.contentID == contentID else { return nil }
+        return (connID, attachment.stream)
+      }
+      for (connID, stream) in attached {
+        await self.sendSizeIfChanged(connID: connID, stream: stream)
+      }
+    }
   }
 
   /// Hands finished JSON messages to the phone's transport, in order.
@@ -434,6 +477,7 @@ final class RemoteHostRouter {
   private func detach(connID: String) {
     guard case .some(.some(let attachment)) = clients[connID] else { return }
     clients[connID] = .some(nil)
+    sentGrids[connID] = nil
     attachment.sizeWatch.cancel()
     attachment.pump.cancel()
     attachment.stream.stop()
@@ -444,6 +488,7 @@ final class RemoteHostRouter {
     guard case .some(.some(let attachment)) = clients[connID], attachment.contentID == contentID else { return }
     attachment.sizeWatch.cancel()
     clients[connID] = .some(nil)
+    sentGrids[connID] = nil
   }
 
   private func input(connID: String, message: RemoteInboundMessage) {
@@ -466,8 +511,9 @@ final class RemoteHostRouter {
     }
   }
 
-  /// Sets the attached terminal's grid to the client's size. No reply: each
-  /// attached client's size poll sends `size` once the PTY has the new grid.
+  /// Sets the attached terminal's grid to the client's size. No direct reply:
+  /// every phone attached to it gets `size` once the PTY has the new grid,
+  /// checked `resizeSettle` later and then by the usual poll.
   /// A request for another content or with a bad size is ignored and logged.
   private func resize(connID: String, message: RemoteInboundMessage) {
     var attached: UUID?
@@ -478,7 +524,9 @@ final class RemoteHostRouter {
     case .failure(.invalidSize):
       routerLogger.info("resize from \(connID) ignored: cols and rows must both be integers")
     case .success(let request):
-      if !source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows) {
+      if source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows) {
+        checkSizeSoon(contentID: request.contentID)
+      } else {
         routerLogger.info("resize from \(connID) ignored: the terminal has no live surface")
       }
     }

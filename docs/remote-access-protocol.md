@@ -226,7 +226,7 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 - client → host `{"t":"resize","contentId":"<content uuid>","cols":N,"rows":M}` — sets one
   terminal's grid on demand (a button on the client, never sent automatically).
 - Only for the content this connection is attached to; for any other content it is ignored.
-- `cols` and `rows` are integers; the host clamps them to 20…500 columns and 5…200 rows. A
+- `cols` and `rows` are integers within the 64-bit range; the host clamps them to 20…500 columns and 5…200 rows. A
   missing `cols` or `rows`, or one that is not an integer, makes the host ignore the request
   (it logs it).
 - No direct reply. When the grid changed, every client attached to that content gets the usual
