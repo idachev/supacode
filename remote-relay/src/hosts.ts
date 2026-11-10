@@ -23,6 +23,18 @@ export const MAX_OFFLINE_HOSTS = 20;
 /** Durable Object storage key prefix of a known host (РЛ5). */
 export const KNOWN_HOST_PREFIX = "host:";
 
+/** Most keys one `storage.delete(keys)` call accepts. */
+export const STORAGE_DELETE_LIMIT = 128;
+
+/** The storage keys of pruned hosts, in batches one `storage.delete` call accepts. */
+export function pruneKeyBatches(ids: readonly string[], limit = STORAGE_DELETE_LIMIT): string[][] {
+  const batches: string[][] = [];
+  for (let i = 0; i < ids.length; i += limit) {
+    batches.push(ids.slice(i, i + limit).map((id) => KNOWN_HOST_PREFIX + id));
+  }
+  return batches;
+}
+
 /** One host in the `relay` message (ПР1). */
 export interface HostInfo {
   id: string;

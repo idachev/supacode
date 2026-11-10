@@ -26,6 +26,7 @@ import {
   newestHost,
   onlineHosts,
   parseConnectRequest,
+  pruneKeyBatches,
   routeHostFrame,
   socketsToReplace,
 } from "./hosts";
@@ -225,7 +226,7 @@ export class RelayDO extends DurableObject<Env> {
     for (const [key, entry] of stored) known.set(key.slice(KNOWN_HOST_PREFIX.length), entry);
     const online = onlineHosts(this.hostViews(), except);
     const { hosts, prune } = buildHostList(known, online, Date.now());
-    if (prune.length > 0) await this.ctx.storage.delete(prune.map((id) => KNOWN_HOST_PREFIX + id));
+    for (const keys of pruneKeyBatches(prune)) await this.ctx.storage.delete(keys);
     return { hosts, online, pruned: prune.length > 0 };
   }
 

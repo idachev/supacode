@@ -8,6 +8,7 @@ import {
   LEGACY_HOST_ID,
   MAX_OFFLINE_HOSTS,
   OFFLINE_RETENTION_MS,
+  STORAGE_DELETE_LIMIT,
   announcesClient,
   boundHostOf,
   buildHostList,
@@ -21,6 +22,7 @@ import {
   normalizeHostName,
   onlineHosts,
   parseConnectRequest,
+  pruneKeyBatches,
   routeHostFrame,
   socketsToReplace,
 } from "../src/hosts";
@@ -293,5 +295,16 @@ describe("known hosts (РЛ5)", () => {
     const known = new Map<string, KnownHost>([[LEGACY_HOST_ID, { lastSeen: now }]]);
     expect(buildHostList(known, new Map(), now)).toEqual({ hosts: [], prune: [LEGACY_HOST_ID] });
     expect(buildHostList(new Map(), new Map([[LEGACY_HOST_ID, undefined]]), now).hosts).toEqual([{ id: LEGACY_HOST_ID, online: true }]);
+  });
+});
+
+describe("pruned key batches", () => {
+  it("splits the keys into storage.delete batches of at most 128", () => {
+    expect(pruneKeyBatches([])).toEqual([]);
+    expect(pruneKeyBatches(["a", "b"])).toEqual([["host:a", "host:b"]]);
+    const ids = Array.from({ length: STORAGE_DELETE_LIMIT * 2 + 1 }, (_, i) => `h${i}`);
+    const batches = pruneKeyBatches(ids);
+    expect(batches.map((b) => b.length)).toEqual([STORAGE_DELETE_LIMIT, STORAGE_DELETE_LIMIT, 1]);
+    expect(batches.flat()).toEqual(ids.map((id) => `host:${id}`));
   });
 });
