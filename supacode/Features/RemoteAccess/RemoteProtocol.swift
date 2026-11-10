@@ -242,29 +242,66 @@ nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
   var hostId: String?
   /// Where a phone on the Mac's network can try the LAN shortcut; omitted otherwise.
   var lan: RemoteLANCandidate?
-  /// The app build the host runs, `Supacode <version> (<build>)`; omitted when the bundle has neither key.
+  /// The app build the host runs, `Supacode <version> (<build>) · <build date> · <short git sha>`,
+  /// the values About shows; each part only when known, nil when none is.
   var app: String?
 
-  /// `Supacode 0.11.5 (154)`; with one key missing, what exists (`Supacode 0.11.5`); nil when both
-  /// are missing or blank, so an empty string is never sent.
-  static func appLabel(shortVersion: String?, build: String?) -> String? {
-    let version = shortVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let build = build?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    switch (version.isEmpty, build.isEmpty) {
-    case (false, false): return "Supacode \(version) (\(build))"
-    case (false, true): return "Supacode \(version)"
-    case (true, false): return "Supacode (\(build))"
-    case (true, true): return nil
-    }
+  /// `Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48`. Each part is added only when it is known: with
+  /// one of version/build missing, what exists (`Supacode 0.11.5`); a missing date or sha is left out.
+  /// `buildDate` is the stamped build clock (`2026-11-10 14:25:09`), cut to its day. nil when nothing
+  /// is known, so an empty string or a trailing ` · ` is never sent.
+  static func appLabel(
+    shortVersion: String?,
+    build: String?,
+    buildDate: String? = nil,
+    commit: String? = nil
+  ) -> String? {
+    let version = Self.trimmed(shortVersion)
+    let build = Self.trimmed(build)
+    let day = Self.buildDay(buildDate)
+    let sha = Self.knownCommit(commit)
+    guard !version.isEmpty || !build.isEmpty || day != nil || sha != nil else { return nil }
+    var label = "Supacode"
+    if !version.isEmpty { label += " \(version)" }
+    if !build.isEmpty { label += " (\(build))" }
+    if let day { label += " · \(day)" }
+    if let sha { label += " · \(sha)" }
+    return label
   }
 
-  /// The label of the running app, read from `Bundle.main`'s Info.plist.
+  /// The label of the running app, read from `Bundle.main`'s Info.plist: the version and build keys,
+  /// and the build date and commit that `scripts/stamp-build-info.sh` stamps for About
+  /// (`AppBuildStamp`).
+  @MainActor
   static func currentAppLabel() -> String? {
     let info = Bundle.main.infoDictionary
     return appLabel(
       shortVersion: info?["CFBundleShortVersionString"] as? String,
-      build: info?["CFBundleVersion"] as? String
+      build: info?["CFBundleVersion"] as? String,
+      buildDate: info?[AppBuildStamp.dateKey] as? String,
+      commit: info?[AppBuildStamp.commitKey] as? String
     )
+  }
+
+  private static func trimmed(_ value: String?) -> String {
+    value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  }
+
+  /// The `YYYY-MM-DD` day of a stamped build clock; nil when blank or not shaped like a date.
+  private static func buildDay(_ value: String?) -> String? {
+    let day = String(Self.trimmed(value).prefix(10))
+    let parts = day.split(separator: "-", omittingEmptySubsequences: false)
+    guard parts.count == 3, parts.map(\.count) == [4, 2, 2],
+      parts.allSatisfy({ $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+    else { return nil }
+    return day
+  }
+
+  /// The stamped short sha; nil when blank or the stamp's own `unknown` placeholder (no git at build).
+  private static func knownCommit(_ value: String?) -> String? {
+    let sha = Self.trimmed(value)
+    guard !sha.isEmpty, sha.caseInsensitiveCompare("unknown") != .orderedSame else { return nil }
+    return sha
   }
 }
 
