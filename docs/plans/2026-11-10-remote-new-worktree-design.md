@@ -139,7 +139,7 @@ So the remote flow reuses this first tab (owner УТ2) and never opens a second 
 | code | when | message |
 |---|---|---|
 | `worktree_invalid` | `repositoryId` missing, not a string, or unknown; `name` missing, not a string, empty after trimming, or over 200 bytes | router text, e.g. `worktree.new needs a repositoryId`, `no such repository`, `worktree.new needs a branch name`, `the branch name is too long` |
-| `worktree_busy` | another remote `worktree.new` for the same repository and (case-insensitive) name is still waiting on this host | `a worktree with this branch is already being created` |
+| `worktree_busy` | a remote `worktree.new` for the same repository and (case-insensitive) name is still being created on this host (its phone may have gone) | `a worktree with this branch is already being created` |
 | `worktree_unsupported` | folder entry; repository being removed | router text: `worktrees are only supported for git repositories`, `the repository is being removed` |
 | `worktree_failed` | any app-side failure: name checks, license, git error, guard rejection, cancelled on the Mac | `createRandomWorktreeFailed`: `"<title>: <message>"` (e.g. `"Branch name already exists: Choose a different branch name and try again."`); `worktreeCreationRejected`: the bare message; Mac cancel: `"Worktree creation was cancelled on the Mac."` |
 | `worktree_timeout` | no outcome within 300 s | `worktree creation is still running on the Mac; it will appear in the list when it finishes` |
@@ -173,9 +173,13 @@ that is not being removed. Absent (old host) means false: the client shows no bu
   A client timeout of 320 s measured from sending is safe; after it the client treats the request
   like К2.
 - К3a Correlating a late result: errors carry only `id`; the client keeps the `repositoryId` and
-  `name` it sent. Since `name` is required and unique per repository (case-insensitive), after a
-  timeout or lost connection the client finds the worktree in a later `list` as the entry of that
-  repository whose `name` equals the sent name (case-insensitive).
+  `name` it sent. After a timeout or lost connection the outcome is unknown: if the creation
+  succeeds, the worktree shows in a later `list` as the entry of that repository whose `name`
+  equals the sent name (case-insensitive); if it fails late (git or copy error), it never shows and
+  only the Mac's alert reports it. The client never learns that failure. A manual retry with the
+  same name is safe: while the first creation still runs the host answers `worktree_busy`
+  (Host behaviour 6); once it has succeeded, `worktree_failed` "Branch name already exists"; once
+  it has failed, the retry creates normally.
 - К4 Ids: `worktreeId` is the same string as `list`'s `repos[].worktrees[].id`: both are
   `Worktree.id.rawValue`, which for a local worktree is its working directory path
   (`RepositoryIdentity.swift:212-218`). `name` is always present. For an ssh repository the id is `host.authority + <normalized remote path>`
@@ -213,9 +217,11 @@ that is not being removed. Absent (old host) means false: the client shows no bu
    whether the repository is ssh (`host != nil`).
 4. AppFeature (core, next to the CLI arms): new state
    `remoteWorktreeCreations: [Worktree.ID /* pending id */: RemoteWorktreeCreation]` with
-   `enum RemoteWorktreeCreation: Equatable { case creating; case created(worktreeID:, name:);
+   `enum RemoteWorktreeCreation: Equatable { case creating(repositoryID:, name:, abandoned: Bool);
+   case created(worktreeID:, name:);
    case tabFailed(worktreeID:, name:); case failed(message:) }`.
-   - `.remoteWorktreeNewRequested`: inserts `.creating`, then sends
+   - `.remoteWorktreeNewRequested`: inserts `.creating(repositoryID, name /* trimmed */,
+     abandoned: false)`, then sends
      `.repositories(.createWorktreeInRepository(repositoryID:, nameSource: .explicit(name),
      baseRefSource: .repositorySetting, fetchOrigin: settingsFile.global.fetchOriginBeforeWorktreeCreation,
      pendingID:, background: false, pin: false))` (`@Shared(.settingsFile)`; `upstream`,
@@ -230,8 +236,9 @@ that is not being removed. Absent (old host) means false: the client shows no bu
        repositories scope) → `.failed("Worktree creation was cancelled on the Mac.")`, else
        `.created(worktree.id, worktree.name)`;
      - ssh success `remoteWorktreeCreationCompleted(pendingID, worktreeID)` (`AppFeature.swift:1630`)
-       → `.created(worktreeID, <the trimmed requested name>)` (the action carries no name; the ssh
-       path uses the trimmed explicit name as the branch, `RepositoriesFeature+Remote.swift:466-472`);
+       → `.created(worktreeID, name)` with the trimmed `name` the host validated, taken from the
+       `.creating(…, name:, …)` entry (the action carries no name; the ssh path uses that trimmed
+       name as the branch, `RepositoriesFeature+Remote.swift:466-472`);
      - `createRandomWorktreeFailed` → `.failed("<title>: <message>")`;
        `worktreeCreationRejected` (local guards, license, and every ssh failure) → `.failed(message)`;
      - Mac cancel: `cancelPendingWorktree` sends `.cliWorktreeAckCancelled(pendingID)` at once
@@ -241,9 +248,12 @@ that is not being removed. Absent (old host) means false: the client shows no bu
      `.created(worktreeID, name)` becomes `.tabFailed(worktreeID, name)` (lookup by real id, as
      `bindWorktreeNewAck` binds the CLI ack). `.tabCreated` needs no arm: the router reads the tab
      from the layout.
-   - `.remoteWorktreeCreationConsumed(pendingID)` removes the entry. The router sends it on every
-     exit (reply, timeout, cancelled wait), so the dictionary never leaks; later outcomes of a
-     consumed id find no key and are ignored.
+   - `.remoteWorktreeCreationConsumed(pendingID)` removes the entry; the router sends it when it
+     replies, and on a timeout or cancelled wait when the entry has already left `.creating`.
+     `.remoteWorktreeCreationAbandoned(pendingID)` sets `abandoned: true` on a `.creating` entry;
+     the router sends it instead on a timeout or cancelled wait while the creation still runs. An
+     arm that would move an abandoned entry out of `.creating` removes it instead. So the
+     dictionary never leaks, and later outcomes of a removed id find no key and are ignored.
    - Pure state, no NSNotification, no new dependency client.
 5. Router wait (one `Task` per request, stored per connection like `tabNewWaits`; poll interval
    100 ms; constants `worktreeNewTimeout` = 300 s local / 290 s ssh, `worktreeNewTabTimeout` =
@@ -263,14 +273,17 @@ that is not being removed. Absent (old host) means false: the client shows no bu
      request's grid (`RemoteTabNewGrid.resolve`), then polls `contentID(ofTab:in:)` +
      `sizeNewTabGrid` as `newTab` does. One 20 s budget covers both; on timeout or a
      `RemoteTabNewRejection` → reply without tab. Existing mechanisms only; nothing new in the app.
-   - Every exit path sends `.remoteWorktreeCreationConsumed(pendingID)` first. A local reply is
+   - Every exit path sends `.remoteWorktreeCreationConsumed(pendingID)` or, while the entry is
+     still `.creating`, `.remoteWorktreeCreationAbandoned(pendingID)` (step 4) first. A local reply is
      gated on the tab being in the layout only, not on its grid (see ОВ1).
-6. In-flight guard (remote requests only): the router keeps a set of `(repositoryID, lowercased
-   trimmed name)` for waits in progress and answers a duplicate with `worktree_busy` at once. It
+6. In-flight guard (remote requests only; owner МС1 = ОП1): a request whose `(repositoryID,
+   lowercased trimmed name)` matches a `.creating` entry in `remoteWorktreeCreations` (abandoned
+   or not; read through the source) gets `worktree_busy` at once. The guard is the entry itself, so
+   it lives until the creation's outcome settles, not until the phone's wait ends: a retry after a
+   reconnect or a timeout while the first creation still runs gets `worktree_busy`. It
    avoids a pre-existing hazard: two creations of one name that both pass the name check can make
    the loser's failure cleanup (`cleanupFailedWorktree`, `RepositoriesFeature.swift:6570-6600`,
-   path `<base>/<name>`) remove the winner's worktree. The entry is removed on every exit of the
-   wait. The Mac-side race itself is out of scope (reported separately).
+   path `<base>/<name>`) remove the winner's worktree. The Mac-side race itself is out of scope (reported separately).
 7. A phone disconnect cancels its waits (in `cancelTabNewWaits` or a twin called from the same
    three places: `conn.close`, `lanClosed`, `dropAllClients`) but never the creation; the reply
    checks `clients[connID] != nil` as `newTab` does.
