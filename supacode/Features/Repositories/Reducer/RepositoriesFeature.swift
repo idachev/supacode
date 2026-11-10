@@ -6631,7 +6631,7 @@ extension RepositoriesFeature.State {
 
   /// True when another creation (not `pendingID`) in the repository claims the
   /// failed creation's cleanup target: a live pending row with the same name, or
-  /// a creation already resolved onto a worktree at that path. Names and paths
+  /// a creation already resolved onto a worktree at that path or of that name. Names and paths
   /// compare case-insensitively, as the default macOS volume does.
   func isFailedCleanupTargetOwnedByAnotherCreation(
     _ worktreeURL: URL,
@@ -6645,10 +6645,14 @@ extension RepositoriesFeature.State {
         && pending.progress.worktreeName?.lowercased() == lowercasedName
     }
     if inFlight { return true }
+    // Match a landed worktree by path, or by name the way the reload transfer
+    // pairs a pending row with its discovery (git may report a symlink-resolved path).
     let targetPath = Self.comparablePath(worktreeURL)
     return resolvedPendingWorktrees.contains { entry in
-      entry.key != pendingID && entry.value.repositoryID == repositoryID
-        && Self.comparablePath(URL(fileURLWithPath: entry.value.worktreeID.rawValue)) == targetPath
+      guard entry.key != pendingID, entry.value.repositoryID == repositoryID else { return false }
+      if Self.comparablePath(URL(fileURLWithPath: entry.value.worktreeID.rawValue)) == targetPath { return true }
+      let landedName = repositories[id: repositoryID]?.worktrees[id: entry.value.worktreeID]?.name
+      return landedName?.lowercased() == lowercasedName
     }
   }
 

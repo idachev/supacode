@@ -3011,6 +3011,70 @@ struct RepositoriesFeatureTests {
     #expect(removeCalls.value == 0)
   }
 
+  @Test(.dependencies) func createWorktreeStreamFailureCleansUpItsOwnDirectory() async {
+    // The normal path end to end: no directory at the cleanup path before the
+    // stream, so the failure arms the cleanup and reaps `base/feature-x`.
+    let repoRoot = "/tmp/repo"
+    let repository = makeRepository(id: repoRoot, worktrees: [makeWorktree(id: repoRoot, name: "main")])
+    let tempRoot = FileManager.default.temporaryDirectory
+      .appending(path: "supacode-failed-cleanup-\(UUID().uuidString)", directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+    let baseDirectory = SupacodePaths.worktreeBaseDirectory(
+      for: repository.rootURL,
+      globalDefaultPath: tempRoot.path(percentEncoded: false),
+      repositoryOverridePath: nil
+    )
+    @Shared(.settingsFile) var settingsFile
+    let previousBasePath = settingsFile.global.defaultWorktreeBaseDirectoryPath
+    $settingsFile.withLock { $0.global.defaultWorktreeBaseDirectoryPath = tempRoot.path(percentEncoded: false) }
+    defer { $settingsFile.withLock { $0.global.defaultWorktreeBaseDirectoryPath = previousBasePath } }
+    let removedPaths = LockIsolated<[String]>([])
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.gitClient.localBranchNames = { _ in [] }
+      $0.gitClient.isValidBranchName = { _, _ in true }
+      $0.gitClient.isBareRepository = { _ in false }
+      $0.gitClient.automaticWorktreeBaseRef = { _ in "origin/main" }
+      $0.gitClient.ignoredFileCount = { _ in 0 }
+      $0.gitClient.untrackedFileCount = { _ in 0 }
+      $0.gitClient.createWorktreeStream = { _, _, _, _, _, _, _ in
+        AsyncThrowingStream { continuation in
+          continuation.finish(throwing: GitClientError.commandFailed(command: "wt sw", message: "boom"))
+        }
+      }
+      $0.gitClient.removeWorktree = { worktree, _ in
+        let workingDirectory = await MainActor.run { worktree.workingDirectory }
+        removedPaths.withValue { $0.append(workingDirectory.path(percentEncoded: false)) }
+        return workingDirectory
+      }
+      $0.gitClient.worktrees = { _ in [] }
+    }
+    store.exhaustivity = .off
+
+    await store.send(
+      .createWorktreeInRepository(
+        repositoryID: repository.id,
+        nameSource: .explicit("feature-x"),
+        baseRefSource: .explicit("main"),
+        fetchOrigin: false
+      )
+    )
+    await store.receive({ action in
+      guard case .createRandomWorktreeFailed(_, _, _, _, _, let name, _) = action else { return false }
+      return name == "feature-x"
+    })
+    await store.finish()
+
+    #expect(
+      removedPaths.value
+        == [
+          baseDirectory.appending(path: "feature-x", directoryHint: .isDirectory).standardizedFileURL
+            .path(percentEncoded: false)
+        ])
+  }
+
   @Test(.dependencies) func createWorktreeStreamFailureSkipsCleanupOfAPreexistingDirectory() async throws {
     // A directory already at the cleanup path before `git worktree add` ran is
     // not this creation's (another creation's or the user's): git's failure on
