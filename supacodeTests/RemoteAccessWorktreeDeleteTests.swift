@@ -24,8 +24,11 @@ struct RemoteAccessWorktreeDeleteTests {
     isMain: Bool = false, lifecycleIsIdle: Bool = true, inFlight: Bool = false
   ) -> RemoteWorktreeDeleteRejection? {
     RemoteWorktreeDeleteRejection.check(
-      found: found, isArchived: isArchived, isGitRepository: isGitRepository, isBeingRemoved: isBeingRemoved,
-      isMain: isMain, lifecycleIsIdle: lifecycleIsIdle, inFlight: inFlight)
+      found
+        ? RemoteWorktreeDeleteFacts(
+          isArchived: isArchived, isGitRepository: isGitRepository, isBeingRemoved: isBeingRemoved,
+          isMain: isMain, lifecycleIsIdle: lifecycleIsIdle, inFlight: inFlight)
+        : nil)
   }
 
   @Test func everyRejectionHasItsCodeAndMessage() {
