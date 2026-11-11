@@ -90,40 +90,6 @@ nonisolated struct WorktreeCreationProgressUpdateThrottle {
   }
 }
 
-/// Proof, read from the `wt` / `git worktree add` output (forced to the C
-/// locale), that this creation's own `git worktree add -b <branch>` completed:
-/// git printed the new-branch preparing line and then checked the tree out. Git
-/// refuses an existing branch, or a non-empty path, before it makes the worktree
-/// (an existing path can leave the new branch behind), so without both lines the
-/// directory at the target is not provably this creation's and is left in place.
-/// A new-branch line without the checkout, and without git refusing the branch,
-/// means git made this creation's branch and then failed (a failed checkout, or a
-/// taken path); git removes its own half-made directory then, so only the branch
-/// is this creation's to delete (`ownsBranchOnly`).
-nonisolated struct WorktreeCreationOwnershipProof {
-  let branchName: String
-  private var sawNewBranch = false
-  private var sawCheckout = false
-  private var sawBranchRefusal = false
-
-  init(branchName: String) {
-    self.branchName = branchName
-  }
-
-  var provesOwnership: Bool { sawNewBranch && sawCheckout }
-
-  var ownsBranchOnly: Bool { sawNewBranch && !sawCheckout && !sawBranchRefusal }
-
-  mutating func record(_ line: String) {
-    if line.contains("Preparing worktree (new branch '\(branchName)')") { sawNewBranch = true }
-    if sawNewBranch, line.contains("HEAD is now at ") { sawCheckout = true }
-    // Git could not create the branch: another creation holds it.
-    if line.contains("a branch named '\(branchName)' already exists") || line.contains("cannot lock ref") {
-      sawBranchRefusal = true
-    }
-  }
-}
-
 /// Which status pane the detail inspector shows when presented; presentation is tracked by `inspectorPresented`.
 enum WorktreeInspectorPane: Hashable, Sendable {
   case git
@@ -133,34 +99,6 @@ enum WorktreeInspectorPane: Hashable, Sendable {
 
 @Reducer
 struct RepositoriesFeature {
-  /// Git loads under `CancelID.load`: `started` counts the loads begun,
-  /// `completed` is the highest generation whose result landed. A remote
-  /// `worktrees.refresh` waits for `completed` to pass the `started` it read,
-  /// so it answers only after a load that began after the request.
-  ///
-  /// Left out of `State` equality on purpose (`==` is always true): it is a
-  /// bookkeeping counter nothing renders, and every exhaustive test that
-  /// passes through a load would otherwise have to spell it out. Tests that
-  /// care read `started` / `completed` directly.
-  struct LoadGeneration: Equatable {
-    var started = 0
-    var completed = 0
-
-    /// Starts one more load and returns its generation.
-    mutating func begin() -> Int {
-      started += 1
-      return started
-    }
-
-    /// A load of `generation` landed; nil (a result sent without a git load) changes nothing.
-    mutating func finish(_ generation: Int?) {
-      guard let generation else { return }
-      completed = max(completed, generation)
-    }
-
-    static func == (lhs: Self, rhs: Self) -> Bool { true }
-  }
-
   struct PendingSidebarReveal: Equatable {
     let id: Int
     let worktreeID: Worktree.ID
