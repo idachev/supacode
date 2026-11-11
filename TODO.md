@@ -36,7 +36,5 @@
   Fix: skip `branch -D` when the worktree's HEAD is detached.
 - **ТД10** `LoadGeneration` is excluded from `RepositoriesFeature.State` equality — open (2026-11-11), kind: tests, reason: ЗД10 decision ДР1 (Codex mini-consensus disagreed); avoided rewriting ~60 exhaustive tests.
   Fix: make it a normal Equatable field and update the exhaustive tests that see it.
-- **ЖВ1** Live check of remote delete and refresh — open (2026-11-11), kind: tests, reason: needs the owner (installed build of idachev-supacode f99470f3).
-  Steps: restart Supacode; from the APK and web: ⟳ refresh after `git worktree remove` in a terminal (row disappears); 🗑 on a clean worktree (folder gone, branch kept); 🗑 on a worktree with an uncommitted change or `.env` (refused, `worktree_dirty` with the paths); 🗑 not shown on the main worktree; an ssh repository if one is set up.
 - **СТ3** Set up and check the second Mac with the multi-host relay — open (2026-11-10), kind: tests, reason: needs the owner and the second Mac.
   Steps: install the `remote-multi-host` dev build on the second Mac; give it its own host name in Settings → Remote Access; on the phone, open the host list, see both Macs by name, switch between them, open a tab on each; agent notifications come only from the selected Mac (owner ОТ1).
