@@ -1,4 +1,5 @@
 import Foundation
+import IdentifiedCollections
 
 /// The `code` values of the `error` frames a `worktree.delete` or a
 /// `worktrees.refresh` can get (`docs/remote-access-protocol.md`).
