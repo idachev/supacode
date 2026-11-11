@@ -301,8 +301,8 @@ struct RemoteAccessResizeTests {
   ) -> Task<Void, Never> {
     Task { @MainActor in
       await RemoteHostRouter.runResize(
-        request: Self.request, first: first, clock: clock, wake: wake, attempt: { first },
-        readSize: readSize,
+        request: Self.request, first: first, clock: clock,
+        probes: RemoteResizeProbes(wake: wake, attempt: { first }, readSize: readSize),
         finish: { outcome in
           let input = RemoteHostRouter.redrawInput(for: outcome, isReadOnly: isReadOnly)
           written.withValue { $0.append(input) }
