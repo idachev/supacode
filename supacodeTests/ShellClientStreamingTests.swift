@@ -223,5 +223,26 @@ struct ShellClientStreamingTests {
     let data = await ShellClient.readToEndOrDeadline(
       from: pipe.fileHandleForReading, deadlineSeconds: 60)
     #expect(data == payload)
+    let again = Pipe()
+    again.fileHandleForWriting.write(payload)
+    try? again.fileHandleForWriting.close()
+    let drained = await ShellClient.readToEndOrDeadlineReportingEOF(
+      from: again.fileHandleForReading, deadlineSeconds: 60)
+    #expect(drained.data == payload)
+    #expect(drained.reachedEOF)
+  }
+
+  /// A drain the deadline cuts short says so, so a raw-data caller never takes
+  /// partial output for the whole (ZD10 r2 F1: a dirty check would read clean).
+  @Test func aDrainCutByTheDeadlineReportsNoEOF() async {
+    let pipe = Pipe()
+    let partial = Data(" M a".utf8)
+    pipe.fileHandleForWriting.write(partial)
+    // The write end stays open: no EOF before the 1 s deadline.
+    let drained = await ShellClient.readToEndOrDeadlineReportingEOF(
+      from: pipe.fileHandleForReading, deadlineSeconds: 1)
+    try? pipe.fileHandleForWriting.close()
+    #expect(drained.data == partial)
+    #expect(!drained.reachedEOF)
   }
 }

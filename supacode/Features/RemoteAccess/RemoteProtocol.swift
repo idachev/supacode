@@ -40,7 +40,7 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
   var contentId: String?
   var scrollback: Int?
   var b64: String?
-  /// `tab.new`: the worktree to open the tab in.
+  /// `tab.new`: the worktree to open the tab in; `worktree.delete`: the worktree to delete.
   var worktreeId: String?
   /// `tab.new`: the optional start size (`RemoteTabNewGrid.resolve`);
   /// `resize`: the requested size (`RemoteResizeRequest.resolve`).
@@ -371,6 +371,53 @@ nonisolated struct RemoteListMessage: Encodable, Equatable, Sendable {
   let repos: [RemoteRepository]
   /// The sidebar's sections in display order; see the protocol doc.
   var sections: [RemoteSection] = []
+  /// This host answers `worktrees.refresh`; always true on a host that sends it.
+  var canRefreshWorktrees = true
+  /// Repositories whose load failed (not in `repos`); omitted when empty.
+  var loadFailures: [RemoteLoadFailure] = []
+
+  // Encode `id` as an explicit null so clients can match on it.
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(t, forKey: .t)
+    try container.encode(id, forKey: .id)
+    try container.encode(repos, forKey: .repos)
+    try container.encode(sections, forKey: .sections)
+    try container.encode(canRefreshWorktrees, forKey: .canRefreshWorktrees)
+    if !loadFailures.isEmpty { try container.encode(loadFailures, forKey: .loadFailures) }
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case t, id, repos, sections, canRefreshWorktrees, loadFailures
+  }
+}
+
+/// A repository the app could not load (`list.loadFailures`): clients show it
+/// as "cannot be read on the Mac: <message>".
+nonisolated struct RemoteLoadFailure: Encodable, Equatable, Sendable {
+  let repositoryId: String
+  let message: String
+}
+
+/// The success reply of `worktree.delete`, sent once the app deleted the worktree.
+nonisolated struct RemoteWorktreeDeleteMessage: Encodable, Equatable, Sendable {
+  var t = "worktree.delete"
+  let id: Int?
+  let worktreeId: String
+  let repositoryId: String
+
+  // Encode `id` as an explicit null so clients can match on it.
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(t, forKey: .t)
+    try container.encode(id, forKey: .id)
+    try container.encode(worktreeId, forKey: .worktreeId)
+    try container.encode(repositoryId, forKey: .repositoryId)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case t, id, worktreeId, repositoryId
+  }
 }
 
 /// One sidebar section: a highlight (`active` / `pinned`, worktree rows from
@@ -408,6 +455,9 @@ nonisolated struct RemoteWorktree: Encodable, Equatable, Sendable {
   let title: String?
   let working: Bool
   let tabs: [RemoteTab]
+  /// Whether a client may send `worktree.delete` for this worktree
+  /// (`RemoteWorktreeDeleteRejection.check`); absent on old hosts.
+  var canDeleteWorktree = false
 }
 
 nonisolated struct RemoteTab: Encodable, Equatable, Sendable {

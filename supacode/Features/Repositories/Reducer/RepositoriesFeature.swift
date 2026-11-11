@@ -133,6 +133,34 @@ enum WorktreeInspectorPane: Hashable, Sendable {
 
 @Reducer
 struct RepositoriesFeature {
+  /// Git loads under `CancelID.load`: `started` counts the loads begun,
+  /// `completed` is the highest generation whose result landed. A remote
+  /// `worktrees.refresh` waits for `completed` to pass the `started` it read,
+  /// so it answers only after a load that began after the request.
+  ///
+  /// Left out of `State` equality on purpose (`==` is always true): it is a
+  /// bookkeeping counter nothing renders, and every exhaustive test that
+  /// passes through a load would otherwise have to spell it out. Tests that
+  /// care read `started` / `completed` directly.
+  struct LoadGeneration: Equatable {
+    var started = 0
+    var completed = 0
+
+    /// Starts one more load and returns its generation.
+    mutating func begin() -> Int {
+      started += 1
+      return started
+    }
+
+    /// A load of `generation` landed; nil (a result sent without a git load) changes nothing.
+    mutating func finish(_ generation: Int?) {
+      guard let generation else { return }
+      completed = max(completed, generation)
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { true }
+  }
+
   struct PendingSidebarReveal: Equatable {
     let id: Int
     let worktreeID: Worktree.ID
@@ -238,6 +266,15 @@ struct RepositoriesFeature {
     var shouldRestoreLastFocusedWorktree = false
     var shouldSelectFirstAfterReload = false
     var isRefreshingWorktrees = false
+    /// Git loads begun and landed (`LoadGeneration`), for a remote `worktrees.refresh`.
+    var loadGeneration = LoadGeneration()
+    /// Worktrees whose delete must keep the local branch whatever
+    /// `deleteBranchOnDeleteWorktree` says (a remote `worktree.delete`, `keepBranch`);
+    /// cleared on every exit of that delete.
+    var branchKeepingDeleteIDs: Set<Worktree.ID> = []
+    /// Remote deletes whose delete script ran: `.deleteWorktreeApply` checks the
+    /// worktree for changes again before removing it (`.deleteWorktreeAbortedDirty`).
+    var dirtyRecheckDeleteIDs: Set<Worktree.ID> = []
     var statusToast: StatusToast?
     // Inspector presentation is split from the selected pane so a drag-to-collapse
     // (which flips `isPresented` to false transiently) doesn't wipe the pane and
@@ -448,7 +485,10 @@ struct RepositoriesFeature {
     case loadPersistedRepositories
     case refreshWorktrees
     case reloadRepositories(animated: Bool)
-    case repositoriesLoaded([Repository], failures: [LoadFailure], roots: [URL], animated: Bool)
+    /// `loadGeneration`: the git load this result comes from (`LoadGeneration`);
+    /// nil when it was sent without a git load.
+    case repositoriesLoaded(
+      [Repository], failures: [LoadFailure], roots: [URL], animated: Bool, loadGeneration: Int? = nil)
     /// Sole owner of `state.gitEnvironmentError`. Emitted by every load path with
     /// the current git-environment probe result (`nil` clears the banner).
     case gitEnvironmentChanged(GitEnvironmentError?)
@@ -470,7 +510,8 @@ struct RepositoriesFeature {
       [Repository],
       failures: [LoadFailure],
       invalidRoots: [String],
-      roots: [URL]
+      roots: [URL],
+      loadGeneration: Int? = nil
     )
     case selectWorktree(Worktree.ID?, focusTerminal: Bool = false)
     case selectWorktreeAtHotkeySlot(Int)
@@ -574,7 +615,8 @@ struct RepositoriesFeature {
     case archiveWorktreeApplyFailed(Worktree.ID)
     case unarchiveWorktree(Worktree.ID)
     case requestDeleteSidebarItems([DeleteWorktreeTarget])
-    case deleteSidebarItemConfirmed(Worktree.ID, Repository.ID, background: Bool = false)
+    /// `keepBranch`: never delete the local branch (a remote `worktree.delete`).
+    case deleteSidebarItemConfirmed(Worktree.ID, Repository.ID, background: Bool = false, keepBranch: Bool = false)
     case deleteScriptCompleted(worktreeID: Worktree.ID, exitCode: Int?, tabId: TabID?)
     case deleteWorktreeApply(Worktree.ID, Repository.ID)
     case worktreeDeleted(
@@ -591,6 +633,9 @@ struct RepositoriesFeature {
     case pinnedWorktreesMoved(repositoryID: Repository.ID, IndexSet, Int)
     case unpinnedWorktreesMoved(repositoryID: Repository.ID, IndexSet, Int)
     case deleteWorktreeFailed(String, worktreeID: Worktree.ID)
+    /// A remote delete's second dirty check (after its delete script) found
+    /// changes: nothing was removed and the row is idle again; no alert.
+    case deleteWorktreeAbortedDirty(worktreeID: Worktree.ID, message: String)
     case requestDeleteRepository(Repository.ID)
     case requestRemoveFailedRepository(Repository.ID)
     case removeFailedRepository(Repository.ID)
@@ -1353,10 +1398,11 @@ struct RepositoriesFeature {
   var worktreeRemovalReducer: some Reducer<State, Action> {
     Reduce { state, action in
       switch action {
-      case .deleteSidebarItemConfirmed(let worktreeID, let repositoryID, let background):
+      case .deleteSidebarItemConfirmed(let worktreeID, let repositoryID, let background, let keepBranch):
         guard let repository = state.repositories[id: repositoryID],
           let worktree = repository.worktrees[id: worktreeID]
         else {
+          state.clearRemoteDeleteMarks(worktreeID)
           repositoriesLogger.debug(
             "deleteSidebarItemConfirmed: worktree \(worktreeID) not found in repository \(repositoryID)."
           )
@@ -1391,6 +1437,8 @@ struct RepositoriesFeature {
           )
           return .none
         }
+        // After the guards: a delete already in flight keeps its own branch rule.
+        if keepBranch { state.branchKeepingDeleteIDs.insert(worktreeID) }
         // NOTE: we do NOT clear `state.alert` here.
         //   - Alert-confirmed path: `.confirmDeleteSidebarItems`
         //     already cleared its own confirm alert at entry.
@@ -1496,6 +1544,8 @@ struct RepositoriesFeature {
               )
             }
           } else if let repositoryID = state.repositoryID(containing: worktreeID) {
+            // A remote delete checks the worktree again: the script may have run for minutes.
+            if state.branchKeepingDeleteIDs.contains(worktreeID) { state.dirtyRecheckDeleteIDs.insert(worktreeID) }
             followupEffect = .send(.deleteWorktreeApply(worktreeID, repositoryID))
           } else if state.removingRepositoryIDs[RepositoryID(worktreeID.rawValue)]?.disposition.isFolder
             == true
@@ -1512,6 +1562,7 @@ struct RepositoriesFeature {
             repositoriesLogger.warning(
               "Delete script succeeded but repository not found for worktree \(worktreeID)"
             )
+            state.clearRemoteDeleteMarks(worktreeID)
             state.alert = messageAlert(
               title: "Delete failed",
               message: "The delete script completed successfully, but the worktree could not be found."
@@ -1523,6 +1574,7 @@ struct RepositoriesFeature {
           // User closed the script tab.
           repositoriesLogger.debug(
             "Delete script cancelled or tab closed for worktree \(worktreeID).")
+          state.clearRemoteDeleteMarks(worktreeID)
           followupEffect = signalFolderRemovalFailure(worktreeID: worktreeID, state: &state)
         case let code?:
           // Script failed. Show the standard failure alert AND for folder
@@ -1531,6 +1583,7 @@ struct RepositoriesFeature {
           state.alert = blockingScriptFailureAlert(
             kind: .delete, exitCode: code, worktreeID: worktreeID, tabId: tabId, state: state
           )
+          state.clearRemoteDeleteMarks(worktreeID)
           followupEffect = signalFolderRemovalFailure(worktreeID: worktreeID, state: &state)
         }
         return .merge(resetLifecycle, followupEffect)
@@ -1542,6 +1595,7 @@ struct RepositoriesFeature {
           repositoriesLogger.warning(
             "deleteWorktreeApply: worktree \(worktreeID) not found in repository \(repositoryID)"
           )
+          state.clearRemoteDeleteMarks(worktreeID)
           state.alert = messageAlert(
             title: "Delete failed",
             message: "The worktree could not be found. It may have already been removed."
@@ -1554,13 +1608,33 @@ struct RepositoriesFeature {
           ? state.nextWorktreeID(afterRemoving: worktree, in: repository)
           : nil
         @Shared(.settingsFile) var settingsFile
-        let deleteBranchOnDeleteWorktree = settingsFile.global.deleteBranchOnDeleteWorktree
+        // A remote delete never deletes the local branch (`keepBranch`).
+        let deleteBranchOnDeleteWorktree =
+          settingsFile.global.deleteBranchOnDeleteWorktree && !state.branchKeepingDeleteIDs.contains(worktree.id)
+        // A remote delete whose script ran checks the worktree again before
+        // anything is moved or removed.
+        let recheckChanges = state.dirtyRecheckDeleteIDs.remove(worktree.id) != nil
         // Host-aware: a remote worktree is removed via `git worktree remove`
         // over ssh on the host, not against the local checkout.
         let deleteClient = gitClient(for: worktree)
         return .merge(
           state.setRowLifecycleEffect(worktree.id, .deleting),
           .run { send in
+            if recheckChanges {
+              do {
+                let changes = try await deleteClient.worktreeChanges(worktree.workingDirectory)
+                if let message = changes.message {
+                  await send(.deleteWorktreeAbortedDirty(worktreeID: worktree.id, message: message))
+                  return
+                }
+              } catch {
+                await send(
+                  .deleteWorktreeFailed(
+                    "could not check the worktree for changes: \(error.localizedDescription)",
+                    worktreeID: worktree.id))
+                return
+              }
+            }
             do {
               _ = try await deleteClient.removeWorktree(
                 worktree,
@@ -1587,6 +1661,7 @@ struct RepositoriesFeature {
         let nextSelection
       ):
         analyticsClient.capture("worktree_deleted", nil)
+        state.clearRemoteDeleteMarks(worktreeID)
         let previousSelection = state.selectedWorktreeID
         let previousSelectedWorktree = state.worktree(for: previousSelection)
         withAnimation(.easeOut(duration: 0.2)) {
@@ -1718,7 +1793,14 @@ struct RepositoriesFeature {
         return .none
 
       case .deleteWorktreeFailed(let message, let worktreeID):
+        state.clearRemoteDeleteMarks(worktreeID)
         state.alert = messageAlert(title: "Unable to delete worktree", message: message)
+        guard state.sidebarItems[id: worktreeID]?.lifecycle == .deleting else { return .none }
+        return state.setRowLifecycleEffect(worktreeID, .idle)
+
+      case .deleteWorktreeAbortedDirty(let worktreeID, _):
+        // The phone gets `worktree_dirty` (AppFeature); the Mac shows no alert.
+        state.clearRemoteDeleteMarks(worktreeID)
         guard state.sidebarItems[id: worktreeID]?.lifecycle == .deleting else { return .none }
         return state.setRowLifecycleEffect(worktreeID, .idle)
 
@@ -1750,6 +1832,7 @@ struct RepositoriesFeature {
           _ = sidebar.sections.removeValue(forKey: repositoryID)
         }
         state.dropStaleFailedRepositorySelection()
+        let generation = state.loadGeneration.begin()
         return .run { send in
           let loadedPaths = await repositoryPersistence.loadRoots()
           var seen: Set<String> = []
@@ -1765,7 +1848,8 @@ struct RepositoriesFeature {
               loadResult.repositories,
               failures: loadResult.failures,
               roots: roots,
-              animated: true
+              animated: true,
+              loadGeneration: generation
             )
           )
         }
@@ -3857,6 +3941,7 @@ struct RepositoriesFeature {
       case .loadPersistedRepositories:
         state.alert = nil
         state.isRefreshingWorktrees = false
+        let generation = state.loadGeneration.begin()
         return .run { send in
           let loadedPaths = await repositoryPersistence.loadRoots()
           let rootPaths = RepositoryPathNormalizer.normalize(loadedPaths)
@@ -3868,7 +3953,8 @@ struct RepositoriesFeature {
               loadResult.repositories,
               failures: loadResult.failures,
               roots: roots,
-              animated: false
+              animated: false,
+              loadGeneration: generation
             )
           )
         }
@@ -3900,9 +3986,11 @@ struct RepositoriesFeature {
             || state.gitEnvironmentError != nil
         else {
           state.isRefreshingWorktrees = false
+          // Nothing to load: this "load" is complete at once (`worktrees.refresh` waits on it).
+          state.loadGeneration.finish(state.loadGeneration.begin())
           return .none
         }
-        return loadRepositories(roots, animated: animated)
+        return loadRepositories(roots, animated: animated, generation: state.loadGeneration.begin())
 
       case .gitEnvironmentChanged(let environmentError):
         // Guard so the periodic refresh doesn't re-publish an unchanged value.
@@ -3910,8 +3998,9 @@ struct RepositoriesFeature {
         state.gitEnvironmentError = environmentError
         return .none
 
-      case .repositoriesLoaded(let repositories, let failures, let roots, let animated):
+      case .repositoriesLoaded(let repositories, let failures, let roots, let animated, let generation):
         state.isRefreshingWorktrees = false
+        state.loadGeneration.finish(generation)
         let previousSelection = state.selectedWorktreeID
         let previousSelectedWorktree = state.worktree(for: previousSelection)
         let mergedRemote = Self.mergePersistedRemoteRepositories(into: repositories, existingState: state)
@@ -3933,6 +4022,8 @@ struct RepositoriesFeature {
         state.repositoryRoots = roots
         state.isInitialLoadComplete = true
         state.resolvingRemoteRepositoryIDs = mergedRemote.resolvingIDs
+        // A remote delete whose worktree left the roster has no outcome left to clear its marks.
+        state.dropRemoteDeleteMarksOutsideRoster()
         // Local failures only; remote failures arrive via `.remoteRepositoryResolved`.
         state.loadFailuresByID = Dictionary(
           uniqueKeysWithValues: failures.map { ($0.rootID, $0.message) }
@@ -4031,6 +4122,7 @@ struct RepositoriesFeature {
       case .openRepositories(let urls):
         analyticsClient.capture("repository_added", ["count": urls.count])
         state.alert = nil
+        let generation = state.loadGeneration.begin()
         return .run { send in
           let loadedPaths = await repositoryPersistence.loadRoots()
           let existingRootPaths = RepositoryPathNormalizer.normalize(loadedPaths)
@@ -4072,14 +4164,16 @@ struct RepositoriesFeature {
               loadResult.repositories,
               failures: loadResult.failures,
               invalidRoots: invalidRoots,
-              roots: mergedRoots
+              roots: mergedRoots,
+              loadGeneration: generation
             )
           )
         }
         .cancellable(id: CancelID.load, cancelInFlight: true)
 
-      case .openRepositoriesFinished(let repositories, let failures, let invalidRoots, let roots):
+      case .openRepositoriesFinished(let repositories, let failures, let invalidRoots, let roots, let generation):
         state.isRefreshingWorktrees = false
+        state.loadGeneration.finish(generation)
         let previousSelection = state.selectedWorktreeID
         let previousSelectedWorktree = state.worktree(for: previousSelection)
         let mergedRemote = Self.mergePersistedRemoteRepositories(into: repositories, existingState: state)
@@ -4832,7 +4926,7 @@ struct RepositoriesFeature {
       case .deleteSidebarItemConfirmed, .deleteScriptCompleted, .deleteWorktreeApply, .worktreeDeleted,
         .repositoryGroupCreation, .repositoryGroupsChanged, .repositoryGroupsReloaded,
         .repositoriesMoved, .repositoryDropped, .pinnedWorktreesMoved, .unpinnedWorktreesMoved, .deleteWorktreeFailed,
-        .requestDeleteRepository, .requestRemoveFailedRepository, .removeFailedRepository,
+        .deleteWorktreeAbortedDirty, .requestDeleteRepository, .requestRemoveFailedRepository, .removeFailedRepository,
         .repositoryRemovalCompleted, .repositoriesRemoved:
         // Real handling lives in `worktreeRemovalReducer` (combined below) so `body` stays under
         // the type-checker's complexity limit. The two `.alert(.presented(.confirm…))` arms in that
@@ -5179,7 +5273,7 @@ struct RepositoriesFeature {
     .cancellable(id: CancelID.pullRequestRefresh(repositoryID), cancelInFlight: true)
   }
 
-  private func loadRepositories(_ roots: [URL], animated: Bool = false) -> Effect<Action> {
+  private func loadRepositories(_ roots: [URL], animated: Bool = false, generation: Int) -> Effect<Action> {
     let gitClient = gitClient
     return .run { [animated, roots] send in
       // Each reconcile shells out independently; parallel to keep load latency flat.
@@ -5195,7 +5289,8 @@ struct RepositoriesFeature {
           loadResult.repositories,
           failures: loadResult.failures,
           roots: roots,
-          animated: animated
+          animated: animated,
+          loadGeneration: generation
         )
       )
     }
@@ -6243,6 +6338,29 @@ extension RepositoriesFeature.State {
       return repository.id
     }
     return nil
+  }
+
+  /// Forgets a remote delete's branch-keeping and re-check marks (every exit of that delete).
+  mutating func clearRemoteDeleteMarks(_ worktreeID: Worktree.ID) {
+    branchKeepingDeleteIDs.remove(worktreeID)
+    dirtyRecheckDeleteIDs.remove(worktreeID)
+  }
+
+  /// Drops the remote delete marks of worktrees no longer in the roster, unless
+  /// their row still runs that delete (its script or removal): the delete's own
+  /// exit clears them, and a worktree back at the same path must not lose them.
+  mutating func dropRemoteDeleteMarksOutsideRoster() {
+    guard !branchKeepingDeleteIDs.isEmpty || !dirtyRecheckDeleteIDs.isEmpty else { return }
+    let roster = Set(repositories.flatMap { $0.worktrees.map(\.id) })
+    let keep: (Worktree.ID) -> Bool = { id in
+      if roster.contains(id) { return true }
+      switch self.sidebarItems[id: id]?.lifecycle {
+      case .deletingScript, .deleting: return true
+      default: return false
+      }
+    }
+    branchKeepingDeleteIDs = branchKeepingDeleteIDs.filter(keep)
+    dirtyRecheckDeleteIDs = dirtyRecheckDeleteIDs.filter(keep)
   }
 
   /// Retarget a possibly-materialized pending id to its real worktree id so a

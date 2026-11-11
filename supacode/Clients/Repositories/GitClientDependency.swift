@@ -87,6 +87,9 @@ nonisolated struct GitClientDependency: Sendable {
   /// Uncommitted status of a worktree for the files inspector. `nil` on a probe
   /// failure (caller keeps its last-good snapshot); an empty snapshot is clean.
   var fileStatus: @Sendable (URL) async -> GitStatusSnapshot?
+  /// What deleting a worktree would lose (a remote `worktree.delete`'s dirty
+  /// check); throws when git fails.
+  var worktreeChanges: @Sendable (URL) async throws -> WorktreeDirtyState
   var stageFile: @Sendable (_ path: String, _ root: URL) async throws -> Void
   var unstageFile: @Sendable (_ path: String, _ root: URL) async throws -> Void
   /// Discards a path's uncommitted changes: `git restore` for a tracked file,
@@ -283,6 +286,7 @@ nonisolated extension GitClientDependency: DependencyKey {
       branchName: { await GitClient(shell: shell).symbolicHeadBranch(at: $0) },
       lineChanges: { await GitClient(shell: shell).lineChanges(at: $0) },
       fileStatus: { await GitClient(shell: shell).fileStatus(at: $0) },
+      worktreeChanges: { try await GitClient(shell: shell).worktreeChanges(at: $0) },
       stageFile: { path, root in try await GitClient(shell: shell).stageFile(path, in: root) },
       unstageFile: { path, root in try await GitClient(shell: shell).unstageFile(path, in: root) },
       discardFile: { path, root, tracked in
@@ -326,6 +330,9 @@ nonisolated extension GitClientDependency: DependencyKey {
     // No git status probe by default: fixtures with fake `/tmp/...` paths get a
     // no-op (nil) so the reducer never decorates. Status tests override this.
     value.fileStatus = { _ in nil }
+    // Clean by default: fixtures with fake `/tmp/...` paths must not shell out.
+    // Dirty-check tests override this.
+    value.worktreeChanges = { _ in WorktreeDirtyState() }
     // `liveValue` shells out to real `git clone`; a no-op default keeps an
     // unstubbed test from cloning over the network. Clone tests override this.
     value.cloneStream = { _, _, _, _ in
