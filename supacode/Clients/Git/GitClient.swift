@@ -83,9 +83,24 @@ nonisolated struct WorktreeDirtyState: Equatable, Sendable {
     return parts.isEmpty ? nil : parts.joined(separator: "; ")
   }
 
+  /// The last path components of the wholly ignored directories that a delete
+  /// may drop: generated build and dependency output that a rebuild restores.
+  /// Any other wholly ignored directory (`data/`, `notes/`) counts as dirty.
+  static let generatedDirectoryNames: Set<String> = [
+    "node_modules", ".build", "build", "dist", "DerivedData", "target", ".gradle", "Pods", ".venv", "__pycache__",
+  ]
+
+  /// Whether a wholly ignored directory, as `git status` reports it (`a/b/`),
+  /// is generated output (`generatedDirectoryNames`, by its last component).
+  static func isGeneratedDirectory(_ path: String) -> Bool {
+    guard let name = path.split(separator: "/").last else { return false }
+    return generatedDirectoryNames.contains(String(name))
+  }
+
   /// The paths of `git status --porcelain=v1 -z` output that count: every
   /// entry (`XY path`) except an ignored one (`!!`) whose path ends in `/` (a
-  /// wholly ignored directory). A rename or copy entry carries its source as a
+  /// wholly ignored directory) and names generated output
+  /// (`isGeneratedDirectory`). A rename or copy entry carries its source as a
   /// second NUL field, which is skipped.
   static func countedPaths(porcelainV1Z data: Data) -> [String] {
     let fields = data.split(separator: 0, omittingEmptySubsequences: true)
@@ -102,7 +117,7 @@ nonisolated struct WorktreeDirtyState: Equatable, Sendable {
       let path = String(decoding: bytes[3...], as: UTF8.self)
       // swiftlint:enable optional_data_string_conversion
       if status.contains("R") || status.contains("C") { index += 1 }
-      if status == "!!", path.hasSuffix("/") { continue }
+      if status == "!!", path.hasSuffix("/"), Self.isGeneratedDirectory(path) { continue }
       paths.append(path)
     }
     return paths
@@ -1252,7 +1267,8 @@ struct GitClient {
 
   /// What a remote `worktree.delete` would lose (`WorktreeDirtyState`): every
   /// `git status --porcelain=v1 -z --untracked-files=all --ignored=matching`
-  /// entry except a wholly ignored directory, in the worktree and in every
+  /// entry except a wholly ignored generated directory (`node_modules/`,
+  /// `.build/`, `WorktreeDirtyState.generatedDirectoryNames`), in the worktree and in every
   /// initialized submodule (recursively), plus the commits a detached HEAD
   /// holds that no branch, tag or remote ref reaches. Throws when git fails, so
   /// the caller refuses instead of deleting unchecked. Runs over `shell` (ssh

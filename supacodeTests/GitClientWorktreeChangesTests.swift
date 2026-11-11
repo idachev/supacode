@@ -30,14 +30,37 @@ struct GitClientWorktreeChangesTests {
     }
   }
 
-  @Test func anIgnoredFileIsDirtyButAWhollyIgnoredDirectoryIsNot() async throws {
-    try await withRepository(gitignore: ".env\nnode_modules/\n") { repo in
-      let modules = repo.appending(path: "node_modules/pkg")
-      try FileManager.default.createDirectory(at: modules, withIntermediateDirectories: true)
-      try "x".write(to: modules.appending(path: "index.js"), atomically: true, encoding: .utf8)
+  @Test func anIgnoredFileIsDirtyButAWhollyIgnoredGeneratedDirectoryIsNot() async throws {
+    try await withRepository(gitignore: ".env\nnode_modules/\n.build/\n") { repo in
+      try Self.writeFile(repo, "node_modules/pkg/index.js")
+      try Self.writeFile(repo, ".build/debug/app")
       #expect(try await GitClient().worktreeChanges(at: repo) == WorktreeDirtyState())
       try "SECRET=1".write(to: repo.appending(path: ".env"), atomically: true, encoding: .utf8)
       #expect(try await GitClient().worktreeChanges(at: repo).paths == [".env"])
+    }
+  }
+
+  @Test func aWhollyIgnoredDataDirectoryIsDirty() async throws {
+    try await withRepository(gitignore: "data/\nnode_modules/\n") { repo in
+      try Self.writeFile(repo, "node_modules/pkg/index.js")
+      try Self.writeFile(repo, "data/results.csv")
+      let changes = try await GitClient().worktreeChanges(at: repo)
+      #expect(changes.paths == ["data/"])
+      #expect(
+        changes.message
+          == "the worktree has uncommitted changes, untracked or ignored files (1): data/; "
+          + "commit, stash or remove them on the Mac first")
+    }
+  }
+
+  @Test func aNestedGeneratedDirectoryIsClean() async throws {
+    try await withRepository(gitignore: "node_modules/\n") { repo in
+      try Self.writeFile(repo, "packages/x/package.json")
+      let path = repo.path(percentEncoded: false)
+      try await Self.runGit(["-C", path, "add", "."])
+      try await Self.runGit(["-C", path, "commit", "-m", "package"])
+      try Self.writeFile(repo, "packages/x/node_modules/pkg/index.js")
+      #expect(try await GitClient().worktreeChanges(at: repo) == WorktreeDirtyState())
     }
   }
 
@@ -62,7 +85,7 @@ struct GitClientWorktreeChangesTests {
   }
 
   @Test func anIgnoredFileInANestedSubmoduleIsDirtyWithItsPrefixedPath() async throws {
-    try await withRepository(gitignore: ".env\n") { inner in
+    try await withRepository(gitignore: ".env\nnode_modules/\ndata/\n") { inner in
       try await withRepository { middle in
         try await withRepository { outer in
           let allowFile = ["-c", "protocol.file.allow=always"]
@@ -79,15 +102,24 @@ struct GitClientWorktreeChangesTests {
           #expect(try await GitClient().worktreeChanges(at: outer) == WorktreeDirtyState())
           try "SECRET=1".write(to: core.appending(path: ".env"), atomically: true, encoding: .utf8)
           #expect(try await GitClient().worktreeChanges(at: outer).paths == ["libs/core/.env"])
+          // Same directory rule inside a submodule: generated output is clean, data is not.
+          try FileManager.default.removeItem(at: core.appending(path: ".env"))
+          try Self.writeFile(core, "node_modules/pkg/index.js")
+          #expect(try await GitClient().worktreeChanges(at: outer) == WorktreeDirtyState())
+          try Self.writeFile(core, "data/results.csv")
+          #expect(try await GitClient().worktreeChanges(at: outer).paths == ["libs/core/data/"])
         }
       }
     }
   }
 
-  @Test func countedPathsSkipTheRenameSourceAndIgnoredDirectories() {
-    let output = Data("R  new.txt\0old.txt\0 M a.swift\0?? b.txt\0!! build/\0!! .env\0UU c.swift\0".utf8)
+  @Test func countedPathsSkipTheRenameSourceAndGeneratedIgnoredDirectories() {
+    let output = Data(
+      "R  new.txt\0old.txt\0 M a.swift\0?? b.txt\0!! build/\0!! .env\0UU c.swift\0!! notes/\0!! web/dist/\0".utf8)
     #expect(
-      WorktreeDirtyState.countedPaths(porcelainV1Z: output) == ["new.txt", "a.swift", "b.txt", ".env", "c.swift"])
+      WorktreeDirtyState.countedPaths(porcelainV1Z: output) == [
+        "new.txt", "a.swift", "b.txt", ".env", "c.swift", "notes/",
+      ])
     #expect(WorktreeDirtyState.countedPaths(porcelainV1Z: Data()) == [])
   }
 
@@ -117,6 +149,13 @@ struct GitClientWorktreeChangesTests {
   }
 
   // MARK: - Helpers
+
+  /// Writes a small file at `relativePath` under `root`, creating its directories.
+  private static func writeFile(_ root: URL, _ relativePath: String) throws {
+    let file = root.appending(path: relativePath)
+    try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "x".write(to: file, atomically: true, encoding: .utf8)
+  }
 
   /// A fresh repository with one commit on `main` (and a committed `.gitignore`
   /// when given), removed after `body`.

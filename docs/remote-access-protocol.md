@@ -417,8 +417,9 @@ confirmation (the client confirmed) and its window keeps its selection.
 - Dirty check, before anything runs: `git status --porcelain=v1 -z --untracked-files=all
   --ignored=matching` in the worktree and in every initialized submodule (recursively, paths
   prefixed with the submodule path). Every record counts (staged or unstaged changes, conflicts,
-  untracked files, ignored files such as `.env`) except a wholly ignored directory (`node_modules/`,
-  `build/`). A detached HEAD whose commits no branch, tag or remote ref holds is dirty too.
+  untracked files, ignored files such as `.env`, wholly ignored directories such as `data/`) except a
+  wholly ignored directory whose last path component is a generated one: `node_modules`, `.build`, `build`, `dist`, `DerivedData`, `target`, `.gradle`, `Pods`, `.venv`, `__pycache__` (so
+  `node_modules/` and `packages/x/node_modules/` do not block, `data/` does and is listed as `data/`). A detached HEAD whose commits no branch, tag or remote ref holds is dirty too.
   Unpushed commits on a branch do not block (the branch stays). A dirty worktree is refused with
   `worktree_dirty`; there is no force option. For an ssh worktree the check runs on the ssh host.
 - When the repository has a delete script, the same check runs again after the script and right

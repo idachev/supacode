@@ -149,7 +149,8 @@ Line numbers are `supacode/Features/...` unless the path says otherwise.
   path, an ssh one's is `host.authority + path`), no `deleteBranch` and no `force` field (ОВ6, ОВ7
   decided).
 - What the host does (owner decisions ОВ6, ОВ7): it first checks the worktree for uncommitted changes
-  and untracked files and refuses with `worktree_dirty` if there are any; otherwise it deletes the
+  and untracked files (and ignored files and directories other than generated ones such as
+  `node_modules/`) and refuses with `worktree_dirty` if there are any; otherwise it deletes the
   worktree the way the Mac's own delete does (delete script, then `git worktree remove`), but
   **never deletes the local branch**, whatever `deleteBranchOnDeleteWorktree` says.
 
@@ -187,7 +188,7 @@ Line numbers are `supacode/Features/...` unless the path says otherwise.
 | `worktree_invalid` | `worktree.delete needs a worktreeId`, `no such worktree` | `worktreeId` missing or empty; unknown, archived (ОВ12), or a pending (`pending:…`) id |
 | `worktree_unsupported` | `the main worktree cannot be deleted`, `folders cannot be deleted from the remote`, `the repository is being removed` | main worktree; folder (non-git) entry; repository in `removingRepositoryIDs` |
 | `worktree_busy` | `the worktree is busy (being created, archived or deleted)` | row lifecycle not `.idle` (setup script running, archiving, deleting, delete script running), or a remote delete of it is still in flight; also when the re-check after the dirty check finds this (D4) |
-| `worktree_dirty` | `the worktree has uncommitted changes, untracked or ignored files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` (ignored directories are not listed) | the dirty check found at least one counted status record (the worktree or any initialized submodule, recursively), or commits on a detached HEAD that no branch, tag or remote ref holds (message then: `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first`). Sent either **before** the delete (the first check; nothing ran) or **after a delete script ran** (the re-check before removal; the script's effects stay, the worktree stays, row `.idle`) (D4) |
+| `worktree_dirty` | `the worktree has uncommitted changes, untracked or ignored files (N): <up to 5 paths>; commit, stash or remove them on the Mac first` (wholly ignored generated directories such as `node_modules/` are not listed; any other wholly ignored directory is, e.g. `data/`) | the dirty check found at least one counted status record (the worktree or any initialized submodule, recursively), or commits on a detached HEAD that no branch, tag or remote ref holds (message then: `the worktree's detached HEAD has N commits that are on no branch; create a branch for them on the Mac first`). Sent either **before** the delete (the first check; nothing ran) or **after a delete script ran** (the re-check before removal; the script's effects stay, the worktree stays, row `.idle`) (D4) |
 | `worktree_failed` | `Delete script failed (exit code N).`, `Delete cancelled.`, `Unable to delete worktree: <git message>`, `The worktree could not be found. It may have already been removed.`, `could not check the worktree for changes: <error>`, `the worktree left the list before it was deleted (removed outside Supacode, or its repository was removed)` | the app reported a failure, the check failed, or the worktree vanished without a delete result |
 | `worktree_timeout` | `the delete is still running on the Mac; the worktree may disappear from the list later` | no outcome within `worktreeDeleteTimeout` (300 s) |
 | `refresh_timeout` | `the refresh is still running on the Mac; send list again later` | `worktrees.refresh`: no load finished within 60 s |
@@ -276,8 +277,13 @@ D4. AppFeature (core, next to the `worktree.new` arms; core runs before the repo
       `GitClient.swift:1168-1184`, which uses the same `--untracked-files=all --ignored=matching`
       pair; its comment, `:1165-1167`, notes that `--ignored=matching` reports a wholly ignored
       directory as one entry). Rule per NUL-separated entry (`XY<space>path`):
-      - `!! <path>` with `<path>` ending in `/` (a directory that is ignored as a whole, e.g.
-        `node_modules/`, `build/`, `.venv/`) does **not** count;
+      - `!! <path>` with `<path>` ending in `/` (a directory that is ignored as a whole) does
+        **not** count only when its last path component is in the fixed allow-list of generated
+        directories (`WorktreeDirtyState.generatedDirectoryNames`): `node_modules`, `.build`, `build`, `dist`, `DerivedData`, `target`, `.gradle`, `Pods`, `.venv`, `__pycache__`
+        (e.g. `node_modules/`, `packages/x/node_modules/`, `.build/`);
+      - `!! <path>` with `<path>` ending in `/` and any other last component (e.g. `data/`,
+        `notes/`) **counts**, listed with its trailing `/` (owner decision ОП1, 2026-11-11: a
+        wholly ignored directory may hold valuable data);
       - `!! <path>` not ending in `/` (an ignored file, e.g. `.env`, `config/local.json`, also a file
         inside a non-ignored directory matched by a file pattern such as `*.log`) **counts**
         (owner/main decision on Codex r2 F4);
@@ -475,8 +481,8 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
   `AppFeature` (`remoteWorktreeDeletions`, request/checked/consume/abandon actions, the dirty-check
   effect, outcome updates in the existing arms, the two explicit early-exit outcomes, the
   `repositoriesChanged` backstop). Tests with `TestClock`, no `Task.sleep`: success only via
-  `.worktreeDeleted`; dirty (tracked change, untracked file, ignored file such as `.env`) → `worktree_dirty`; only
-  wholly ignored directories (`node_modules/`) → deletes; an ignored `.env` inside an initialized (nested) submodule →
+  `.worktreeDeleted`; dirty (tracked change, untracked file, ignored file such as `.env`, wholly ignored `data/`) → `worktree_dirty`; only
+  wholly ignored generated directories (`node_modules/`, `.build/`, nested `packages/x/node_modules/`) → deletes; an ignored `.env` inside an initialized (nested) submodule →
   `worktree_dirty` with the prefixed path; second check: a file written during the
   delete script → `worktree_dirty`, row `.idle`, directory untouched, no Mac alert; no script → no
   second check; detached HEAD with a commit on no ref → `worktree_dirty`, attached branch with unpushed
@@ -511,7 +517,8 @@ R6. Concurrency: several phones may refresh at once; each waits for its own gene
   setting; a per-request field.
 - ОВ7 Dirty worktree — decided by the owner (ОП2): refuse with `worktree_dirty` when `git status`
   shows uncommitted changes, untracked files, or (main, Codex r2 F4) ignored files outside wholly
-  ignored directories, or a detached HEAD holds commits on no ref; checked again before removal when
+  ignored generated directories (owner ОП1, 2026-11-11: a fixed allow-list by last path component;
+  any other wholly ignored directory such as `data/` counts), or a detached HEAD holds commits on no ref; checked again before removal when
   a delete script ran (main, Codex r2 F2) (D4); no force flag in v1. Unpushed commits do not
   block, because the branch is kept (ОВ6). Rejected: mirror the Mac (no check); a `force` field.
 - ОВ8 Mac focus — decided by the owner (ОП1): no focus change on the Mac. The host sends
