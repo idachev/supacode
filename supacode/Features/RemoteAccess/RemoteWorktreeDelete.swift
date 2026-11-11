@@ -63,6 +63,8 @@ nonisolated enum RemoteWorktreeDeleteRejection: Error, Equatable, Sendable {
   }
 }
 
+// Main actor: it reads `RepositoriesFeature.State`, which is main-actor isolated.
+@MainActor
 extension RemoteWorktreeDeleteRejection {
   /// `check` against the app's repositories state: finds the repository that
   /// lists `worktreeID` (a pending `pending:…` row is in none) and reads the
