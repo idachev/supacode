@@ -90,6 +90,40 @@ nonisolated struct WorktreeCreationProgressUpdateThrottle {
   }
 }
 
+/// Proof, read from the `wt` / `git worktree add` output (forced to the C
+/// locale), that this creation's own `git worktree add -b <branch>` completed:
+/// git printed the new-branch preparing line and then checked the tree out. Git
+/// refuses an existing branch, or a non-empty path, before it makes the worktree
+/// (an existing path can leave the new branch behind), so without both lines the
+/// directory at the target is not provably this creation's and is left in place.
+/// A new-branch line without the checkout, and without git refusing the branch,
+/// means git made this creation's branch and then failed (a failed checkout, or a
+/// taken path); git removes its own half-made directory then, so only the branch
+/// is this creation's to delete (`ownsBranchOnly`).
+nonisolated struct WorktreeCreationOwnershipProof {
+  let branchName: String
+  private var sawNewBranch = false
+  private var sawCheckout = false
+  private var sawBranchRefusal = false
+
+  init(branchName: String) {
+    self.branchName = branchName
+  }
+
+  var provesOwnership: Bool { sawNewBranch && sawCheckout }
+
+  var ownsBranchOnly: Bool { sawNewBranch && !sawCheckout && !sawBranchRefusal }
+
+  mutating func record(_ line: String) {
+    if line.contains("Preparing worktree (new branch '\(branchName)')") { sawNewBranch = true }
+    if sawNewBranch, line.contains("HEAD is now at ") { sawCheckout = true }
+    // Git could not create the branch: another creation holds it.
+    if line.contains("a branch named '\(branchName)' already exists") || line.contains("cannot lock ref") {
+      sawBranchRefusal = true
+    }
+  }
+}
+
 /// Which status pane the detail inspector shows when presented; presentation is tracked by `inspectorPresented`.
 enum WorktreeInspectorPane: Hashable, Sendable {
   case git
@@ -547,7 +581,10 @@ struct RepositoriesFeature {
     case createRandomWorktreeSucceeded(
       Worktree,
       repositoryID: Repository.ID,
-      pendingID: Worktree.ID
+      pendingID: Worktree.ID,
+      /// False when `wt` returned a worktree this creation did not make (it
+      /// adopted the branch's existing worktree): a cancel must not delete it.
+      createdByThisCreation: Bool = true
     )
     case createRandomWorktreeFailed(
       title: String,
@@ -556,7 +593,10 @@ struct RepositoriesFeature {
       previousSelection: Worktree.ID?,
       repositoryID: Repository.ID,
       name: String?,
-      baseDirectory: URL
+      baseDirectory: URL,
+      /// The directory the creation targeted when a placement override moved it
+      /// off `baseDirectory/name`; nil for the default placement.
+      worktreeDirectory: URL? = nil
     )
     /// A worktree's creation flow settled: its first tab is hosted, or the
     /// initial-tab bootstrap failed and it rests tab-less (a valid empty state).
@@ -2211,7 +2251,12 @@ struct RepositoriesFeature {
         let createWorktreeStream = gitClient.createWorktreeStream
         let isValidBranchName = gitClient.isValidBranchName
         return .run { send in
+          // The failure cleanup target: set only once this creation may itself
+          // have made the directory at the cleanup path (see the arm before the
+          // stream); the cleanup also needs `ownershipProof` from the stream output.
           var newWorktreeName: String?
+          var ownershipProof: WorktreeCreationOwnershipProof?
+          var cleanupDirectoryOverride: URL?
           var progress = WorktreeCreationProgress(
             stage: .loadingLocalBranches,
             worktreeName: initialWorktreeName
@@ -2319,7 +2364,6 @@ struct RepositoriesFeature {
               }
               name = trimmed
             }
-            newWorktreeName = name
             // Validate the name leaf here too: the prompt guards it, but the
             // CLI / deeplink entry points reach this path without that check.
             if let nameError = WorktreePlacementOverride.nameValidationError(placement?.name) {
@@ -2526,6 +2570,18 @@ struct RepositoriesFeature {
                 progress: progress
               )
             )
+            // Arm the failed-creation cleanup only now: nothing earlier creates
+            // anything on disk, and a directory already at the target is not this
+            // creation's to delete (a racing creation's, or the user's). The target
+            // is the placement override's directory when one is set.
+            let cleanupURL =
+              worktreeDirectoryURL?.standardizedFileURL
+              ?? State.failedWorktreeCleanupURL(name: name, baseDirectory: worktreeBaseDirectory)
+            if let cleanupURL, !FileManager.default.fileExists(atPath: cleanupURL.path(percentEncoded: false)) {
+              newWorktreeName = name
+              cleanupDirectoryOverride = worktreeDirectoryURL?.standardizedFileURL
+              ownershipProof = WorktreeCreationOwnershipProof(branchName: name)
+            }
             let stream = createWorktreeStream(
               name,
               repository.rootURL,
@@ -2542,6 +2598,7 @@ struct RepositoriesFeature {
                 guard !line.isEmpty else {
                   continue
                 }
+                ownershipProof?.record(line)
                 progress.appendOutputLine(line, maxLines: worktreeCreationProgressLineLimit)
                 if progressUpdateThrottle.recordLine() {
                   await send(
@@ -2598,7 +2655,8 @@ struct RepositoriesFeature {
                   .createRandomWorktreeSucceeded(
                     newWorktree,
                     repositoryID: repository.id,
-                    pendingID: pendingID
+                    pendingID: pendingID,
+                    createdByThisCreation: ownershipProof?.provesOwnership == true
                   )
                 )
                 // Coalesce copy + upstream advisories into one alert; a second
@@ -2636,6 +2694,16 @@ struct RepositoriesFeature {
                 )
               )
             }
+            // Git made this creation's branch and then failed, removing its own
+            // half-made directory: drop just the branch, never the directory.
+            if let newWorktreeName, ownershipProof?.ownsBranchOnly == true {
+              do {
+                try await gitClient.deleteBranch(newWorktreeName, repository.rootURL)
+              } catch {
+                repositoriesLogger.warning(
+                  "Unable to delete branch \(newWorktreeName) of a failed creation: \(error.localizedDescription)")
+              }
+            }
             await send(
               .createRandomWorktreeFailed(
                 title: "Unable to create worktree",
@@ -2643,8 +2711,11 @@ struct RepositoriesFeature {
                 pendingID: pendingID,
                 previousSelection: previousSelection,
                 repositoryID: repository.id,
-                name: newWorktreeName,
-                baseDirectory: worktreeBaseDirectory
+                // Only a creation whose own `git worktree add` provably made the
+                // directory and branch may clean them up.
+                name: ownershipProof?.provesOwnership == true ? newWorktreeName : nil,
+                baseDirectory: worktreeBaseDirectory,
+                worktreeDirectory: cleanupDirectoryOverride
               )
             )
           }
@@ -4709,10 +4780,14 @@ struct RepositoriesFeature {
       case .createRandomWorktreeSucceeded(
         let worktree,
         let repositoryID,
-        let pendingID
+        let pendingID,
+        let createdByThisCreation
       ):
         let permit = state.licensePermits.removeValue(forKey: pendingID)
         if state.cancelRequestedPendingIDs.remove(pendingID) != nil {
+          // `wt` succeeds by returning a branch's existing worktree, e.g. the
+          // winner of a same-name race: a cancelled loser never deletes that.
+          guard createdByThisCreation else { return cancelLicensePermit(permit) }
           return deleteCancelledCreation(worktree, permit: permit)
         }
         let licenseEffect = completeLicensePermit(permit)
@@ -4785,7 +4860,8 @@ struct RepositoriesFeature {
         let previousSelection,
         let repositoryID,
         let name,
-        let baseDirectory
+        let baseDirectory,
+        let worktreeDirectory
       ):
         let permit = state.licensePermits.removeValue(forKey: pendingID)
         let previousSelectedWorktree = state.worktree(for: previousSelection)
@@ -4800,8 +4876,10 @@ struct RepositoriesFeature {
         state.restoreSelection(previousSelection, pendingID: pendingID)
         let cleanup = state.cleanupFailedWorktree(
           repositoryID: repositoryID,
+          pendingID: pendingID,
           name: name,
           baseDirectory: baseDirectory,
+          worktreeDirectory: worktreeDirectory,
         )
         if !wasCancelled {
           state.alert = messageAlert(title: title, message: message)
@@ -6677,24 +6755,47 @@ extension RepositoriesFeature.State {
     return true
   }
 
-  mutating func cleanupFailedWorktree(
-    repositoryID: Repository.ID,
-    name: String?,
-    baseDirectory: URL,
-  ) -> FailedWorktreeCleanup {
-    guard let name, !name.isEmpty else {
-      return FailedWorktreeCleanup(didRemoveWorktree: false, worktree: nil)
-    }
-    let repositoryRootURL = URL(fileURLWithPath: repositoryID.rawValue).standardizedFileURL
+  /// The directory a failed creation of `name` cleans up: `name` under the
+  /// creation-time base directory, or nil when the name is empty or escapes it.
+  /// Nonisolated: the creation effect calls it off the main actor.
+  nonisolated static func failedWorktreeCleanupURL(name: String?, baseDirectory: URL) -> URL? {
+    guard let name, !name.isEmpty else { return nil }
     let normalizedBaseDirectory = baseDirectory.standardizedFileURL
     let worktreeURL =
       normalizedBaseDirectory
       .appending(path: name, directoryHint: .isDirectory)
       .standardizedFileURL
-    guard worktreeURL.isInside(baseDirectory: normalizedBaseDirectory) else {
+    guard worktreeURL.isInside(baseDirectory: normalizedBaseDirectory) else { return nil }
+    return worktreeURL
+  }
+
+  mutating func cleanupFailedWorktree(
+    repositoryID: Repository.ID,
+    pendingID: Worktree.ID,
+    name: String?,
+    baseDirectory: URL,
+    worktreeDirectory: URL? = nil,
+  ) -> FailedWorktreeCleanup {
+    // A placement override's directory was resolved from validated inputs; the
+    // default target is `name` under the base, guarded against traversal.
+    guard let name, !name.isEmpty,
+      let worktreeURL = worktreeDirectory?.standardizedFileURL
+        ?? Self.failedWorktreeCleanupURL(name: name, baseDirectory: baseDirectory)
+    else {
       return FailedWorktreeCleanup(didRemoveWorktree: false, worktree: nil)
     }
     let worktreeID = WorktreeID(worktreeURL.path(percentEncoded: false))
+    // Defense in depth behind the effect's ownership proof: never touch a
+    // worktree another creation already landed at this path or under this name.
+    guard
+      !isFailedCleanupTargetOwnedByAnotherCreation(
+        worktreeURL, name: name, repositoryID: repositoryID, pendingID: pendingID)
+    else {
+      repositoriesLogger.info(
+        "Skipping failed-creation cleanup of \(name): another creation owns \(worktreeID.rawValue).")
+      return FailedWorktreeCleanup(didRemoveWorktree: false, worktree: nil)
+    }
+    let repositoryRootURL = URL(fileURLWithPath: repositoryID.rawValue).standardizedFileURL
     let worktree =
       repositories[id: repositoryID]?.worktrees[id: worktreeID]
       ?? Worktree(
@@ -6707,6 +6808,36 @@ extension RepositoriesFeature.State {
       )
     let didRemoveWorktree = cleanupWorktreeState(worktreeID, repositoryID: repositoryID)
     return FailedWorktreeCleanup(didRemoveWorktree: didRemoveWorktree, worktree: worktree)
+  }
+
+  /// True when another creation (not `pendingID`) in the repository already
+  /// landed on the failed creation's cleanup target: it is resolved onto a
+  /// worktree at that path or of that name. A merely in-flight creation of the
+  /// same name proves nothing (the effect's ownership proof decides that), so it
+  /// does not block. Names and paths compare case-insensitively, as the default
+  /// macOS volume does.
+  func isFailedCleanupTargetOwnedByAnotherCreation(
+    _ worktreeURL: URL,
+    name: String,
+    repositoryID: Repository.ID,
+    pendingID: Worktree.ID
+  ) -> Bool {
+    let lowercasedName = name.lowercased()
+    // Match a landed worktree by path, or by name the way the reload transfer
+    // pairs a pending row with its discovery (git may report a symlink-resolved path).
+    let targetPath = Self.comparablePath(worktreeURL)
+    return resolvedPendingWorktrees.contains { entry in
+      guard entry.key != pendingID, entry.value.repositoryID == repositoryID else { return false }
+      if Self.comparablePath(URL(fileURLWithPath: entry.value.worktreeID.rawValue)) == targetPath { return true }
+      let landedName = repositories[id: repositoryID]?.worktrees[id: entry.value.worktreeID]?.name
+      return landedName?.lowercased() == lowercasedName
+    }
+  }
+
+  private static func comparablePath(_ url: URL) -> String {
+    var path = url.standardizedFileURL.path(percentEncoded: false)
+    while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+    return path.lowercased()
   }
 
   @discardableResult
@@ -6736,7 +6867,7 @@ extension RepositoriesFeature.State {
 }
 
 extension URL {
-  fileprivate func isInside(baseDirectory: URL) -> Bool {
+  nonisolated fileprivate func isInside(baseDirectory: URL) -> Bool {
     let normalizedPath = standardizedFileURL.pathComponents
     let normalizedBase = baseDirectory.standardizedFileURL.pathComponents
     guard normalizedPath.count >= normalizedBase.count else { return false }

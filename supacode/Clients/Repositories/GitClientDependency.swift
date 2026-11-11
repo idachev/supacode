@@ -103,6 +103,9 @@ nonisolated struct GitClientDependency: Sendable {
   var gitRemote: @Sendable (_ repositoryRoot: URL) async -> GitRemote?
   var setUpstreamBranch: @Sendable (_ branch: String, _ upstream: String, _ repoRoot: URL) async throws -> Void
   var unsetUpstreamBranch: @Sendable (_ branch: String, _ repoRoot: URL) async throws -> Void
+  /// Force-deletes a local branch; used to drop the branch a failed creation's
+  /// own `git worktree add -b` made. No-op by default.
+  var deleteBranch: @Sendable (_ branch: String, _ repoRoot: URL) async throws -> Void = { _, _ in }
   var upstreamBranchExists: @Sendable (_ ref: String, _ repoRoot: URL) async throws -> Bool
 }
 
@@ -303,6 +306,7 @@ nonisolated extension GitClientDependency: DependencyKey {
       unsetUpstreamBranch: { branch, repoRoot in
         try await GitClient(shell: shell).unsetUpstreamBranch(branch, for: repoRoot)
       },
+      deleteBranch: { try await GitClient(shell: shell).deleteBranch($0, for: $1) },
       upstreamBranchExists: { ref, repoRoot in
         try await GitClient(shell: shell).upstreamBranchExists(ref, for: repoRoot)
       }
