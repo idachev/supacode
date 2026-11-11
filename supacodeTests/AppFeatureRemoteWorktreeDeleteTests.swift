@@ -234,8 +234,9 @@ struct AppFeatureRemoteWorktreeDeleteTests {
     // The guard holds: `list` offers no delete and a retry is busy.
     #expect(
       RemoteWorktreeDeleteRejection.check(
-        found: true, isArchived: false, isGitRepository: true, isBeingRemoved: false, isMain: false,
-        lifecycleIsIdle: true, inFlight: store.state.remoteWorktreeDeletions[fixture.feature.id] != nil) == .busy)
+        RemoteWorktreeDeleteFacts(
+          isArchived: false, isGitRepository: true, isBeingRemoved: false, isMain: false,
+          lifecycleIsIdle: true, inFlight: store.state.remoteWorktreeDeletions[fixture.feature.id] != nil)) == .busy)
     await store.send(.repositories(.deleteWorktreeFailed("boom", worktreeID: fixture.feature.id)))
     #expect(store.state.remoteWorktreeDeletions.isEmpty)
     await store.finish(timeout: .seconds(30))

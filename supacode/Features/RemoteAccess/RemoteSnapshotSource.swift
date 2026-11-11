@@ -95,12 +95,7 @@ final class RemoteSnapshotSource {
             sidebarIndex: bucket?.items.index(forKey: worktree.id),
             tabs: tabs(of: worktree.id),
             canDeleteWorktree: RemoteWorktreeDeleteRejection.check(
-              found: true,
-              isArchived: status.isArchived,
-              isGitRepository: repository.isGitRepository,
-              isBeingRemoved: state.removingRepositoryIDs[repository.id] != nil,
-              isMain: state.isMainWorktree(worktree),
-              lifecycleIsIdle: (state.sidebarItems[id: worktree.id]?.lifecycle ?? .idle) == .idle,
+              worktree: worktree, repository: repository, in: state,
               inFlight: deletions[worktree.id] != nil) == nil
           )
         },

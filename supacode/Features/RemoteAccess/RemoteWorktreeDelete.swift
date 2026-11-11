@@ -44,57 +44,72 @@ nonisolated enum RemoteWorktreeDeleteRejection: Error, Equatable, Sendable {
 
   /// The one rule the request, the re-check after the dirty check and `list`'s
   /// `canDeleteWorktree` share, so `list` never offers what the host refuses.
-  /// Nil when the worktree may be deleted. An archived worktree is not in
-  /// `list`, so it is unknown here (ОВ12).
-  static func check(  // swiftlint:disable:this function_parameter_count
-    found: Bool,
-    isArchived: Bool,
-    isGitRepository: Bool,
-    isBeingRemoved: Bool,
-    isMain: Bool,
-    lifecycleIsIdle: Bool,
-    inFlight: Bool
-  ) -> Self? {
-    guard found, !isArchived else { return .unknownWorktree }
-    guard isGitRepository else { return .folder }
-    if isMain { return .mainWorktree }
-    if isBeingRemoved { return .repositoryBeingRemoved }
-    if !lifecycleIsIdle || inFlight { return .busy }
+  /// Nil when the worktree may be deleted. `facts` is nil when no repository
+  /// lists the worktree. An archived worktree is not in `list`, so it is
+  /// unknown here (ОВ12).
+  static func check(_ facts: RemoteWorktreeDeleteFacts?) -> Self? {
+    guard let facts, !facts.isArchived else { return .unknownWorktree }
+    guard facts.isGitRepository else { return .folder }
+    if facts.isMain { return .mainWorktree }
+    if facts.isBeingRemoved { return .repositoryBeingRemoved }
+    if !facts.lifecycleIsIdle || facts.inFlight { return .busy }
     return nil
+  }
+}
+
+/// What `RemoteWorktreeDeleteRejection.check` decides on, for one worktree
+/// that a repository lists.
+nonisolated struct RemoteWorktreeDeleteFacts: Equatable, Sendable {
+  let isArchived: Bool
+  let isGitRepository: Bool
+  let isBeingRemoved: Bool
+  let isMain: Bool
+  let lifecycleIsIdle: Bool
+  /// Another remote delete of this worktree is in flight.
+  let inFlight: Bool
+}
+
+// Main actor: it reads `RepositoriesFeature.State`, which is main-actor isolated.
+@MainActor
+extension RemoteWorktreeDeleteFacts {
+  /// Reads the archived status, main-ness, removal and row lifecycle the way
+  /// the Mac's own delete request does (`requestDeleteSidebarItems`).
+  init(worktree: Worktree, repository: Repository, in state: RepositoriesFeature.State, inFlight: Bool) {
+    let isMain = state.isMainWorktree(worktree)
+    self.init(
+      isArchived: state.sidebar.status(of: worktree.id, in: repository.id, isMain: isMain).isArchived,
+      isGitRepository: repository.isGitRepository,
+      isBeingRemoved: state.removingRepositoryIDs[repository.id] != nil,
+      isMain: isMain,
+      lifecycleIsIdle: (state.sidebarItems[id: worktree.id]?.lifecycle ?? .idle) == .idle,
+      inFlight: inFlight)
   }
 }
 
 // Main actor: it reads `RepositoriesFeature.State`, which is main-actor isolated.
 @MainActor
 extension RemoteWorktreeDeleteRejection {
+  /// `check` for a worktree that `repository` lists; `list` uses it for
+  /// `canDeleteWorktree`.
+  static func check(
+    worktree: Worktree, repository: Repository, in state: RepositoriesFeature.State, inFlight: Bool
+  ) -> Self? {
+    check(RemoteWorktreeDeleteFacts(worktree: worktree, repository: repository, in: state, inFlight: inFlight))
+  }
+
   /// `check` against the app's repositories state: finds the repository that
-  /// lists `worktreeID` (a pending `pending:…` row is in none) and reads the
-  /// archived status, main-ness, removal and row lifecycle the way the Mac's
-  /// own delete request does (`requestDeleteSidebarItems`).
+  /// lists `worktreeID` (a pending `pending:…` row is in none).
   static func check(
     worktreeID raw: String, in state: RepositoriesFeature.State, inFlight: Bool
   ) -> Result<RemoteWorktreeDeleteStart, Self> {
-    var found: (worktree: Worktree, repository: Repository)?
     for repository in state.repositories {
       guard let worktree = repository.worktrees.first(where: { $0.id.rawValue == raw }) else { continue }
-      found = (worktree, repository)
-      break
+      if let rejection = check(worktree: worktree, repository: repository, in: state, inFlight: inFlight) {
+        return .failure(rejection)
+      }
+      return .success(RemoteWorktreeDeleteStart(worktreeID: worktree.id, repositoryID: repository.id))
     }
-    guard let found else { return .failure(.unknownWorktree) }
-    let isMain = state.isMainWorktree(found.worktree)
-    let status = state.sidebar.status(of: found.worktree.id, in: found.repository.id, isMain: isMain)
-    if let rejection = check(
-      found: true,
-      isArchived: status.isArchived,
-      isGitRepository: found.repository.isGitRepository,
-      isBeingRemoved: state.removingRepositoryIDs[found.repository.id] != nil,
-      isMain: isMain,
-      lifecycleIsIdle: (state.sidebarItems[id: found.worktree.id]?.lifecycle ?? .idle) == .idle,
-      inFlight: inFlight)
-    {
-      return .failure(rejection)
-    }
-    return .success(RemoteWorktreeDeleteStart(worktreeID: found.worktree.id, repositoryID: found.repository.id))
+    return .failure(.unknownWorktree)
   }
 }
 

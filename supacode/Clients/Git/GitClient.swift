@@ -647,9 +647,6 @@ struct GitClient {
     )
   }
 
-  /// Clears `branch`'s upstream. Git reports both "never had tracking" and
-  /// "no such branch" as missing upstream information; either already satisfies
-  /// the intent, so that failure is swallowed.
   /// Force-deletes a local branch (`git branch -D`). Git refuses a branch that is
   /// checked out in any worktree.
   nonisolated func deleteBranch(_ branch: String, for repoRoot: URL) async throws {
@@ -660,6 +657,9 @@ struct GitClient {
     )
   }
 
+  /// Clears `branch`'s upstream. Git reports both "never had tracking" and
+  /// "no such branch" as missing upstream information; either already satisfies
+  /// the intent, so that failure is swallowed.
   nonisolated func unsetUpstreamBranch(_ branch: String, for repoRoot: URL) async throws {
     let path = repoRoot.path(percentEncoded: false)
     do {
