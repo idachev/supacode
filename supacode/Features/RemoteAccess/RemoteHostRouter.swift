@@ -51,15 +51,10 @@ final class RemoteHostRouter {
   private var connection: RemoteRelayConnection?
   /// Phones the relay announced, each with at most one attached terminal.
   private var clients: [String: Attachment?] = [:]
-  /// `tab.new` waits in flight per phone, cancelled when that phone's
-  /// connection ends so a reused connId never gets a stale answer.
-  private var tabNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
-  /// `worktree.new` waits in flight per phone, cancelled with the phone's
-  /// connection (the creation itself goes on).
-  private var worktreeNewWaits: [String: [UUID: Task<Void, Never>]] = [:]
-  /// `worktree.delete` and `worktrees.refresh` waits in flight per phone,
-  /// cancelled with the phone's connection (the delete or refresh goes on).
-  private var worktreeDeleteWaits: [String: [UUID: Task<Void, Never>]] = [:]
+  /// `tab.new`, `worktree.new`, `worktree.delete` and `worktrees.refresh`
+  /// waits in flight per phone, cancelled when that phone's connection ends
+  /// (`endRequests(connID:)`).
+  private var requestWaits = RemoteRequestWaits()
   /// The `resize` in flight per terminal (waking it, then reading the PTY
   /// size); a newer `resize` of that terminal from any phone, or the
   /// requester's detach or end, cancels it (last request wins).
@@ -208,9 +203,7 @@ final class RemoteHostRouter {
   }
 
   func lanClosed(_ connID: String) {
-    cancelTabNewWaits(connID: connID)
-    cancelWorktreeNewWaits(connID: connID)
-    cancelWorktreeDeleteWaits(connID: connID)
+    endRequests(connID: connID)
     detach(connID: connID)
     clients[connID] = nil
     lanSinks[connID] = nil
@@ -267,9 +260,7 @@ final class RemoteHostRouter {
     case "conn.open":
       connectionOpened(connID, sameNetwork: message.sameNetwork == true)
     case "conn.close":
-      cancelTabNewWaits(connID: connID)
-      cancelWorktreeNewWaits(connID: connID)
-      cancelWorktreeDeleteWaits(connID: connID)
+      endRequests(connID: connID)
       detach(connID: connID)
       clients[connID] = nil
       sameNetwork.remove(connID)
@@ -793,16 +784,16 @@ final class RemoteHostRouter {
     resizeWaits.cancel(connID: connID)
   }
 
+  /// Stops this phone's request waits; they send nothing. A creation or
+  /// deletion goes on and keeps its `worktree_busy` guard until it settles.
+  private func endRequests(connID: String) {
+    requestWaits.cancel(connID: connID)
+  }
+
   /// The relay socket dropped: its phones are gone, LAN phones stay.
   private func dropAllClients() {
-    for connID in tabNewWaits.keys where lanSinks[connID] == nil {
-      cancelTabNewWaits(connID: connID)
-    }
-    for connID in worktreeNewWaits.keys where lanSinks[connID] == nil {
-      cancelWorktreeNewWaits(connID: connID)
-    }
-    for connID in worktreeDeleteWaits.keys where lanSinks[connID] == nil {
-      cancelWorktreeDeleteWaits(connID: connID)
+    for connID in requestWaits.connIDs where lanSinks[connID] == nil {
+      endRequests(connID: connID)
     }
     for connID in clients.keys where lanSinks[connID] == nil {
       detach(connID: connID)
@@ -840,7 +831,7 @@ final class RemoteHostRouter {
           return sized ? contentID : nil
         }
         guard let self, !Task.isCancelled else { return }
-        self.tabNewWaits[connID]?[waitID] = nil
+        self.requestWaits.remove(waitID: waitID, connID: connID)
         guard self.clients[connID] != nil else { return }
         guard let contentID else {
           routerLogger.warning("tab.new: tab \(tabID) did not appear in \(worktreeRaw)")
@@ -852,13 +843,8 @@ final class RemoteHostRouter {
           RemoteTabNewMessage(
             id: requestID, worktreeId: worktreeRaw, tabId: tabID.uuidString, contentId: contentID.uuidString))
       }
-      tabNewWaits[connID, default: [:]][waitID] = wait
+      requestWaits.insert(wait, waitID: waitID, connID: connID)
     }
-  }
-
-  private func cancelTabNewWaits(connID: String) {
-    guard let waits = tabNewWaits.removeValue(forKey: connID) else { return }
-    for wait in waits.values { wait.cancel() }
   }
 
   // MARK: - New worktree
@@ -904,7 +890,7 @@ final class RemoteHostRouter {
         consume: { source.consumeWorktreeCreation(pendingID: start.pendingID) },
         abandon: { source.abandonWorktreeCreation(pendingID: start.pendingID) })
       guard let self else { return }
-      self.worktreeNewWaits[connID]?[waitID] = nil
+      self.requestWaits.remove(waitID: waitID, connID: connID)
       guard self.clients[connID] != nil,
         let reply = Self.worktreeNewReply(for: outcome, repositoryID: request.repositoryID, requestID: requestID)
       else { return }
@@ -913,14 +899,7 @@ final class RemoteHostRouter {
       case .error(let error): self.reply(connID, error)
       }
     }
-    worktreeNewWaits[connID, default: [:]][waitID] = wait
-  }
-
-  /// Stops this phone's `worktree.new` waits; they send nothing. The creations
-  /// go on, and each keeps its `worktree_busy` guard until its outcome settles.
-  private func cancelWorktreeNewWaits(connID: String) {
-    guard let waits = worktreeNewWaits.removeValue(forKey: connID) else { return }
-    for wait in waits.values { wait.cancel() }
+    requestWaits.insert(wait, waitID: waitID, connID: connID)
   }
 
   /// `worktree.new`, `worktree.delete` and `worktrees.refresh`.
@@ -964,7 +943,7 @@ final class RemoteHostRouter {
         consume: { source.consumeWorktreeDeletion(worktreeID) },
         abandon: { source.abandonWorktreeDeletion(worktreeID) })
       guard let self else { return }
-      self.worktreeDeleteWaits[connID]?[waitID] = nil
+      self.requestWaits.remove(waitID: waitID, connID: connID)
       guard self.clients[connID] != nil,
         let reply = Self.worktreeDeleteReply(for: outcome, start: start, requestID: requestID)
       else { return }
@@ -973,7 +952,7 @@ final class RemoteHostRouter {
       case .error(let error): self.reply(connID, error)
       }
     }
-    worktreeDeleteWaits[connID, default: [:]][waitID] = wait
+    requestWaits.insert(wait, waitID: waitID, connID: connID)
   }
 
   // MARK: - Refresh worktrees
@@ -991,7 +970,7 @@ final class RemoteHostRouter {
       let outcome = await Self.runWorktreesRefresh(
         after: started, clock: clock, completed: { source.loadGenerationCompleted() })
       guard let self else { return }
-      self.worktreeDeleteWaits[connID]?[waitID] = nil
+      self.requestWaits.remove(waitID: waitID, connID: connID)
       guard self.clients[connID] != nil else { return }
       switch outcome {
       case .loaded: self.reply(connID, source.listMessage(id: requestID))
@@ -999,14 +978,7 @@ final class RemoteHostRouter {
       case .cancelled: return
       }
     }
-    worktreeDeleteWaits[connID, default: [:]][waitID] = wait
-  }
-
-  /// Stops this phone's `worktree.delete` and `worktrees.refresh` waits; they
-  /// send nothing. A delete goes on and keeps its `worktree_busy` guard until it settles.
-  private func cancelWorktreeDeleteWaits(connID: String) {
-    guard let waits = worktreeDeleteWaits.removeValue(forKey: connID) else { return }
-    for wait in waits.values { wait.cancel() }
+    requestWaits.insert(wait, waitID: waitID, connID: connID)
   }
 
   /// Checks `probe` now and then every `interval` on `clock` until it gives a
