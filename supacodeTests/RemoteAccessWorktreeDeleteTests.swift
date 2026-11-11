@@ -233,17 +233,16 @@ struct RemoteAccessWorktreeDeleteTests {
 
   @Test func anAbandonedEntryIsDroppedByItsOutcome() {
     var deletions: [WorktreeID: Deletion] = [Self.worktreeID: .deleting(abandoned: true)]
-    Deletion.settle(Self.worktreeID, as: .deleted, in: &deletions)
+    Deletion.settleDeleting(Self.worktreeID, as: .deleted, in: &deletions)
     #expect(deletions.isEmpty)
     deletions[Self.worktreeID] = .checking(abandoned: false)
-    // Outcome arms move only a `.deleting` entry unless told otherwise.
-    Deletion.settle(Self.worktreeID, as: .deleted, in: &deletions)
+    // `settleDeleting` (the outcome arms) moves only a `.deleting` entry.
+    Deletion.settleDeleting(Self.worktreeID, as: .deleted, in: &deletions)
     #expect(deletions[Self.worktreeID] == .checking(abandoned: false))
-    Deletion.settle(
-      Self.worktreeID, as: .failed(code: "worktree_failed", message: "x"), onlyWhileDeleting: false, in: &deletions)
+    Deletion.settleUnsettled(Self.worktreeID, as: .failed(code: "worktree_failed", message: "x"), in: &deletions)
     #expect(deletions[Self.worktreeID] == .failed(code: "worktree_failed", message: "x"))
     // A settled entry is never overwritten.
-    Deletion.settle(Self.worktreeID, as: .deleted, onlyWhileDeleting: false, in: &deletions)
+    Deletion.settleUnsettled(Self.worktreeID, as: .deleted, in: &deletions)
     #expect(deletions[Self.worktreeID] == .failed(code: "worktree_failed", message: "x"))
   }
 

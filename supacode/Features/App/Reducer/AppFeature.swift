@@ -1704,9 +1704,7 @@ struct AppFeature {
         if state.repositories.repositories[id: repositoryID]?.worktrees[id: worktreeID] == nil {
           settleRemoteWorktreeDeletion(
             worktreeID,
-            as: .failed(
-              code: RemoteWorktreeDeleteErrorCode.failed,
-              message: "The worktree could not be found. It may have already been removed."),
+            as: .failed("The worktree could not be found. It may have already been removed."),
             state: &state)
         }
         return .none
@@ -1852,7 +1850,7 @@ struct AppFeature {
       case .repositories(.deleteWorktreeFailed(let message, let worktreeID)):
         settleRemoteWorktreeDeletion(
           worktreeID,
-          as: .failed(code: RemoteWorktreeDeleteErrorCode.failed, message: "Unable to delete worktree: \(message)"),
+          as: .failed("Unable to delete worktree: \(message)"),
           state: &state)
         return resolveCommandAcks(ok: false, error: message, state: &state) { match in
           if case .worktreeRemoved(let ackWorktree) = match { return ackWorktree == worktreeID }
@@ -1870,9 +1868,7 @@ struct AppFeature {
           {
             settleRemoteWorktreeDeletion(
               worktreeID,
-              as: .failed(
-                code: RemoteWorktreeDeleteErrorCode.failed,
-                message: "The delete script completed, but the worktree could not be found."),
+              as: .failed("The delete script completed, but the worktree could not be found."),
               state: &state)
           }
           return .none
@@ -1880,7 +1876,7 @@ struct AppFeature {
         let message =
           exitCode.map { "Delete script failed (exit code \($0))." } ?? "Delete cancelled."
         settleRemoteWorktreeDeletion(
-          worktreeID, as: .failed(code: RemoteWorktreeDeleteErrorCode.failed, message: message), state: &state)
+          worktreeID, as: .failed(message), state: &state)
         return resolveCommandAcks(ok: false, error: message, state: &state) { match in
           if case .worktreeRemoved(let ackWorktree) = match { return ackWorktree == worktreeID }
           return false

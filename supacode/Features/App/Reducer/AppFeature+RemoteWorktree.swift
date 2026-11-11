@@ -13,6 +13,15 @@ extension AppFeature {
     case dirty(message: String)
     /// Git failed; the error's description.
     case failed(message: String)
+
+    /// The entry a dirty or failed check settles to; nil when clean.
+    var failure: RemoteWorktreeDeletion? {
+      switch self {
+      case .clean: nil
+      case .dirty(let message): .failed(code: RemoteWorktreeDeleteErrorCode.dirty, message: message)
+      case .failed(let message): .failed("could not check the worktree for changes: \(message)")
+      }
+    }
   }
 
   /// Where one remote `worktree.delete` stands. An entry moves only from
@@ -41,16 +50,30 @@ extension AppFeature {
       }
     }
 
-    /// Moves an unsettled entry to its outcome (only a `.deleting` one when
-    /// `onlyWhileDeleting`), or removes it when the host abandoned it.
-    static func settle(
-      _ worktreeID: Worktree.ID, as outcome: Self, onlyWhileDeleting: Bool = true,
-      in deletions: inout [Worktree.ID: Self]
+    /// A delete that failed, with the `worktree_failed` code.
+    static func failed(_ message: String) -> Self {
+      .failed(code: RemoteWorktreeDeleteErrorCode.failed, message: message)
+    }
+
+    /// A delete the host's rule refused, with the rejection's code and message.
+    static func refused(_ rejection: RemoteWorktreeDeleteRejection) -> Self {
+      .failed(code: rejection.code, message: rejection.message)
+    }
+
+    /// Moves a `.deleting` entry to its outcome, or removes it when the host
+    /// abandoned it. Any other entry is left alone.
+    static func settleDeleting(_ worktreeID: Worktree.ID, as outcome: Self, in deletions: inout [Worktree.ID: Self]) {
+      guard case .deleting(let abandoned) = deletions[worktreeID] else { return }
+      deletions[worktreeID] = abandoned ? nil : outcome
+    }
+
+    /// Moves a `.checking` or `.deleting` entry to its outcome, or removes it
+    /// when the host abandoned it. A settled or unknown entry is left alone.
+    static func settleUnsettled(
+      _ worktreeID: Worktree.ID, as outcome: Self, in deletions: inout [Worktree.ID: Self]
     ) {
       switch deletions[worktreeID] {
-      case .deleting(let abandoned):
-        deletions[worktreeID] = abandoned ? nil : outcome
-      case .checking(let abandoned) where !onlyWhileDeleting:
+      case .checking(let abandoned), .deleting(let abandoned):
         deletions[worktreeID] = abandoned ? nil : outcome
       default:
         break
@@ -131,11 +154,11 @@ extension AppFeature {
 // MARK: - Remote worktree.delete and worktree.new
 
 extension AppFeature {
-  /// Moves a remote `worktree.delete` entry out of `.deleting` (`RemoteWorktreeDeletion.settle`).
+  /// Moves a remote `worktree.delete` entry out of `.deleting` (`RemoteWorktreeDeletion.settleDeleting`).
   func settleRemoteWorktreeDeletion(
     _ worktreeID: Worktree.ID, as outcome: RemoteWorktreeDeletion, state: inout State
   ) {
-    RemoteWorktreeDeletion.settle(worktreeID, as: outcome, in: &state.remoteWorktreeDeletions)
+    RemoteWorktreeDeletion.settleDeleting(worktreeID, as: outcome, in: &state.remoteWorktreeDeletions)
   }
 
   /// The backstop: a checking or deleting entry whose worktree is in none of
@@ -148,11 +171,8 @@ extension AppFeature {
     guard state.remoteWorktreeDeletions.values.contains(where: { !$0.isSettled }) else { return }
     let roster = Set(repositories.flatMap { $0.worktrees.map(\.id) })
     for (worktreeID, entry) in state.remoteWorktreeDeletions where !entry.isSettled && !roster.contains(worktreeID) {
-      RemoteWorktreeDeletion.settle(
-        worktreeID,
-        as: .failed(code: RemoteWorktreeDeleteErrorCode.failed, message: RemoteWorktreeDeletion.leftTheListMessage),
-        onlyWhileDeleting: false,
-        in: &state.remoteWorktreeDeletions)
+      RemoteWorktreeDeletion.settleUnsettled(
+        worktreeID, as: .failed(RemoteWorktreeDeletion.leftTheListMessage), in: &state.remoteWorktreeDeletions)
     }
   }
 
@@ -164,8 +184,7 @@ extension AppFeature {
     worktreeID: Worktree.ID, repositoryID: Repository.ID, state: inout State
   ) -> Effect<Action> {
     guard let worktree = state.repositories.repositories[id: repositoryID]?.worktrees[id: worktreeID] else {
-      let unknown = RemoteWorktreeDeleteRejection.unknownWorktree
-      state.remoteWorktreeDeletions[worktreeID] = .failed(code: unknown.code, message: unknown.message)
+      state.remoteWorktreeDeletions[worktreeID] = .refused(.unknownWorktree)
       return .none
     }
     state.remoteWorktreeDeletions[worktreeID] = .checking(abandoned: false)
@@ -198,29 +217,16 @@ extension AppFeature {
     worktreeID: Worktree.ID, result: RemoteWorktreeDeleteCheck, state: inout State
   ) -> Effect<Action> {
     guard case .checking = state.remoteWorktreeDeletions[worktreeID] else { return .none }
-    let failure: RemoteWorktreeDeletion?
-    switch result {
-    case .dirty(let message):
-      failure = .failed(code: RemoteWorktreeDeleteErrorCode.dirty, message: message)
-    case .failed(let message):
-      failure = .failed(
-        code: RemoteWorktreeDeleteErrorCode.failed, message: "could not check the worktree for changes: \(message)")
-    case .clean:
-      failure = nil
-    }
-    if let failure {
-      RemoteWorktreeDeletion.settle(
-        worktreeID, as: failure, onlyWhileDeleting: false, in: &state.remoteWorktreeDeletions)
+    if let failure = result.failure {
+      RemoteWorktreeDeletion.settleUnsettled(worktreeID, as: failure, in: &state.remoteWorktreeDeletions)
       return .none
     }
     // `inFlight: false`: this request's own entry is not another delete.
     let recheck = RemoteWorktreeDeleteRejection.check(
       worktreeID: worktreeID.rawValue, in: state.repositories, inFlight: false)
     switch recheck {
-    case .failure(let refused):
-      RemoteWorktreeDeletion.settle(
-        worktreeID, as: .failed(code: refused.code, message: refused.message), onlyWhileDeleting: false,
-        in: &state.remoteWorktreeDeletions)
+    case .failure(let rejection):
+      RemoteWorktreeDeletion.settleUnsettled(worktreeID, as: .refused(rejection), in: &state.remoteWorktreeDeletions)
       return .none
     case .success(let start):
       return startRemoteWorktreeDelete(worktreeID: start.worktreeID, repositoryID: start.repositoryID, state: &state)
