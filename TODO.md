@@ -23,5 +23,20 @@
 - **ТД5** Two gaps of the resize confirmation — open (2026-11-10), kind: tests/bug, reason: non-blocking review notes (ЗД3 r1 F4 TODO, r2 F1 ACCEPT: needs two clients on one tab and an unreadable PTY size).
   Now: `ZmxRemoteStream.controllingTerminal(pid:)` (sysctl `KERN_PROC_PID`) is tested only for a process without a terminal; no test opens a real PTY and reads `TIOCGWINSZ` without root. When client B's newer resize cancels client A's pending wait and the PTY size cannot be read, B gets `resize_failed` and A gets neither `size` nor `error` (`RemoteHostRouter.swift:529`; also when B disconnects); the web shows „Mac-ът не отговори“ after 4 s.
   Fix: a test that spawns a child with `setsid` and a controlling tty; on cancel, send A the outcome of the newer resize.
+- **ТД6** Atomic ownership of the new worktree directory — open, low priority (2026-11-11), kind: bug, reason: Codex ЗД8 r2 F1, artificial (another process creates an empty leaf directory between the check and `wt`); trap on the ownership-proof mechanism, owner away (run 20261110-203056).
+  Now: a failed creation cleans up only what git's own output proves it created ("Preparing worktree (new branch …)" + "HEAD is now at"), but git accepts an existing empty directory and `wt` does not check the leaf path (`wt:799-809`).
+  Fix: `mkdir` the leaf directory atomically right before `wt` (EEXIST → not ours, no cleanup); about 10 lines and one test.
+- **ТД7** Clean up the worktree and branch of a failed creation when the directory is not ours — open (2026-11-11), kind: bug, reason: Codex ЗД8 r2 F2, leak not loss (ACCEPT).
+  Now: one flag covers directory, worktree and branch ownership; without proof of the directory nothing is cleaned.
+  Fix: a separate cleanup mode for worktree + branch without the directory (new client API).
+- **ТД8** Mac delete looks the worktree up again by id after the delete script — open (2026-11-11), kind: bug, reason: pre-existing (ЗД9 spec r1 F3, ACCEPT for remote).
+  Now: the delete applies to the path captured before the script; a new worktree at the same path in between would be removed.
+  Fix: re-resolve by id after `.deleteScriptCompleted`; abort if it changed.
+- **ТД9** Mac delete of a detached-HEAD worktree may delete another branch — open (2026-11-11), kind: bug, reason: pre-existing (ЗД9 spec r1 F12; remote deletes never delete a branch, ОВ6).
+  Fix: skip `branch -D` when the worktree's HEAD is detached.
+- **ТД10** `LoadGeneration` is excluded from `RepositoriesFeature.State` equality — open (2026-11-11), kind: tests, reason: ЗД10 decision ДР1 (Codex mini-consensus disagreed); avoided rewriting ~60 exhaustive tests.
+  Fix: make it a normal Equatable field and update the exhaustive tests that see it.
+- **ЖВ1** Live check of remote delete and refresh — open (2026-11-11), kind: tests, reason: needs the owner (installed build of idachev-supacode f99470f3).
+  Steps: restart Supacode; from the APK and web: ⟳ refresh after `git worktree remove` in a terminal (row disappears); 🗑 on a clean worktree (folder gone, branch kept); 🗑 on a worktree with an uncommitted change or `.env` (refused, `worktree_dirty` with the paths); 🗑 not shown on the main worktree; an ssh repository if one is set up.
 - **СТ3** Set up and check the second Mac with the multi-host relay — open (2026-11-10), kind: tests, reason: needs the owner and the second Mac.
   Steps: install the `remote-multi-host` dev build on the second Mac; give it its own host name in Settings → Remote Access; on the phone, open the host list, see both Macs by name, switch between them, open a tab on each; agent notifications come only from the selected Mac (owner ОТ1).
