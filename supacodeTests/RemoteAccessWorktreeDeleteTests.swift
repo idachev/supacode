@@ -37,17 +37,28 @@ struct RemoteAccessWorktreeDeleteTests {
     #expect(Self.check(isBeingRemoved: true) == .repositoryBeingRemoved)
     #expect(Self.check(lifecycleIsIdle: false) == .busy)
     #expect(Self.check(inFlight: true) == .busy)
-    let expected: [(RemoteWorktreeDeleteRejection, String, String)] = [
-      (.missingWorktree, "worktree_invalid", "worktree.delete needs a worktreeId"),
-      (.unknownWorktree, "worktree_invalid", "no such worktree"),
-      (.folder, "worktree_unsupported", "folders cannot be deleted from the remote"),
-      (.mainWorktree, "worktree_unsupported", "the main worktree cannot be deleted"),
-      (.repositoryBeingRemoved, "worktree_unsupported", "the repository is being removed"),
-      (.busy, "worktree_busy", "the worktree is busy (being created, archived or deleted)"),
+    struct Expected {
+      let rejection: RemoteWorktreeDeleteRejection
+      let code: String
+      let message: String
+    }
+    let expected: [Expected] = [
+      Expected(rejection: .missingWorktree, code: "worktree_invalid", message: "worktree.delete needs a worktreeId"),
+      Expected(rejection: .unknownWorktree, code: "worktree_invalid", message: "no such worktree"),
+      Expected(
+        rejection: .folder, code: "worktree_unsupported", message: "folders cannot be deleted from the remote"),
+      Expected(
+        rejection: .mainWorktree, code: "worktree_unsupported", message: "the main worktree cannot be deleted"),
+      Expected(
+        rejection: .repositoryBeingRemoved, code: "worktree_unsupported",
+        message: "the repository is being removed"),
+      Expected(
+        rejection: .busy, code: "worktree_busy",
+        message: "the worktree is busy (being created, archived or deleted)"),
     ]
-    for (rejection, code, message) in expected {
-      #expect(rejection.code == code)
-      #expect(rejection.message == message)
+    for entry in expected {
+      #expect(entry.rejection.code == entry.code)
+      #expect(entry.rejection.message == entry.message)
     }
   }
 
@@ -104,7 +115,7 @@ struct RemoteAccessWorktreeDeleteTests {
     let json = try Self.json(RemoteListMessage(id: nil, repos: []))
     #expect(json["canRefreshWorktrees"] as? Bool == true)
     #expect(json["loadFailures"] == nil)
-    #expect(json["sections"] as? [Any] != nil)
+    #expect(json["sections"] is [Any])
   }
 
   @Test func listCarriesLoadFailuresSortedByRepository() throws {

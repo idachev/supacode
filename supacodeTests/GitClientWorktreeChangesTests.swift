@@ -23,7 +23,8 @@ struct GitClientWorktreeChangesTests {
       #expect(Set(changes.paths) == ["README.md", "notes.txt"])
       #expect(
         changes.message
-          == "the worktree has uncommitted changes, untracked or ignored files (2): \(changes.paths.joined(separator: ", "))"
+          == "the worktree has uncommitted changes, untracked or ignored files (2): "
+          + changes.paths.joined(separator: ", ")
           + "; commit, stash or remove them on the Mac first")
     }
   }
@@ -54,7 +55,8 @@ struct GitClientWorktreeChangesTests {
       #expect(changes == WorktreeDirtyState(paths: [], detachedCommits: 1))
       #expect(
         changes.message
-          == "the worktree's detached HEAD has 1 commits that are on no branch; create a branch for them on the Mac first")
+          == "the worktree's detached HEAD has 1 commits that are on no branch; "
+          + "create a branch for them on the Mac first")
     }
   }
 
@@ -65,7 +67,8 @@ struct GitClientWorktreeChangesTests {
           let allowFile = ["-c", "protocol.file.allow=always"]
           let middlePath = middle.path(percentEncoded: false)
           let outerPath = outer.path(percentEncoded: false)
-          try await runGit(allowFile + ["-C", middlePath, "submodule", "add", inner.path(percentEncoded: false), "core"])
+          let innerPath = inner.path(percentEncoded: false)
+          try await runGit(allowFile + ["-C", middlePath, "submodule", "add", innerPath, "core"])
           try await runGit(["-C", middlePath, "commit", "-m", "add core"])
           try await runGit(allowFile + ["-C", outerPath, "submodule", "add", middlePath, "libs"])
           try await runGit(["-C", outerPath, "commit", "-m", "add libs"])

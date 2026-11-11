@@ -118,7 +118,8 @@ struct AppFeatureRemoteWorktreeDeleteTests {
     let fixture = Fixture()
     let store = makeAppStore(fixture, deletion: .failed(code: "worktree_failed", message: "first"))
     await store.send(.remoteWorktreeDeleteChecked(worktreeID: fixture.feature.id, result: .clean))
-    #expect(store.state.remoteWorktreeDeletions[fixture.feature.id] == .failed(code: "worktree_failed", message: "first"))
+    #expect(
+      store.state.remoteWorktreeDeletions[fixture.feature.id] == .failed(code: "worktree_failed", message: "first"))
     await store.finish(timeout: .seconds(30))
   }
 
@@ -162,12 +163,16 @@ struct AppFeatureRemoteWorktreeDeleteTests {
     var repositories = fixture.repositoriesState()
     repositories.sidebarItems[id: fixture.feature.id]?.lifecycle = .deletingScript
     // The worktree left the roster while its script ran; the row is still there.
-    repositories.repositories[id: fixture.repositoryID]?.worktrees.remove(id: fixture.feature.id)
+    repositories.repositories = [
+      Repository(
+        id: fixture.repositoryID, rootURL: URL(fileURLWithPath: fixture.root), name: "repo", worktrees: [fixture.main])
+    ]
     let store = makeAppStore(fixture, repositories: repositories, deletion: .deleting(abandoned: false))
     await store.send(.repositories(.deleteScriptCompleted(worktreeID: fixture.feature.id, exitCode: 0, tabId: nil)))
     #expect(
       store.state.remoteWorktreeDeletions[fixture.feature.id]
-        == .failed(code: "worktree_failed", message: "The delete script completed, but the worktree could not be found."))
+        == .failed(
+          code: "worktree_failed", message: "The delete script completed, but the worktree could not be found."))
     await store.finish(timeout: .seconds(30))
     await store.skipReceivedActions(strict: false)
   }
@@ -250,7 +255,8 @@ struct AppFeatureRemoteWorktreeDeleteTests {
         return WorktreeDirtyState()
       }
     }
-    await store.send(.deleteSidebarItemConfirmed(fixture.feature.id, fixture.repositoryID, background: true, keepBranch: true))
+    await store.send(
+      .deleteSidebarItemConfirmed(fixture.feature.id, fixture.repositoryID, background: true, keepBranch: true))
     await store.finish(timeout: .seconds(30))
     await store.skipReceivedActions(strict: false)
     #expect(removed.value == [false])
