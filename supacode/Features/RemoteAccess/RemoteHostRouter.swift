@@ -552,10 +552,11 @@ final class RemoteHostRouter {
       let first = attempt()
       let token = UUID()
       let wait = Task { [weak self] in
-        await Self.runResize(
-          request: request, first: first, clock: clock,
+        let probes = RemoteResizeProbes(
           wake: { source.wake(contentID: request.contentID) }, attempt: attempt,
-          readSize: { await Self.ptySize(socketPath: socketPath) },
+          readSize: { await Self.ptySize(socketPath: socketPath) })
+        await Self.runResize(
+          request: request, first: first, clock: clock, probes: probes,
           finish: { outcome in
             guard let self else { return }
             self.resizeWaits.finished(contentID: request.contentID, token: token)
@@ -574,12 +575,10 @@ final class RemoteHostRouter {
     request: RemoteResizeRequest,
     first: RemoteResizeAttempt,
     clock: any Clock<Duration>,
-    wake: @MainActor () -> Bool,
-    attempt: @escaping @MainActor @Sendable () -> RemoteResizeAttempt,
-    readSize: @escaping @Sendable () async -> (columns: Int, rows: Int)?,
+    probes: RemoteResizeProbes,
     finish: @MainActor (Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>) -> Void
   ) async {
-    let settled = await settleResize(first: first, clock: clock, wake: wake, attempt: attempt)
+    let settled = await settleResize(first: first, clock: clock, wake: probes.wake, attempt: probes.attempt)
     let outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
     switch settled {
     case .failed(let failure):
@@ -588,7 +587,7 @@ final class RemoteHostRouter {
       // Also for an unchanged grid: the PTY may still be taking an earlier resize.
       let confirmation = await confirmResize(
         grid: (columns: request.columns, rows: request.rows),
-        interval: resizeSettle, within: resizeConfirmTimeout, clock: clock, readSize: readSize)
+        interval: resizeSettle, within: resizeConfirmTimeout, clock: clock, readSize: probes.readSize)
       outcome = .success(confirmation)
     }
     guard !Task.isCancelled else { return }
@@ -1081,4 +1080,16 @@ final class RemoteHostRouter {
   private func replyError(_ connID: String, id: Int?, _ text: String, code: String? = nil) {
     reply(connID, RemoteErrorMessage(id: id, message: text, code: code))
   }
+}
+
+/// What a `resize` wait reads from and does to the app, injected so the wait
+/// can be tested without a live store (`RemoteHostRouter.runResize`).
+struct RemoteResizeProbes: Sendable {
+  /// Wakes the terminal off-window when it has no live surface; false when no
+  /// worktree lists the content any more (`settleResize`).
+  let wake: @MainActor @Sendable () -> Bool
+  /// One more try at applying the requested size (`settleResize`).
+  let attempt: @MainActor @Sendable () -> RemoteResizeAttempt
+  /// Reads the session PTY's size; nil when the read failed (`confirmResize`).
+  let readSize: @Sendable () async -> (columns: Int, rows: Int)?
 }
