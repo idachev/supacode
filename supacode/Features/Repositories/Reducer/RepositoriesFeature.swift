@@ -4848,7 +4848,7 @@ struct RepositoriesFeature {
       case .deleteSidebarItemConfirmed, .deleteScriptCompleted, .deleteWorktreeApply, .worktreeDeleted,
         .repositoryGroupCreation, .repositoryGroupsChanged, .repositoryGroupsReloaded,
         .repositoriesMoved, .repositoryDropped, .pinnedWorktreesMoved, .unpinnedWorktreesMoved, .deleteWorktreeFailed,
-        .requestDeleteRepository, .requestRemoveFailedRepository, .removeFailedRepository,
+        .deleteWorktreeAbortedDirty, .requestDeleteRepository, .requestRemoveFailedRepository, .removeFailedRepository,
         .repositoryRemovalCompleted, .repositoriesRemoved:
         // Real handling lives in `worktreeRemovalReducer` (combined below) so `body` stays under
         // the type-checker's complexity limit. The two `.alert(.presented(.confirm…))` arms in that
