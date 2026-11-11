@@ -259,7 +259,7 @@ nonisolated private func runProcessRawData(
   try process.run()
   // Drain concurrently with the exit wait; the deadline is a stall backstop, not
   // an expected path (a blob read closes the pipe on exit).
-  async let stdoutData = ShellClient.readToEndOrDeadline(
+  async let stdoutDrain = ShellClient.readToEndOrDeadlineReportingEOF(
     from: outputPipe.fileHandleForReading, deadlineSeconds: rawDataReadDeadlineSeconds)
   async let stderrData = ShellClient.readToEndOrDeadline(
     from: errorPipe.fileHandleForReading, deadlineSeconds: rawDataReadDeadlineSeconds)
@@ -267,14 +267,18 @@ nonisolated private func runProcessRawData(
   for await status in exitEvents {
     exitCode = status
   }
-  let stdout = await stdoutData
+  let (stdout, stdoutReachedEOF) = await stdoutDrain
   let stderr = await stderrData
-  guard exitCode == 0 else {
+  // Callers parse these bytes as the whole output (a dirty check, a blob): a
+  // drain cut off by the deadline is a failure, never a short success.
+  guard exitCode == 0, stdoutReachedEOF else {
     throw ShellClientError(
       command: command,
       stdout: String(bytes: stdout, encoding: .utf8) ?? "",
-      stderr: String(bytes: stderr, encoding: .utf8) ?? "",
-      exitCode: exitCode
+      stderr: stdoutReachedEOF
+        ? String(bytes: stderr, encoding: .utf8) ?? ""
+        : "stdout not read to the end within \(rawDataReadDeadlineSeconds) s",
+      exitCode: exitCode == 0 ? EXIT_FAILURE : exitCode
     )
   }
   return stdout
@@ -585,9 +589,17 @@ nonisolated extension ShellClient {
   nonisolated static func readToEndOrDeadline(
     from handle: FileHandle, deadlineSeconds: UInt64
   ) async -> Data {
+    await readToEndOrDeadlineReportingEOF(from: handle, deadlineSeconds: deadlineSeconds).data
+  }
+
+  /// `readToEndOrDeadline`, also telling whether EOF was reached (false: the
+  /// deadline cut the drain short and `data` may be partial).
+  nonisolated static func readToEndOrDeadlineReportingEOF(
+    from handle: FileHandle, deadlineSeconds: UInt64
+  ) async -> (data: Data, reachedEOF: Bool) {
     let buffer = LockIsolated(Data())
-    let pending = LockIsolated<CheckedContinuation<Data, Never>?>(nil)
-    return await withCheckedContinuation { (continuation: CheckedContinuation<Data, Never>) in
+    let pending = LockIsolated<CheckedContinuation<(data: Data, reachedEOF: Bool), Never>?>(nil)
+    return await withCheckedContinuation { (continuation: CheckedContinuation<(data: Data, reachedEOF: Bool), Never>) in
       pending.setValue(continuation)
       handle.readabilityHandler = { readable in
         let chunk = readable.availableData
@@ -595,11 +607,11 @@ nonisolated extension ShellClient {
           buffer.withValue { $0.append(chunk) }
           return
         }
-        Self.finishDrain(pending: pending, buffer: buffer, handle: handle)
+        Self.finishDrain(pending: pending, buffer: buffer, handle: handle, reachedEOF: true)
       }
       Task {
         try? await Task.sleep(nanoseconds: deadlineSeconds * 1_000_000_000)
-        Self.finishDrain(pending: pending, buffer: buffer, handle: handle)
+        Self.finishDrain(pending: pending, buffer: buffer, handle: handle, reachedEOF: false)
       }
     }
   }
@@ -607,17 +619,18 @@ nonisolated extension ShellClient {
   /// Resumes the drain continuation exactly once with the bytes read so far and
   /// tears down the readability source so no further callbacks fire.
   nonisolated private static func finishDrain(
-    pending: LockIsolated<CheckedContinuation<Data, Never>?>,
+    pending: LockIsolated<CheckedContinuation<(data: Data, reachedEOF: Bool), Never>?>,
     buffer: LockIsolated<Data>,
-    handle: FileHandle
+    handle: FileHandle,
+    reachedEOF: Bool
   ) {
-    let continuation = pending.withValue { stored -> CheckedContinuation<Data, Never>? in
+    let continuation = pending.withValue { stored -> CheckedContinuation<(data: Data, reachedEOF: Bool), Never>? in
       defer { stored = nil }
       return stored
     }
     guard let continuation else { return }
     handle.readabilityHandler = nil
-    continuation.resume(returning: buffer.value)
+    continuation.resume(returning: (buffer.value, reachedEOF))
   }
 }
 
