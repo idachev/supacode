@@ -4375,8 +4375,9 @@ struct AppFeature {
   }
 
   /// A remote `worktree.delete` the host accepted: the dirty check first,
-  /// except for an orphan (no directory, nothing to lose), which the Mac also
-  /// deletes without its script.
+  /// except for an orphan whose directory is still absent now (nothing to
+  /// lose), which the Mac also deletes without its script. `isMissing` is from
+  /// the last load, so a directory that came back is checked like any other.
   private func requestRemoteWorktreeDelete(
     worktreeID: Worktree.ID, repositoryID: Repository.ID, state: inout State
   ) -> Effect<Action> {
@@ -4386,14 +4387,17 @@ struct AppFeature {
       return .none
     }
     state.remoteWorktreeDeletions[worktreeID] = .checking(abandoned: false)
-    if worktree.isMissing {
-      return startRemoteWorktreeDelete(worktreeID: worktreeID, repositoryID: repositoryID, state: &state)
-    }
     // Host-aware, as `RepositoriesFeature.gitClient(for:)`: an ssh worktree is
     // checked on its host, with its remote path.
     let client = worktree.host.map { GitClientDependency.ssh(host: $0) } ?? gitClient
     let directory = worktree.workingDirectory
+    // Only a local worktree is ever `isMissing` (ssh paths cannot be stat'd).
+    let wasMissing = worktree.isMissing
     return .run { send in
+      if wasMissing, !FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) {
+        await send(.remoteWorktreeDeleteChecked(worktreeID: worktreeID, result: .clean))
+        return
+      }
       let result: RemoteWorktreeDeleteCheck
       do {
         let changes = try await client.worktreeChanges(directory)

@@ -95,11 +95,38 @@ struct AppFeatureRemoteWorktreeDeleteTests {
       $0.gitClient.removeWorktree = { worktree, _ in worktree.workingDirectory }
     }
     await store.send(.remoteWorktreeDeleteRequested(worktreeID: fixture.feature.id, repositoryID: fixture.repositoryID))
-    #expect(store.state.remoteWorktreeDeletions[fixture.feature.id] == .deleting(abandoned: false))
     await store.finish(timeout: .seconds(30))
     await store.skipReceivedActions(strict: false)
     #expect(checks.value == 0)
     #expect(store.state.remoteWorktreeDeletions[fixture.feature.id] == .deleted)
+  }
+
+  /// `isMissing` is from the last load: a directory that came back is checked (Codex ZD10 r1 F2).
+  @Test(.dependencies) func aMissingWorktreeWhoseDirectoryCameBackIsChecked() async throws {
+    let fixture = Fixture(featureIsMissing: true)
+    try FileManager.default.createDirectory(at: fixture.feature.workingDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: URL(fileURLWithPath: fixture.root)) }
+    let dirty = WorktreeDirtyState(paths: ["notes.txt"])
+    let checks = LockIsolated(0)
+    let removed = LockIsolated(0)
+    let store = makeAppStore(fixture) {
+      $0.gitClient.worktreeChanges = { _ in
+        checks.withValue { $0 += 1 }
+        return dirty
+      }
+      $0.gitClient.removeWorktree = { worktree, _ in
+        removed.withValue { $0 += 1 }
+        return worktree.workingDirectory
+      }
+    }
+    await store.send(.remoteWorktreeDeleteRequested(worktreeID: fixture.feature.id, repositoryID: fixture.repositoryID))
+    await store.finish(timeout: .seconds(30))
+    await store.skipReceivedActions(strict: false)
+    #expect(checks.value == 1)
+    #expect(removed.value == 0)
+    #expect(
+      store.state.remoteWorktreeDeletions[fixture.feature.id]
+        == .failed(code: "worktree_dirty", message: dirty.message ?? ""))
   }
 
   @Test(.dependencies) func theReCheckRefusesARowThatBecameBusyDuringTheCheck() async {
@@ -323,6 +350,27 @@ struct AppFeatureRemoteWorktreeDeleteTests {
     await store.skipReceivedActions(strict: false)
   }
 
+  /// A row still running its delete keeps the marks while its worktree is out of
+  /// the roster, so a worktree back at that path is still re-checked and keeps its
+  /// branch (Codex ZD10 r1 F3).
+  @Test(.dependencies) func marksOfARowStillDeletingSurviveLeavingTheRoster() async {
+    let fixture = Fixture()
+    var state = fixture.repositoriesState()
+    state.sidebarItems[id: fixture.feature.id]?.lifecycle = .deletingScript
+    state.branchKeepingDeleteIDs = [fixture.feature.id]
+    state.dirtyRecheckDeleteIDs = [fixture.feature.id]
+    let store = makeRepositoriesStore(fixture, state: state)
+    let remaining = Repository(
+      id: fixture.repositoryID, rootURL: URL(fileURLWithPath: fixture.root), name: "repo", worktrees: [fixture.main])
+    await store.send(
+      .repositoriesLoaded([remaining], failures: [], roots: [URL(fileURLWithPath: fixture.root)], animated: false))
+    #expect(store.state.sidebarItems[id: fixture.feature.id]?.lifecycle == .deletingScript)
+    #expect(store.state.branchKeepingDeleteIDs == [fixture.feature.id])
+    #expect(store.state.dirtyRecheckDeleteIDs == [fixture.feature.id])
+    await store.finish(timeout: .seconds(30))
+    await store.skipReceivedActions(strict: false)
+  }
+
   // MARK: - RepositoriesFeature: load generations
 
   @Test(.dependencies) func aReloadCompletesItsGenerationOnlyWhenItsResultLands() async {
@@ -395,7 +443,7 @@ struct AppFeatureRemoteWorktreeDeleteTests {
   }
 
   /// A git repository at a unique path with its main worktree and `feature`.
-  private nonisolated struct Fixture {
+  private struct Fixture {
     let root = "/tmp/remote-delete-\(UUID().uuidString)"
     let main: Worktree
     let feature: Worktree

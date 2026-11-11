@@ -55,6 +55,18 @@ nonisolated extension ShellClient {
           extraOptions: extraOptions
         )
         return base.runStream(invocation.executableURL, invocation.arguments, nil)
+      },
+      // Raw bytes over ssh too: the default re-encodes the normalized `run`
+      // stdout, which trims a leading space (` M a` in `git status -z`).
+      runDataImpl: { executableURL, arguments, currentDirectoryURL in
+        let invocation = SSHCommand.invocation(
+          host: host,
+          executable: executableURL.path(percentEncoded: false),
+          arguments: arguments,
+          workingDirectory: currentDirectoryURL,
+          extraOptions: extraOptions
+        )
+        return try await base.runData(invocation.executableURL, invocation.arguments, nil)
       }
     )
   }

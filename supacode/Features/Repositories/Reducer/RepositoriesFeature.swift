@@ -6346,12 +6346,21 @@ extension RepositoriesFeature.State {
     dirtyRecheckDeleteIDs.remove(worktreeID)
   }
 
-  /// Drops the remote delete marks of worktrees no longer in the roster.
+  /// Drops the remote delete marks of worktrees no longer in the roster, unless
+  /// their row still runs that delete (its script or removal): the delete's own
+  /// exit clears them, and a worktree back at the same path must not lose them.
   mutating func dropRemoteDeleteMarksOutsideRoster() {
     guard !branchKeepingDeleteIDs.isEmpty || !dirtyRecheckDeleteIDs.isEmpty else { return }
     let roster = Set(repositories.flatMap { $0.worktrees.map(\.id) })
-    branchKeepingDeleteIDs.formIntersection(roster)
-    dirtyRecheckDeleteIDs.formIntersection(roster)
+    let keep: (Worktree.ID) -> Bool = { id in
+      if roster.contains(id) { return true }
+      switch self.sidebarItems[id: id]?.lifecycle {
+      case .deletingScript, .deleting: return true
+      default: return false
+      }
+    }
+    branchKeepingDeleteIDs = branchKeepingDeleteIDs.filter(keep)
+    dirtyRecheckDeleteIDs = dirtyRecheckDeleteIDs.filter(keep)
   }
 
   /// Retarget a possibly-materialized pending id to its real worktree id so a
