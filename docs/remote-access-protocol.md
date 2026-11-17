@@ -369,7 +369,9 @@ clients are unaffected.
   two such clients do not take it from each other without end. The clamp, the replies,
   `resize_failed` and the wake of a terminal without a live surface stay as for `resize` without
   `hold`. `hold` is a strict boolean (decoder rule); without it the message means what it meant
-  before, so clients that never send it are unaffected.
+  before, so clients that never send it are unaffected. An old host ignores `hold` (an unknown
+  field) and treats the message as a plain `resize`, Ctrl+L included; a client never sends `hold`
+  to a host without `resize.hold` in `caps`.
   - Ctrl+L only where an agent runs. After a confirmed `resize` with `hold:true` the host sends
     Ctrl+L once (as above) only when the tab's chrome lists at least one agent, the data `list`
     sends as `tabs[].agents`, whatever its activity. A tab without an agent (a shell, `vim`,
@@ -410,7 +412,8 @@ clients are unaffected.
 - `paneId` is ignored in `splitPerTab`, where a new tab is a new top-level tab. Without it, and
   when it is unknown or malformed (the host ignores it and logs it), the host picks the pane as it
   does for its own "new tab" action. A `paneId` that is not a string drops the message (decoder
-  rule).
+  rule). An old host ignores `paneId` (an unknown field). A client never sends it to a host
+  without `layout` in `caps`.
 - With `cols` and `rows`, the new terminal starts at that size, clamped by the host to
   20…500 columns and 5…200 rows. Without them, or when one is missing or is not an integer,
   it starts at most 120 × 40, not at the size of the whole Mac window. The start size holds
@@ -434,7 +437,12 @@ client checks `caps` first.
 - host → client `{"t":"tab.close","id":6,"tabId":"…","worktreeId":"…"}`
 - Closes that tab and ends its terminal, as the Mac's own close does; a pane left without tabs
   collapses. Clients attached to it get `detached`.
-- Errors: `tab_invalid` (unknown tab), `tab_failed`.
+- Errors:
+
+| code | when | message |
+|---|---|---|
+| `tab_invalid` | `tabId` missing; unknown tab | `tab.close needs a tabId`, `no such tab` |
+| `tab_failed` | the tab is still in the layout right after the close | `the tab is still open on the Mac` |
 
 ### pane.split
 
@@ -449,15 +457,24 @@ Splits a pane and gives the client the new pane's first terminal tab.
   Mac's focused-pane menu commands is not on the wire.
 - There is no start size: the new terminal takes its pane's size on the Mac, and a client that
   wants its own sends `resize` after `attached`.
-- Errors: `pane_invalid` (unknown pane, or an unknown or non-string `direction`), `pane_failed`
-  (also when the terminal does not start within 10 s).
+- Errors:
+
+| code | when | message |
+|---|---|---|
+| `pane_invalid` | `paneId` missing; unknown pane; `direction` missing, not a string or neither `horizontal` nor `vertical` | `pane.split needs a paneId`, `no such pane`, `direction must be horizontal or vertical` |
+| `pane_failed` | the new pane has no tab within 10 s | `the new pane did not start on the Mac` |
 
 ### pane.close
 
 - client → host `{"t":"pane.close","id":8,"paneId":"<pane id>"}`
 - host → client `{"t":"pane.close","id":8,"paneId":"…","worktreeId":"…"}`
 - Closes every tab of that pane.
-- Errors: `pane_invalid` (unknown pane), `pane_failed`.
+- Errors:
+
+| code | when | message |
+|---|---|---|
+| `pane_invalid` | `paneId` missing; unknown pane | `pane.close needs a paneId`, `no such pane` |
+| `pane_failed` | the pane is still in the layout right after the close | `the pane is still open on the Mac` |
 
 ### worktree.new
 
