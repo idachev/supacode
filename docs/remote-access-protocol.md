@@ -144,14 +144,15 @@ Every request may carry a numeric `id`; the response repeats it.
 Decoder rule (every message): a frame that is not a JSON object with a string `t`, or in which any
 strictly typed field has the wrong type (e.g. `id` not an integer; `worktreeId`, `contentId` not
 strings; `sameNetwork` not a boolean; `scrollback`, `v` not integers), is dropped with no reply,
-even when the message type does not use that field. Only the lenient fields (`repositoryId`,
-`name`, `cols`, `rows`) never cause a drop: a value of another type reads as invalid and the
-handler answers it.
+even when the message type does not use that field. The strict fields added for the layout
+messages are `keep`, `on` and `hold` (booleans) and `tabId` and `paneId` (strings). Only the lenient
+fields (`repositoryId`, `name`, `cols`, `rows`, `direction`) never cause a drop: a value of another
+type reads as invalid and the handler answers it (an invalid `direction` gives `pane_invalid`).
 
 ### hello
 
 - client → host `{"t":"hello","v":1}`
-- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"},"app":"Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48"}`
+- host → client `{"t":"hello","v":1,"host":"<host name>","hostId":"<hostId>","lan":{"addrs":["192.168.1.10"],"port":49731,"fp":"<hex>","fpMac":"<hex>"},"app":"Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48","caps":["attach.keep","watch","layout","tab.close","pane.split","pane.close","resize.hold"]}`
 - `app` (optional string) is the app build the host runs, the same values Supacode's "About
   Supacode" panel shows, so two builds with the same version and build number can be told apart:
   `"Supacode <CFBundleShortVersionString> (<CFBundleVersion>) · <build date YYYY-MM-DD> · <short git sha>"`,
@@ -164,6 +165,18 @@ handler answers it.
   Optional; hosts before this change send `"Supacode <version> (<build>)"` without the date and
   sha, and older ones omit it. Clients treat the value as opaque display text and ignore unknown
   fields, so old clients are unaffected.
+- `caps` (optional array of strings) lists what this host understands beyond the base messages. A
+  client ignores values it does not know, and a host without `caps` (an older one) supports none of
+  them. A client that needs a capability checks `caps` before it sends the message. The values:
+  - `attach.keep`: `attach` with `keep` (see "attach / detach").
+  - `watch`: the `watch` message (see "watch").
+  - `layout`: the `layout` object of each worktree in `list`.
+  - `tab.close`: the `tab.close` message.
+  - `pane.split`: the `pane.split` message.
+  - `pane.close`: the `pane.close` message.
+  - `resize.hold`: `resize` with `hold` (see "resize").
+
+  All of this is additive and optional, so `v` stays `1` (see "Version rules").
 - `host` is the configured host name, or the Mac's computer name when none is set. `hostId` is
   omitted when the host has none (a legacy host). A client that selected a host ignores `lan` when
   `hostId` is present and differs from that host (see "LAN shortcut").
@@ -230,15 +243,60 @@ handler answers it.
   omitted when empty. Clients show each as "cannot be read on the Mac: <message>" and keep no stale
   rows for it.
 - `id` is always present: the request's `id`, or `null` when the request had none (older hosts
-  omit it then).
+  omit it then). A `list` that the host pushes to a watching connection has `"id":null` too (see
+  "watch").
 
 Optional fields (`group`, `title`, `collapsed`, …) are omitted when they have no value. Archived worktrees are left out. Order follows the sidebar: per repository main first, then
 pinned, then the rest. `contentId` is the id the terminal messages use. `agent` is the raw
 value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw activity value.
 
+Each worktree may carry `layout`, the arrangement of its tabs into panes and splits as the Mac
+shows it. It is omitted when the worktree has no tabs. The `tabs` array does not change, so old
+clients are unaffected.
+
+```json
+"layout":{
+  "mode":"tabsPerSplit",
+  "activeGroupId":"main",
+  "groups":[
+    {"id":"main","focusedPaneId":"<pane id>","zoomedPaneId":"<pane id>",
+     "tree":{"split":{"direction":"horizontal","ratio":0.5,
+                      "left":{"pane":"<pane id>"},"right":{"pane":"<pane id>"}}}}
+  ],
+  "panes":[{"id":"<pane id>","tabIds":["<tab uuid>"],"selectedTabId":"<tab uuid>"}]
+}
+```
+
+- `mode` is the raw `TerminalLayoutMode`: `tabsPerSplit` or `splitPerTab`.
+- `groups` mirrors the Mac's `PaneLayout`. In `tabsPerSplit` there is exactly one group, with the id
+  `main`. In `splitPerTab` there is one group per top-level tab, in strip order (`groupOrder`), the
+  active one included. `activeGroupId` is the id of the active group.
+- `tree` is a node: `{"pane":"<pane id>"}` or `{"split":{direction, ratio, left, right}}`.
+  `direction` is `horizontal` or `vertical` (the raw `SplitDirection`). `ratio` is the `left`
+  child's share of the split (the first region is scaled by it).
+- `zoomedPaneId` is present only when that group's tree is zoomed on a single pane.
+- `panes` is flat: every pane of every group. `tabIds` refer to the worktree's `tabs[].id`;
+  `selectedTabId` is the pane's selected tab. A client skips ids it cannot resolve.
+
+### watch
+
+- client → host `{"t":"watch","id":5,"on":true}`
+- host → client `{"t":"watch","id":5,"on":true}`
+- While a connection watches, the host sends it a full `list` frame with `"id":null` whenever the
+  snapshot differs from the last `list` it sent to that connection. At most one push goes out per
+  250 ms per connection, on the trailing edge, so the last state always arrives.
+- Tab titles are the exception. `tabs[].title` is the live reported title, and an agent TUI rewrites
+  it several times a second. A snapshot that differs from the last one sent only in tab titles is
+  pushed at most once per 2 s per connection (trailing edge). Any other difference follows the
+  250 ms rule and carries the current titles.
+- `{"t":"watch","id":5,"on":false}` ends the watch. A watch also ends with its connection: a LAN ⇄
+  relay path switch is a new connection, so the client sends `watch` again.
+- The host does no periodic work while no connection watches.
+
 ### attach / detach
 
-- client → host `{"t":"attach","id":2,"contentId":"…","scrollback":500}`
+- client → host `{"t":"attach","id":2,"contentId":"…","scrollback":500}`, or with `keep`
+  `{"t":"attach","id":2,"contentId":"…","scrollback":500,"keep":true}`.
 - host → client `{"t":"attached","id":2,"contentId":"…","cols":180,"rows":50}`
 - then host → client `{"t":"out","contentId":"…","b64":"…"}` — the first `out` is the
   current screen (VT, with up to `scrollback` rows of history above it); the next ones are
@@ -248,9 +306,18 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 - host → client `{"t":"size","contentId":"…","cols":…,"rows":…}` when the Mac's grid changes.
 - host → client `{"t":"detached","contentId":"…","reason":"…"}` when the session ends or
   the stream fails.
-- client → host `{"t":"detach","contentId":"…"}` stops the stream. Closing the client
-  WebSocket detaches everything it had.
-- A client may attach one content at a time; attaching another detaches the first.
+- client → host `{"t":"detach","contentId":"…"}` stops the stream of that content only. Closing the
+  client WebSocket detaches everything it had.
+- `keep`: with `keep:true` the connection's other attachments stay. Without `keep` (or with
+  `false`) every other attachment of that connection is detached, so a client that never sends
+  `keep` has one content at a time, as before.
+- At most 16 attachments per connection. One more gets
+  `{"t":"error","id":2,"code":"attach_limit","contentId":"…","message":"too many attached terminals"}`
+  and changes nothing.
+- `attach` of a content the connection already has restarts that stream: a new `attached` and a new
+  screen.
+- `out`, `size`, `detached` and `input` carry `contentId`, so several attachments share one
+  connection without any change to them.
 
 ### input
 
@@ -261,8 +328,10 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 ### resize
 
 - client → host `{"t":"resize","contentId":"<content uuid>","cols":N,"rows":M}` — sets one
-  terminal's grid on demand (a button on the client, never sent automatically).
-- Only for the content this connection is attached to; for any other content it is ignored.
+  terminal's grid on demand (a button on the client, never sent automatically unless the client
+  holds the size, see `hold` below).
+- For any content the connection is attached to (with `keep`, there can be several); for any other
+  content it is ignored.
 - `cols` and `rows` are integers within the 64-bit range; the host clamps them to 20…500 columns and 5…200 rows. A
   missing `cols` or `rows`, or one that is not an integer, makes the host ignore the request
   (it logs it).
@@ -281,19 +350,49 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
     time, or the PTY size cannot be read): the requesting client gets
     `{"t":"error","id":null,"message":"…","code":"resize_failed","contentId":"…"}`
     (`id` echoes the request's `id` when it had one; `message` is a short English reason).
-  - A newer `resize` of the same terminal from any client, or the requester's `detach` or `attach`
-    of another content, cancels a pending one; the cancelled request gets no reply of its own (the
-    newer one's `size` reaches every attached client).
-- After a confirmed resize (the PTY took the requested size, the point where the clients get
-  `size`), the host sends Ctrl+L (0x0C) to the terminal once, written exactly as an `input`
-  would, so shells and TUIs (Claude Code, vim, htop) redraw at the new size. Also for a resize to
-  the size the grid already had (the client's resize button doubles as a redraw). Not after
-  `resize_failed` (a PTY that kept another size included), not for a cancelled request (only the
-  newer one sends it), not for a read-only terminal, and never for size changes that did not come
-  from a `resize` (the Mac's own pane, `attach`).
-- The requested size holds until the Mac's own pane for that tab changes layout (a window
-  resize, the pane shown or hidden, a split change, zoom); then the pane's size returns and
+  - A newer `resize` of the same terminal from any client, or the requester's `detach` of that
+    content (an `attach` of another content without `keep` detaches it too), cancels a pending
+    one; an `attach` with `keep:true` cancels nothing. The cancelled request gets no reply of its
+    own (the newer one's `size` reaches every attached client).
+- After a confirmed resize without `hold` (the PTY took the requested size, the point where the
+  clients get `size`), the host sends Ctrl+L (0x0C) to the terminal once, written exactly as an
+  `input` would, so shells and TUIs (Claude Code, vim, htop) redraw at the new size. Also for a
+  resize to the size the grid already had (the client's resize button doubles as a redraw). Not
+  after `resize_failed` (a PTY that kept another size included), not for a cancelled request (only
+  the newer one sends it), not for a read-only terminal, and never for size changes that did not
+  come from a `resize` (the Mac's own pane, `attach`). With `hold:true` the rules under `hold` below apply.
+- Without `hold`, the requested size holds until the Mac's own pane for that tab changes layout (a
+  window resize, the pane shown or hidden, a split change, zoom); then the pane's size returns and
   the clients get `size`. A later `resize` from any client wins again (last request wins).
+- `hold`: `{"t":"resize","contentId":"…","cols":N,"rows":M,"hold":true}`. A client whose own pane
+  decides the size (an automatic resize) sends `hold:true`, so that the size gets an owner and
+  two such clients do not take it from each other without end. The clamp, the replies,
+  `resize_failed` and the wake of a terminal without a live surface stay as for `resize` without
+  `hold`. `hold` is a strict boolean (decoder rule); without it the message means what it meant
+  before, so clients that never send it are unaffected.
+  - Ctrl+L only where an agent runs. After a confirmed `resize` with `hold:true` the host sends
+    Ctrl+L once (as above) only when the tab's chrome lists at least one agent, the data `list`
+    sends as `tabs[].agents`, whatever its activity. A tab without an agent (a shell, `vim`,
+    `less`) gets none: an automatic resize goes out on every window drag, a typed 0x0C in a program
+    that does not expect it is wrong, and the PTY's size change (SIGWINCH) already makes such
+    programs redraw. An agent that exits without telling the host leaves the list within about 2 s.
+  - Held. While a size is held, a layout change of the Mac's own pane (a window resize, a split,
+    the pane shown or hidden, zoom, the tab hibernated and woken) does not change the PTY's size;
+    the Mac's pane shows the held grid as it shows a requested size.
+  - One owner. The hold belongs to the connection that asked last. A newer `resize` of that
+    terminal from any connection wins: with `hold:true` the hold moves to it, without `hold` the
+    hold ends and the size is unowned (it holds until the Mac's pane changes, as above).
+  - Release. The hold ends at once when its owner sends `detach` for that content or attaches
+    another content without `keep`. When the owner's connection closes or its stream fails
+    (`conn.close`, a LAN socket closing, the relay socket dropping), the hold stays for 30 s
+    without an owner; a `resize` with `hold:true` in that time takes it over, and with the same
+    size the PTY never changes. After 30 s without one the hold ends. So a short network drop or a
+    LAN ⇄ relay switch does not reflow the terminal twice.
+  - When a hold ends with no newer request, the Mac's pane size returns and every attached client
+    gets `size`.
+  - Client rule. A client never answers a `size` it did not ask for with a new `resize`. It sends
+    `resize` only when its own pane's grid changes and after its own `attached`. This rule, not the
+    host, is what prevents a loop between two holding clients.
 - Old hosts answer an unknown `t` with an `error` and send no `size`; the resize simply has no
   effect. Hosts before `resize_failed` send nothing when a resize cannot be applied, and nothing
   for a resize to the current size.
@@ -302,11 +401,16 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 
 - client → host `{"t":"tab.new","id":4,"worktreeId":"<worktree id>"}`, or with a start size
   `{"t":"tab.new","id":4,"worktreeId":"…","cols":N,"rows":M}`. `cols` and `rows` are optional
-  integers, sent together.
+  integers, sent together. An optional `paneId` (string, a pane id from `list`'s `layout`) names the
+  pane that receives the tab: `{"t":"tab.new","id":4,"worktreeId":"…","paneId":"<pane id>"}`.
 - host → client `{"t":"tab.new","id":4,"worktreeId":"…","tabId":"<tab uuid>","contentId":"<content uuid>"}`
   once the new terminal tab exists and its content can be attached.
 - The Mac opens one new terminal tab (the default shell, the worktree's directory) in that
   worktree, as its "new tab" action does. It does not change which worktree the Mac window shows.
+- `paneId` is ignored in `splitPerTab`, where a new tab is a new top-level tab. Without it, and
+  when it is unknown or malformed (the host ignores it and logs it), the host picks the pane as it
+  does for its own "new tab" action. A `paneId` that is not a string drops the message (decoder
+  rule).
 - With `cols` and `rows`, the new terminal starts at that size, clamped by the host to
   20…500 columns and 5…200 rows. Without them, or when one is missing or is not an integer,
   it starts at most 120 × 40, not at the size of the whole Mac window. The start size holds
@@ -315,8 +419,45 @@ value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw ac
 - Old hosts ignore `cols` and `rows` (no version change); the reply is the same either way.
 - An unknown or archived worktree, or a tab that does not start within 10 s, gives
   `{"t":"error","id":4,"message":"…"}`.
-- The phone attaches to `contentId` itself. There is no `tab.close`: the user ends the shell
-  (`exit`) to close a tab.
+- The phone attaches to `contentId` itself. A tab is closed with `tab.close` (below), or when the
+  user ends its shell (`exit`).
+
+### tab.close
+
+Closes a tab. This and the next two messages are the layout actions: every reply and error carries
+the request's `id`, the Mac shows no confirmation (the client confirmed) and does not change which
+worktree its window shows. An error is `{"t":"error","id":6,"message":"…","code":"<code>"}`, with
+`message` a short English reason. Old hosts answer `unknown message type: …` with no `code`; a
+client checks `caps` first.
+
+- client → host `{"t":"tab.close","id":6,"tabId":"<tab uuid>"}`
+- host → client `{"t":"tab.close","id":6,"tabId":"…","worktreeId":"…"}`
+- Closes that tab and ends its terminal, as the Mac's own close does; a pane left without tabs
+  collapses. Clients attached to it get `detached`.
+- Errors: `tab_invalid` (unknown tab), `tab_failed`.
+
+### pane.split
+
+Splits a pane and gives the client the new pane's first terminal tab.
+
+- client → host `{"t":"pane.split","id":7,"paneId":"<pane id>","direction":"horizontal|vertical"}`
+- host → client
+  `{"t":"pane.split","id":7,"worktreeId":"…","paneId":"<new pane id>","tabId":"…","contentId":"…"}`
+  once the new terminal can be attached.
+- `direction` is the two-way `SplitDirection` (`horizontal` or `vertical`) that the pane-addressed
+  split command takes; the new pane lands where that command puts it. The four-way direction of the
+  Mac's focused-pane menu commands is not on the wire.
+- There is no start size: the new terminal takes its pane's size on the Mac, and a client that
+  wants its own sends `resize` after `attached`.
+- Errors: `pane_invalid` (unknown pane, or an unknown or non-string `direction`), `pane_failed`
+  (also when the terminal does not start within 10 s).
+
+### pane.close
+
+- client → host `{"t":"pane.close","id":8,"paneId":"<pane id>"}`
+- host → client `{"t":"pane.close","id":8,"paneId":"…","worktreeId":"…"}`
+- Closes every tab of that pane.
+- Errors: `pane_invalid` (unknown pane), `pane_failed`.
 
 ### worktree.new
 
@@ -491,10 +632,12 @@ Client contract for `worktree.delete` and `worktrees.refresh`:
 ### errors
 
 - host → client `{"t":"error","id":<request id or null>,"message":"…"}`.
-- Optional fields, omitted when absent: `code`, a machine-readable reason (`resize_failed`, and
+- Optional fields, omitted when absent: `code`, a machine-readable reason (`resize_failed`,
+  `attach_limit` for `attach`, `tab_invalid` and `tab_failed` for `tab.close`, `pane_invalid` and
+  `pane_failed` for `pane.split` and `pane.close`, and
   for `worktree.new` and `worktree.delete` `worktree_invalid`, `worktree_busy`,
   `worktree_unsupported`, `worktree_failed`, `worktree_timeout`, for `worktree.delete` also
-  `worktree_dirty`, and for `worktrees.refresh` `refresh_timeout`), and `contentId`, the terminal the error is about (for requests without an `id`).
+  `worktree_dirty`, and for `worktrees.refresh` `refresh_timeout`), and `contentId`, the terminal the error is about (for requests without an `id`, and in `attach_limit`).
   Clients must ignore codes they do not know and fall back to `message`.
 
 ## LAN shortcut
