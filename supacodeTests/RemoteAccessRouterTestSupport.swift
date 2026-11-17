@@ -108,7 +108,10 @@ final class RemoteRouterHarness {
   /// (a re-attach must stop the old one first).
   let overlappingStarts = LockIsolated(0)
 
-  init(clock: TestClock<Duration>, tabs: Int = 2) {
+  /// `liveLayouts`: the store runs `TerminalsFeature` (inert contents, no
+  /// session kills), so layout actions the router sends really change the
+  /// layout; otherwise the reducer is a no-op and the layout never changes.
+  init(clock: TestClock<Duration>, tabs: Int = 2, liveLayouts: Bool = false) {
     let contents = (0..<tabs).map { _ in UUID() }
     self.contents = contents
     let worktree = Worktree(
@@ -123,10 +126,7 @@ final class RemoteRouterHarness {
     state.terminals = TerminalsFeature.State(layouts: [
       LayoutFeature.State(id: worktreeID, layout: Self.layout(contents: contents))
     ])
-    // No reducer logic: the router only reads the state (a resize's wake is a no-op here).
-    let store = Store(initialState: state) {
-      Reduce<AppFeature.State, AppFeature.Action> { _, _ in .none }
-    }
+    let store = liveLayouts ? Self.liveLayoutStore(state, clock: clock) : Self.readOnlyStore(state)
     self.store = store
     let terminalManager = WorktreeTerminalManager(runtime: GhosttyRuntime())
     terminalManager.appStore = store
@@ -152,6 +152,35 @@ final class RemoteRouterHarness {
   }
 
   nonisolated deinit {}
+
+  /// No reducer logic: the router only reads the state (a resize's wake is a no-op here).
+  private static func readOnlyStore(_ state: AppFeature.State) -> StoreOf<AppFeature> {
+    Store(initialState: state) {
+      Reduce<AppFeature.State, AppFeature.Action> { _, _ in .none }
+    }
+  }
+
+  /// The terminals slice runs for real; contents are inert, so no surface or session starts.
+  private static func liveLayoutStore(_ state: AppFeature.State, clock: TestClock<Duration>) -> StoreOf<AppFeature> {
+    Store(initialState: state) {
+      Scope(state: \.terminals, action: \.terminals) { TerminalsFeature() }
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+      // One shared registry: the per-access `testValue` would hand provision and lookup different runtimes.
+      $0.contentRuntime = ContentRuntime()
+      $0[LayoutContentFactory.self] = LayoutContentFactory { request in
+        InertTabContent(id: request.contentID, state: request.content)
+      }
+      $0[ContentSessionKiller.self] = ContentSessionKiller(kill: { _, _ in })
+      $0[MemoryPressureClient.self] = MemoryPressureClient(warnings: { AsyncStream { $0.finish() } })
+    }
+  }
+
+  /// The worktree's layout as the store holds it now.
+  var layout: PaneLayout? {
+    store.withState { $0.terminals.layouts[id: worktreeID]?.layout }
+  }
 
   /// One pane with a terminal tab per content.
   private static func layout(contents: [UUID]) -> PaneLayout {

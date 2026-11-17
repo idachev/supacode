@@ -303,10 +303,10 @@ final class RemoteHostRouter {
       input(connID: connID, message: message)
     case "suggest":
       suggest(connID: connID, message: message)
-    case "tab.new":
-      newTab(connID: connID, message: message)
     case "worktree.new", "worktree.delete", "worktrees.refresh":
       worktreeRequest(connID: connID, message: message)
+    case "tab.new", "tab.close", "pane.split", "pane.close":
+      layoutAction(connID: connID, message: message)
     case "resize":
       resize(connID: connID, message: message)
     default:
@@ -918,7 +918,7 @@ final class RemoteHostRouter {
     }
     let requestID = message.id
     let grid = RemoteTabNewGrid.resolve(cols: message.cols, rows: message.rows, fallback: Self.newTabGrid)
-    switch source.requestNewTab(worktreeID: worktreeRaw, startGrid: grid.startGrid) {
+    switch source.requestNewTab(worktreeID: worktreeRaw, paneID: message.paneId, startGrid: grid.startGrid) {
     case .failure(let rejection):
       replyError(connID, id: requestID, rejection.message)
     case .success(let tabID):
@@ -950,6 +950,75 @@ final class RemoteHostRouter {
       }
       requestWaits.insert(wait, waitID: waitID, connID: connID)
     }
+  }
+
+  // MARK: - Layout actions
+
+  /// `tab.new` and the layout actions `tab.close`, `pane.split` and
+  /// `pane.close`. A layout action's reply and error carry the request's `id`;
+  /// its errors carry a `code` (`RemoteLayoutActionRejection`).
+  private func layoutAction(connID: String, message: RemoteInboundMessage) {
+    let requestID = message.id
+    switch message.t {
+    case "tab.new":
+      newTab(connID: connID, message: message)
+    case "tab.close":
+      switch source.requestCloseTab(tabID: message.tabId) {
+      case .failure(let rejection): replyLayoutError(connID, id: requestID, rejection)
+      case .success(let worktreeID):
+        reply(connID, RemoteTabCloseMessage(id: requestID, tabId: message.tabId ?? "", worktreeId: worktreeID))
+      }
+    case "pane.close":
+      switch source.requestClosePane(paneID: message.paneId) {
+      case .failure(let rejection): replyLayoutError(connID, id: requestID, rejection)
+      case .success(let worktreeID):
+        reply(connID, RemotePaneCloseMessage(id: requestID, paneId: message.paneId ?? "", worktreeId: worktreeID))
+      }
+    default:
+      splitPane(connID: connID, message: message)
+    }
+  }
+
+  /// Splits the pane and answers once the layout lists the new pane's tab
+  /// (its content can then be attached), or `pane_failed` after `tabNewTimeout`.
+  private func splitPane(connID: String, message: RemoteInboundMessage) {
+    let requestID = message.id
+    let worktreeID: String
+    let newID: UUID
+    switch source.requestSplitPane(paneID: message.paneId, direction: message.direction) {
+    case .failure(let rejection):
+      replyLayoutError(connID, id: requestID, rejection)
+      return
+    case .success(let split):
+      worktreeID = split.worktreeID
+      newID = split.newID
+    }
+    let clock = self.clock
+    let waitID = UUID()
+    let wait = Task { [weak self] in
+      let paneID = await Self.poll(every: Self.tabNewPollInterval, within: Self.tabNewTimeout, clock: clock) {
+        [weak self] () -> UUID? in
+        self?.source.paneID(ofTab: newID, in: worktreeID)
+      }
+      guard let self, !Task.isCancelled else { return }
+      self.requestWaits.remove(waitID: waitID, connID: connID)
+      guard self.clients[connID] != nil else { return }
+      guard let paneID else {
+        routerLogger.warning("pane.split: tab \(newID) did not appear in \(worktreeID)")
+        self.replyLayoutError(connID, id: requestID, .splitDidNotStart)
+        return
+      }
+      self.reply(
+        connID,
+        RemotePaneSplitMessage(
+          id: requestID, worktreeId: worktreeID, paneId: paneID.uuidString, tabId: newID.uuidString,
+          contentId: newID.uuidString))
+    }
+    requestWaits.insert(wait, waitID: waitID, connID: connID)
+  }
+
+  private func replyLayoutError(_ connID: String, id: Int?, _ rejection: RemoteLayoutActionRejection) {
+    replyError(connID, id: id, rejection.message, code: rejection.code)
   }
 
   // MARK: - New worktree

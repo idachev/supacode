@@ -2,6 +2,7 @@ import Clocks
 import ConcurrencyExtras
 import CoreGraphics
 import Foundation
+import IdentifiedCollections
 import SupacodeSettingsShared
 import Testing
 
@@ -18,6 +19,61 @@ struct RemoteAccessTabNewTests {
     #expect(RemoteTabNewRejection.check(found: true, isArchived: true, isMissing: false) == .archivedWorktree)
     #expect(RemoteTabNewRejection.check(found: true, isArchived: false, isMissing: true) == .missingWorktree)
     #expect(RemoteTabNewRejection.check(found: true, isArchived: true, isMissing: true) == .archivedWorktree)
+  }
+
+  // MARK: - Pane (ПТ4)
+
+  /// A two-pane tabs-per-split layout: `left` holds `tab`, the right pane one more.
+  private struct TwoPanes {
+    let layout: PaneLayout
+    let left: Pane
+    let tab: TabItem
+  }
+
+  private static func twoPanes() throws -> TwoPanes {
+    func tab() -> TabItem {
+      let id = UUID()
+      return TabItem(
+        id: TabID(rawValue: id), title: "t",
+        content: ContentSnapshot(
+          id: ContentID(rawValue: id), state: .terminal(TerminalContentState(workingDirectory: nil))))
+    }
+    let first = tab()
+    let left = Pane(id: PaneID(), tabs: [first])
+    let right = Pane(id: PaneID(), tabs: [tab()])
+    let tree = try SplitTree(view: left.id).inserting(view: right.id, at: left.id, direction: .right)
+    return TwoPanes(
+      layout: PaneLayout(tree: tree, panes: [left, right], focusedPaneID: right.id), left: left, tab: first)
+  }
+
+  @Test func aKnownPaneOfTheWorktreeAnchorsTheNewTab() throws {
+    let fixture = try Self.twoPanes()
+    let raw = fixture.left.id.rawValue.uuidString
+    #expect(
+      RemoteLayoutActions.newTabAnchor(paneID: raw, layout: fixture.layout, mode: .tabsPerSplit)
+        == fixture.left.id.rawValue)
+  }
+
+  /// A `paneId` that is malformed, names no pane of that worktree (a tab id
+  /// included), or comes in split per tab opens the tab exactly as one without
+  /// `paneId`: the same `.createTab` request, with no anchor.
+  @Test func anUnusablePaneIDOpensTheTabAsWithoutOne() throws {
+    let fixture = try Self.twoPanes()
+    let withoutPaneID = RemoteLayoutActions.newTabAnchor(paneID: nil, layout: fixture.layout, mode: .tabsPerSplit)
+    #expect(withoutPaneID == nil)
+    for raw in ["", "not-a-uuid", UUID().uuidString, fixture.tab.id.rawValue.uuidString] {
+      #expect(
+        RemoteLayoutActions.newTabAnchor(paneID: raw, layout: fixture.layout, mode: .tabsPerSplit) == withoutPaneID)
+    }
+    let known = fixture.left.id.rawValue.uuidString
+    #expect(RemoteLayoutActions.newTabAnchor(paneID: known, layout: fixture.layout, mode: .splitPerTab) == nil)
+    #expect(RemoteLayoutActions.newTabAnchor(paneID: known, layout: nil, mode: .tabsPerSplit) == nil)
+  }
+
+  @Test func aPaneIDIsDecodedForTabNew() throws {
+    let message = try #require(
+      RemoteJSON.decodeInbound(Data(#"{"t":"tab.new","id":4,"worktreeId":"w","paneId":"P"}"#.utf8)))
+    #expect(message.paneId == "P")
   }
 
   // MARK: - Start size

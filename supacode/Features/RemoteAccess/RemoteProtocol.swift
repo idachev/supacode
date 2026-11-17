@@ -562,6 +562,74 @@ nonisolated struct RemoteTabNewMessage: Encodable, Equatable, Sendable {
   let contentId: String
 }
 
+/// The answer to `tab.close`: the closed tab and the worktree it was in.
+nonisolated struct RemoteTabCloseMessage: Encodable, Equatable, Sendable {
+  var t = "tab.close"
+  let id: Int?
+  let tabId: String
+  let worktreeId: String
+
+  // Encode `id` as an explicit null so clients can match on it.
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(t, forKey: .t)
+    try container.encode(id, forKey: .id)
+    try container.encode(tabId, forKey: .tabId)
+    try container.encode(worktreeId, forKey: .worktreeId)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case t, id, tabId, worktreeId
+  }
+}
+
+/// The answer to `pane.close`: the closed pane and the worktree it was in.
+nonisolated struct RemotePaneCloseMessage: Encodable, Equatable, Sendable {
+  var t = "pane.close"
+  let id: Int?
+  let paneId: String
+  let worktreeId: String
+
+  // Encode `id` as an explicit null so clients can match on it.
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(t, forKey: .t)
+    try container.encode(id, forKey: .id)
+    try container.encode(paneId, forKey: .paneId)
+    try container.encode(worktreeId, forKey: .worktreeId)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case t, id, paneId, worktreeId
+  }
+}
+
+/// The answer to `pane.split`: the NEW pane, its first terminal tab and the
+/// content the phone attaches to (`tabId == contentId`).
+nonisolated struct RemotePaneSplitMessage: Encodable, Equatable, Sendable {
+  var t = "pane.split"
+  let id: Int?
+  let worktreeId: String
+  let paneId: String
+  let tabId: String
+  let contentId: String
+
+  // Encode `id` as an explicit null so clients can match on it.
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(t, forKey: .t)
+    try container.encode(id, forKey: .id)
+    try container.encode(worktreeId, forKey: .worktreeId)
+    try container.encode(paneId, forKey: .paneId)
+    try container.encode(tabId, forKey: .tabId)
+    try container.encode(contentId, forKey: .contentId)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case t, id, worktreeId, paneId, tabId, contentId
+  }
+}
+
 /// The answer to `worktree.new`: the created worktree and, when its first
 /// terminal tab is in the layout, that tab and the content to attach to.
 /// `tabId` and `contentId` are omitted together when the worktree has no tab.

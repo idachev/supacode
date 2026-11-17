@@ -173,11 +173,15 @@ final class RemoteSnapshotSource {
   /// in a worktree through the terminal command the app's "new tab" action
   /// sends, in the background: the tab is not selected and the window keeps
   /// its worktree. The terminal starts at `startGrid` when the worktree has a
-  /// live terminal to measure it on. Returns the minted tab id (also its
+  /// live terminal to measure it on. A `paneID` naming a pane of the
+  /// worktree's tabs-per-split layout receives the tab; any other is ignored
+  /// (`RemoteLayoutActions.newTabAnchor`). Returns the minted tab id (also its
   /// content id), or why no tab was requested. The tab lands asynchronously;
   /// poll `contentID(ofTab:in:)`.
-  func requestNewTab(worktreeID raw: String, startGrid: TerminalStartGrid) -> Result<UUID, RemoteTabNewRejection> {
-    let state = store.repositories
+  func requestNewTab(
+    worktreeID raw: String, paneID: String?, startGrid: TerminalStartGrid
+  ) -> Result<UUID, RemoteTabNewRejection> {
+    let state = store.withState(\.repositories)
     var found: (worktree: Worktree, isArchived: Bool)?
     for repository in state.repositories {
       guard let worktree = repository.worktrees.first(where: { $0.id.rawValue == raw }) else { continue }
@@ -194,11 +198,14 @@ final class RemoteSnapshotSource {
     let tabID = UUID()
     // Same setup-script rule as `AppFeature`'s `.newTerminalInWorktree`.
     let runSetupScript = state.sidebarItems[id: worktree.id]?.lifecycle == .pending
+    let layoutState = terminalManager.layoutState(for: worktree.id)
+    let anchor = RemoteLayoutActions.newTabAnchor(
+      paneID: paneID, layout: layoutState?.layout, mode: layoutState?.mode ?? .tabsPerSplit)
     // The worktree's own directory, not the focused terminal's (a remote
     // worktree's shell starts on the remote, where this is ignored).
     terminalManager.handleCommand(
       .createTab(
-        worktree, runSetupScriptIfNew: runSetupScript, id: tabID, focusing: false,
+        worktree, runSetupScriptIfNew: runSetupScript, id: tabID, focusing: false, anchor: anchor,
         workingDirectory: Self.newTabDirectory(for: worktree), startGrid: startGrid))
     return .success(tabID)
   }
@@ -219,6 +226,69 @@ final class RemoteSnapshotSource {
       return layout?.pane(containingTab: tab)?.tabs[id: tab]?.content.id.rawValue
     }
     return nil
+  }
+
+  // MARK: - Layout actions
+
+  /// Every worktree's layout, keyed by the worktree id the phone sees.
+  private func layouts() -> [(worktreeID: String, layout: PaneLayout)] {
+    store.withState(\.repositories.repositories).flatMap { repository in
+      repository.worktrees.compactMap { worktree in
+        terminalManager.layoutState(for: worktree.id).map { (worktree.id.rawValue, $0.layout) }
+      }
+    }
+  }
+
+  private func layout(ofWorktree raw: String) -> PaneLayout? {
+    terminalManager.layoutState(for: WorktreeID(raw))?.layout
+  }
+
+  /// Closes a tab at once, with no confirmation (the phone confirmed), the way
+  /// the Mac's own close does. Returns the worktree it was in.
+  func requestCloseTab(tabID raw: String?) -> Result<String, RemoteLayoutActionRejection> {
+    guard let raw, !raw.isEmpty else { return .failure(.missingTab) }
+    guard let tab = UUID(uuidString: raw), let worktreeID = RemoteLayoutActions.locate(tab: tab, in: layouts())
+    else { return .failure(.unknownTab) }
+    let tabID = TabID(rawValue: tab)
+    terminalManager.sendLayout(WorktreeID(worktreeID), .closeTab(id: tabID))
+    guard layout(ofWorktree: worktreeID)?.pane(containingTab: tabID) == nil else { return .failure(.tabStillThere) }
+    return .success(worktreeID)
+  }
+
+  /// Closes a pane and every tab in it at once, with no confirmation. Returns
+  /// the worktree it was in.
+  func requestClosePane(paneID raw: String?) -> Result<String, RemoteLayoutActionRejection> {
+    guard let raw, !raw.isEmpty else { return .failure(.missingPane) }
+    guard let pane = UUID(uuidString: raw), let worktreeID = RemoteLayoutActions.locate(pane: pane, in: layouts())
+    else { return .failure(.unknownPane) }
+    let paneID = PaneID(rawValue: pane)
+    terminalManager.sendLayout(WorktreeID(worktreeID), .closePane(id: paneID))
+    guard layout(ofWorktree: worktreeID)?.panes[id: paneID] == nil else { return .failure(.paneStillThere) }
+    return .success(worktreeID)
+  }
+
+  /// Splits a pane through the pane-addressed split command, in the
+  /// background (the new pane is not focused). Returns the worktree and the
+  /// minted id, which is both the new tab's and its content's; the new pane is
+  /// found by polling `paneID(ofTab:in:)`.
+  func requestSplitPane(
+    paneID raw: String?, direction rawDirection: RemoteLenientString?
+  ) -> Result<(worktreeID: String, newID: UUID), RemoteLayoutActionRejection> {
+    guard let raw, !raw.isEmpty else { return .failure(.missingSplitPane) }
+    guard let direction = RemoteLayoutActions.direction(rawDirection) else { return .failure(.badDirection) }
+    guard let pane = UUID(uuidString: raw), let worktreeID = RemoteLayoutActions.locate(pane: pane, in: layouts()),
+      let worktree = store.withState(\.repositories.repositories).lazy
+        .compactMap({ $0.worktrees[id: WorktreeID(worktreeID)] }).first
+    else { return .failure(.unknownPane) }
+    let newID = UUID()
+    terminalManager.handleCommand(
+      .splitPane(worktree, paneToken: pane, direction: direction, input: nil, id: newID, focusing: false))
+    return .success((worktreeID, newID))
+  }
+
+  /// The pane holding a tab once the worktree's layout lists it; nil until then.
+  func paneID(ofTab tabID: UUID, in worktreeRaw: String) -> UUID? {
+    layout(ofWorktree: worktreeRaw)?.pane(containingTab: TabID(rawValue: tabID))?.id.rawValue
   }
 
   // MARK: - New worktree
@@ -303,7 +373,7 @@ final class RemoteSnapshotSource {
       },
       openTab: { [weak self] worktreeID in
         guard let self, self.containsWorktree(worktreeID) else { return nil }
-        return self.requestNewTab(worktreeID: worktreeID.rawValue, startGrid: grid.startGrid)
+        return self.requestNewTab(worktreeID: worktreeID.rawValue, paneID: nil, startGrid: grid.startGrid)
       },
       tabContent: { [weak self] tabID, worktreeID in
         guard let self, let contentID = self.contentID(ofTab: tabID, in: worktreeID.rawValue) else { return nil }
