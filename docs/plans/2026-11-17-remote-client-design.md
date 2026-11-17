@@ -164,7 +164,8 @@ Each worktree in `list` gains an optional `layout` (omitted when the worktree ha
 - `groups` mirrors `PaneLayout`: in `tabsPerSplit` exactly one group with the id `main`; in
   `splitPerTab` one group per top-level tab, in strip order (`groupOrder`), the active one included.
 - `tree` is a node: `{"pane":"<pane id>"}` or `{"split":{direction, ratio, left, right}}`.
-  `direction` is `horizontal` or `vertical` (`SplitDirection`); `ratio` is the first child's share.
+  `direction` is `horizontal` or `vertical` (`SplitDirection`); `ratio` is `SplitTree.Split.ratio`,
+  the `left` child's share of the split (`SplitView.swift` scales the first region by it).
 - `zoomedPaneId` is present only when that group's tree is zoomed on a single pane.
 - `panes` is flat: every pane of every group. `tabIds` refer to the worktree's `tabs[].id`. A
   client skips ids it cannot resolve.
@@ -176,6 +177,11 @@ Each worktree in `list` gains an optional `layout` (omitted when the worktree ha
 - While a connection watches, the host sends it a full `list` frame with `"id":null` whenever the
   snapshot differs from the last `list` it sent to that connection. At most one push per 250 ms per
   connection, trailing edge, so the last state always arrives.
+- Tab titles are the exception. `tabs[].title` is the live reported title
+  (`TabTitle.resolved` in `RemoteSnapshotSource.tabs`), and an agent TUI rewrites it several times a
+  second. A snapshot that differs from the last one sent only in tab titles is pushed at most once
+  per 2 s per connection (trailing edge). Any other difference follows the 250 ms rule and carries
+  the current titles.
 - `on:false` stops it. The watch ends with the connection; a LAN ⇄ relay path switch is a new
   connection, so the client sends `watch` again.
 - The host does no periodic work while no connection watches. How it detects a change (a tick that
@@ -192,9 +198,12 @@ confirmed) and does not change which worktree its window shows.
   as the Mac's own close does (a pane left without tabs collapses). Clients attached to it get
   `detached`. Errors: `tab_invalid` (unknown tab), `tab_failed`.
 - **`pane.split`** —
-  `{"t":"pane.split","id":7,"paneId":"<pane id>","direction":"right|down|left|up","cols":N,"rows":M}`
+  `{"t":"pane.split","id":7,"paneId":"<pane id>","direction":"horizontal|vertical","cols":N,"rows":M}`
   → `{"t":"pane.split","id":7,"worktreeId":"…","paneId":"<new pane id>","tabId":"…","contentId":"…"}`
-  once the new terminal can be attached. `cols` / `rows` are optional and resolved as in `tab.new`.
+  once the new terminal can be attached. `direction` is the two-way `SplitDirection` that the
+  pane-addressed command takes (`TerminalClient.Command.splitPane`, the CLI's `pane split`); the
+  new pane lands where that command puts it. The four-way direction exists only for focused-pane
+  menu commands and is not on the wire. `cols` / `rows` are optional and resolved as in `tab.new`.
   Errors: `pane_invalid` (unknown pane or direction), `pane_failed` (also when the terminal does
   not start within 10 s).
 - **`pane.close`** — `{"t":"pane.close","id":8,"paneId":"<pane id>"}` →
@@ -204,6 +213,9 @@ confirmed) and does not change which worktree its window shows.
   `splitPerTab`, where a new tab is a new top-level tab. Without it the host picks as today.
 - Old hosts answer `unknown message type: …` with no `code`; ПТ0 keeps the client from sending
   these to them.
+- Decoder rule for the new fields. Strict (a wrong type drops the message with no reply, as for
+  `contentId` today): `keep` and `on` (booleans), `tabId` and `paneId` (strings). Lenient (answered
+  with an error): `direction` (a value of another type or an unknown string gives `pane_invalid`).
 
 ### ПТ5. No new row fields
 
@@ -359,6 +371,9 @@ changes stay in `supacode/Features/RemoteAccess/`.
   Clicking it brings the remote window forward and selects that worktree and tab. It adds nothing
   to the local window's notification list or sidebar.
 - **ИВ3.** Switching the Mac or closing the window resets the tracker.
+- **ИВ4.** Bell and desktop-notification sequences in the stream (author's call): a BEL from Mac A
+  rings as a local terminal bell does, by the laptop's Ghostty settings. OSC 9 / 777 notifications
+  from Mac A's programs are not shown on the laptop in the first version; only ИВ1 notifies.
 
 ## Host changes (Supacode on Mac A)
 
@@ -369,8 +384,14 @@ changes stay in `supacode/Features/RemoteAccess/`.
   `terminalManager.layoutState(for:)`, reading the flat `panes` and every group's tree (the
   split-per-tab invariants in `.agent-memory/split-per-tab-invariants.md`).
 - **ХС3.** The new actions go through the app's existing layout and terminal commands (as `tab.new`
-  does), never around `LayoutFeature`. A remote `tab.close` / `pane.close` skips the Mac's close
-  confirmation.
+  does), never around `LayoutFeature`: `pane.split` through `TerminalClient.Command.splitPane`,
+  `tab.close` and `pane.close` through `LayoutFeature.Action.closeTab(id:)` and `closePane(id:)`.
+  A remote close must not raise the Mac's close confirmation; in `LayoutFeature` the confirmation
+  belongs to the `contentRequestedClose` path. If the direct actions turn out to confirm too, the
+  host needs a close path without it (see Not confirmed).
+- **ХС6.** `remote-relay/scripts/phone-sim.mjs` (this repo) learns the new messages: it prints
+  `caps` and `layout`, and gets switches for `watch`, a second `attach` with `keep`, `tab.close`,
+  `pane.split` and `pane.close`. ЕТ1 is verified with it.
 - **ХС4.** No change to the relay (`remote-relay/`), to the LAN server's trust, or to `mayHost`. A
   Mac may host and be a client at once: the client socket is separate from its host socket.
 - **ХС5. Test host id** (author's call). The host id comes only from the hardware UUID
@@ -452,6 +473,13 @@ These were not decided by the owner; each can be changed before the plan.
 - **АР7.** Divider drag, tab move and tab rename wait for ПС6.
 - **АР8.** A test-only host id override, `SUPACODE_REMOTE_HOST_ID` (ХС5), so the builder can verify
   the remote window on one Mac.
+- **АР9.** A remote BEL rings locally; remote OSC 9 / 777 notifications are not shown (ИВ4).
+
+A consequence of АР3 to know before approving it: the protocol releases a requested size when the
+Mac's own pane for that tab changes layout. A split, a closed pane or a collapsing closed tab on
+Mac A is such a change, also when the laptop asked for it; so is a resize of the laptop's window
+(the local panes change, the remote grid does not). After each of these the grids differ again
+until "Fit to This Window" is pressed again.
 
 ## Checked by the design review
 
@@ -471,3 +499,14 @@ These were not decided by the owner; each can be changed before the plan.
   the mirror of it today.
 - The cost of holding a pinned grid larger than the pane inside the surface's scroll wrapper (ТР7):
   the wrapper sets the surface frame from the scroll view's bounds today.
+- That `LayoutFeature.Action.closeTab(id:)` and `closePane(id:)` close without the confirmation
+  alert (ХС3); only their place in the action list was read, not their reducers.
+- Relay volume on the non-LAN path. Cloudflare bills an incoming WebSocket message to a Durable
+  Object at 20:1 as a request, outgoing messages are free, and the Workers Free plan allows 100,000
+  Durable Object requests a day, after which requests fail until 00:00 UTC (Cloudflare docs,
+  Durable Objects pricing, read 2026-11-17). That is 2,000,000 incoming frames a day for the whole
+  relay: every `out` and pushed `list` from a host and every `input` from a client. Several busy
+  terminals attached through the relay for a working day could reach it; the phone attaches one.
+  How many `out` frames a busy agent tab produces per second was not measured. The LAN path costs
+  nothing. If the measured rate is too high, the host can join `out` frames per content over a
+  short window before sending; that needs no protocol change.
