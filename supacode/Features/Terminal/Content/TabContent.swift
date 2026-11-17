@@ -209,8 +209,10 @@ final class TerminalContent: TabContent {
     return surfaceView?.pinGrid(columns: columns, rows: rows)
   }
 
-  /// Ends the pin; the surface returns to its pane's size.
+  /// Ends the pin; the surface returns to its pane's size. Without a pin it
+  /// leaves the surface alone, so an ordinary hold keeps its grid.
   func unpinGrid() {
+    guard pinnedGrid != nil else { return }
     pinnedGrid = nil
     surfaceView?.unpinGrid()
   }

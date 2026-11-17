@@ -1287,8 +1287,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
     return applyPinnedGrid()
   }
 
-  /// Ends the pin and puts the pane's newest size back.
+  /// Ends the pin and puts the pane's newest size back. Without a pin it does
+  /// nothing, so an ordinary hold (`applyRequestedGrid`) keeps its grid.
   func unpinGrid() {
+    guard pinnedGrid != nil else { return }
     pinnedGrid = nil
     releaseRequestedGrid()
   }

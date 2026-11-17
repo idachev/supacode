@@ -137,6 +137,24 @@ struct GhosttySurfaceViewTests {
     #expect(Self.grid(of: surface) != [40, 12])
   }
 
+  // Unpinning a surface that is not pinned leaves an ordinary hold alone: no
+  // push of the pane size, so the requested grid stays.
+  @Test func unpinningWithoutAPinKeepsAnOrdinaryHold() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let window = Self.makeWindow()
+    defer { window.close() }
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    window.contentView?.addSubview(surfaceView)
+    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    surfaceView.updateSurfaceSize()
+    #expect(surfaceView.applyRequestedGrid(columns: 40, rows: 12) == .applied)
+
+    surfaceView.unpinGrid()
+    #expect(Self.grid(of: surface) == [40, 12])
+    #expect(surfaceView.applyRequestedGrid(columns: 40, rows: 12) == .unchanged)
+  }
+
   // A font size change keeps a pinned grid's columns × rows.
   @Test func aPinnedGridSurvivesAFontSizeChange() {
     let surfaceView = Self.makeSurfaceView()
