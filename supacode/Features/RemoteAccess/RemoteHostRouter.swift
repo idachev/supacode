@@ -49,8 +49,9 @@ final class RemoteHostRouter {
 
   private let source: RemoteSnapshotSource
   private var connection: RemoteRelayConnection?
-  /// Phones the relay announced, each with at most one attached terminal.
-  private var clients: [String: Attachment?] = [:]
+  /// Phones the relay announced (a key means a known connection), each with
+  /// its attached terminals by content id.
+  private var clients: [String: [UUID: Attachment]] = [:]
   /// `tab.new`, `worktree.new`, `worktree.delete` and `worktrees.refresh`
   /// waits in flight per phone, cancelled when that phone's connection ends
   /// (`endRequests(connID:)`).
@@ -59,9 +60,9 @@ final class RemoteHostRouter {
   /// size); a newer `resize` of that terminal from any phone, or the
   /// requester's detach or end, cancels it (last request wins).
   private var resizeWaits = RemoteResizeWaits()
-  /// The grid each attached phone last got (`attached` or `size`), shared by
-  /// the poll and a resize's early check so neither sends the same size twice.
-  private var sentGrids: [String: SentGrid] = [:]
+  /// The grid each phone last got per attached terminal (`attached` or `size`),
+  /// shared by the poll and a resize's early check so neither sends the same size twice.
+  private var sentGrids: [String: [UUID: SentGrid]] = [:]
   private struct SentGrid: Equatable {
     let columns: Int
     let rows: Int
@@ -198,13 +199,13 @@ final class RemoteHostRouter {
   /// Internal (not private) so router tests can stand in for a LAN phone.
   func lanOpened(_ connID: String, send: @escaping (String) -> Void) {
     lanSinks[connID] = send
-    clients[connID] = .some(nil)
+    clients[connID] = clients[connID] ?? [:]
     routerLogger.info("LAN shortcut: phone connected as \(connID)")
   }
 
   func lanClosed(_ connID: String) {
     endRequests(connID: connID)
-    detach(connID: connID)
+    detachAll(connID: connID)
     clients[connID] = nil
     lanSinks[connID] = nil
     suggesting.remove(connID)
@@ -261,11 +262,11 @@ final class RemoteHostRouter {
       connectionOpened(connID, sameNetwork: message.sameNetwork == true)
     case "conn.close":
       endRequests(connID: connID)
-      detach(connID: connID)
+      detachAll(connID: connID)
       clients[connID] = nil
       sameNetwork.remove(connID)
     case "hello":
-      clients[connID] = clients[connID] ?? .some(nil)
+      clients[connID] = clients[connID] ?? [:]
       if Self.helloWaitsForLAN(sameNetwork: sameNetwork.contains(connID), lanStarting: lanStart != nil),
         let start = lanStart
       {
@@ -296,7 +297,7 @@ final class RemoteHostRouter {
 
   /// The relay announced a phone (`conn.open`), possibly on the Mac's network.
   private func connectionOpened(_ connID: String, sameNetwork onMacNetwork: Bool) {
-    if clients[connID] == nil { clients[connID] = .some(nil) }
+    if clients[connID] == nil { clients[connID] = [:] }
     if onMacNetwork { sameNetwork.insert(connID) } else { sameNetwork.remove(connID) }
   }
 
@@ -368,7 +369,7 @@ final class RemoteHostRouter {
       replyError(connID, id: message.id, "no such terminal")
       return
     }
-    detach(connID: connID)
+    detachAll(connID: connID)
     let contentKey = raw
     let requestID = message.id
     let socketPath = ZmxRemoteStream.socketPath(contentID: contentID)
@@ -383,7 +384,8 @@ final class RemoteHostRouter {
           let messages = RemoteJSON.outputMessages(contentID: contentKey, bytes: bytes)
           await self?.deliver(connID, messages)
         case .closed(let reason):
-          await self?.streamClosed(connID: connID, contentID: contentID, contentKey: contentKey, reason: reason)
+          await self?.streamClosed(
+            connID: connID, contentID: contentID, contentKey: contentKey, stream: stream, reason: reason)
         }
       }
     }
@@ -393,42 +395,41 @@ final class RemoteHostRouter {
     // the first `out`, because the stream starts only after it is sent.
     let lifecycle = Task { [weak self] in
       if needsWake { await Self.waitForSocket(at: socketPath) }
-      guard let self, self.isCurrent(connID: connID, stream: stream) else { return }
+      guard let self, self.isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
       guard FileManager.default.fileExists(atPath: socketPath) else {
         self.streamClosed(
-          connID: connID, contentID: contentID, contentKey: contentKey,
+          connID: connID, contentID: contentID, contentKey: contentKey, stream: stream,
           reason: needsWake ? "the terminal did not start on the Mac" : "session not running")
         return
       }
       let first = await self.measureGrid(contentID: contentID, socketPath: socketPath)
-      guard !Task.isCancelled, self.isCurrent(connID: connID, stream: stream) else { return }
-      self.sentGrids[connID] = SentGrid(columns: first.columns, rows: first.rows)
+      guard !Task.isCancelled, self.isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
+      self.sentGrids[connID, default: [:]][contentID] = SentGrid(columns: first.columns, rows: first.rows)
       self.reply(
         connID, RemoteAttachedMessage(id: requestID, contentId: contentKey, cols: first.columns, rows: first.rows))
       stream.start(scrollbackRows: scrollback)
       while !Task.isCancelled {
         try? await Task.sleep(for: Self.sizePollInterval)
         guard !Task.isCancelled else { return }
-        await self.sendSizeIfChanged(connID: connID, stream: stream)
+        await self.sendSizeIfChanged(connID: connID, contentID: contentID, stream: stream)
       }
     }
-    clients[connID] = .some(
-      Attachment(
-        contentID: contentID, contentKey: contentKey, socketPath: socketPath,
-        stream: stream, pump: pump, sizeWatch: lifecycle))
+    clients[connID, default: [:]][contentID] = Attachment(
+      contentID: contentID, contentKey: contentKey, socketPath: socketPath,
+      stream: stream, pump: pump, sizeWatch: lifecycle)
   }
 
   /// Reads the PTY grid and sends `size` when it differs from the one the
-  /// phone last got. A slow or failed PTY read keeps the last size instead of
-  /// flapping to the view grid or the fallback.
-  private func sendSizeIfChanged(connID: String, stream: ZmxRemoteStream) async {
-    guard case .some(.some(let attachment)) = clients[connID], attachment.stream === stream else { return }
+  /// phone last got for that terminal. A slow or failed PTY read keeps the
+  /// last size instead of flapping to the view grid or the fallback.
+  private func sendSizeIfChanged(connID: String, contentID: UUID, stream: ZmxRemoteStream) async {
+    guard let attachment = clients[connID]?[contentID], attachment.stream === stream else { return }
     guard let current = await Self.ptySize(socketPath: attachment.socketPath) else { return }
     // The phone may have detached or attached elsewhere during the read.
-    guard isCurrent(connID: connID, stream: stream) else { return }
+    guard isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
     let grid = SentGrid(columns: current.columns, rows: current.rows)
-    guard sentGrids[connID] != grid else { return }
-    sentGrids[connID] = grid
+    guard sentGrids[connID]?[contentID] != grid else { return }
+    sentGrids[connID, default: [:]][contentID] = grid
     reply(connID, RemoteSizeMessage(contentId: attachment.contentKey, cols: grid.columns, rows: grid.rows))
   }
 
@@ -441,14 +442,16 @@ final class RemoteHostRouter {
     }
   }
 
-  private func streamClosed(connID: String, contentID: UUID, contentKey: String, reason: String) {
+  private func streamClosed(
+    connID: String, contentID: UUID, contentKey: String, stream: ZmxRemoteStream, reason: String
+  ) {
     reply(connID, RemoteDetachedMessage(contentId: contentKey, reason: reason))
-    forgetAttachment(connID: connID, contentID: contentID)
+    forgetAttachment(connID: connID, contentID: contentID, stream: stream)
   }
 
-  private func isCurrent(connID: String, stream: ZmxRemoteStream) -> Bool {
-    guard case .some(.some(let current)) = clients[connID] else { return false }
-    return current.stream === stream
+  /// Whether `stream` is still the phone's attachment to `contentID`.
+  private func isCurrent(connID: String, contentID: UUID, stream: ZmxRemoteStream) -> Bool {
+    clients[connID]?[contentID]?.stream === stream
   }
 
   /// The PTY's real size first (what every program in the session renders at),
@@ -470,38 +473,51 @@ final class RemoteHostRouter {
     }
   }
 
-  /// A late detach for a tab the phone already left must not drop the newer
-  /// attachment: honor the contentId when it is given.
+  /// A late detach for a tab the phone already left must not drop a newer
+  /// attachment: a `contentId` names the one content to detach (one that is
+  /// not a UUID names none); without it every attachment goes.
   private func detachRequested(connID: String, message: RemoteInboundMessage) {
-    if let raw = message.contentId, case .some(.some(let current)) = clients[connID],
-      UUID(uuidString: raw) != current.contentID
-    {
+    guard let raw = message.contentId else {
+      detachAll(connID: connID)
       return
     }
-    detach(connID: connID)
+    guard let contentID = UUID(uuidString: raw) else { return }
+    detach(connID: connID, contentID: contentID)
   }
 
-  private func detach(connID: String) {
-    cancelResizeWait(connID: connID)
-    guard case .some(.some(let attachment)) = clients[connID] else { return }
-    clients[connID] = .some(nil)
-    sentGrids[connID] = nil
+  /// Ends the phone's attachment to `contentID` and the `resize` wait it asked
+  /// for there; the phone stays known.
+  private func detach(connID: String, contentID: UUID) {
+    resizeWaits.cancel(connID: connID, contentID: contentID)
+    guard let attachment = clients[connID]?[contentID] else { return }
+    clients[connID]?[contentID] = nil
+    sentGrids[connID]?[contentID] = nil
     attachment.sizeWatch.cancel()
     attachment.pump.cancel()
     attachment.stream.stop()
   }
 
-  /// Clears an attachment its stream already closed, unless a newer attach replaced it.
-  private func forgetAttachment(connID: String, contentID: UUID) {
-    guard case .some(.some(let attachment)) = clients[connID], attachment.contentID == contentID else { return }
-    attachment.sizeWatch.cancel()
-    clients[connID] = .some(nil)
+  /// Ends every attachment of the phone, and every `resize` wait it asked for,
+  /// also one for a terminal whose stream already closed (`forgetAttachment`).
+  private func detachAll(connID: String) {
+    for contentID in Array((clients[connID] ?? [:]).keys) {
+      detach(connID: connID, contentID: contentID)
+    }
+    resizeWaits.cancel(connID: connID)
     sentGrids[connID] = nil
   }
 
+  /// Clears an attachment its stream already closed, unless a newer attach replaced it.
+  private func forgetAttachment(connID: String, contentID: UUID, stream: ZmxRemoteStream) {
+    guard let attachment = clients[connID]?[contentID], attachment.stream === stream else { return }
+    attachment.sizeWatch.cancel()
+    clients[connID]?[contentID] = nil
+    sentGrids[connID]?[contentID] = nil
+  }
+
   private func input(connID: String, message: RemoteInboundMessage) {
-    guard case .some(.some(let attachment)) = clients[connID],
-      let raw = message.contentId, UUID(uuidString: raw) == attachment.contentID
+    guard let raw = message.contentId, let contentID = UUID(uuidString: raw),
+      let attachment = clients[connID]?[contentID]
     else {
       replyError(connID, id: message.id, "terminal not attached")
       return
@@ -531,8 +547,7 @@ final class RemoteHostRouter {
   /// (`settleResize`). A request for another content or with a bad size is
   /// ignored and logged.
   private func resize(connID: String, message: RemoteInboundMessage) {
-    var attached: UUID?
-    if case .some(.some(let attachment)) = clients[connID] { attached = attachment.contentID }
+    let attached = clients[connID].map { Set($0.keys) } ?? []
     switch RemoteResizeRequest.resolve(message, attached: attached) {
     case .failure(.notAttached):
       routerLogger.info("resize from \(connID) ignored: content \(message.contentId ?? "nil") is not attached")
@@ -619,9 +634,7 @@ final class RemoteHostRouter {
     requestID: Int?,
     outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
   ) {
-    guard case .some(.some(let attachment)) = clients[connID], attachment.contentID == request.contentID else {
-      return
-    }
+    guard let attachment = clients[connID]?[request.contentID] else { return }
     let replies = Self.resizeReplies(
       for: outcome, request: request, contentKey: attachment.contentKey, requestID: requestID)
     for reply in replies {
@@ -631,9 +644,9 @@ final class RemoteHostRouter {
         // Every phone on that terminal gets it, even when it already had the
         // size: the requester waits for it, and another phone's resize may
         // have been cancelled by this one (the poll's dedupe is bypassed).
-        for (other, entry) in clients {
-          guard case .some(let shown) = entry, shown.contentID == request.contentID else { continue }
-          sentGrids[other] = grid
+        for (other, attachments) in clients {
+          guard let shown = attachments[request.contentID] else { continue }
+          sentGrids[other, default: [:]][request.contentID] = grid
           self.reply(other, RemoteSizeMessage(contentId: shown.contentKey, cols: grid.columns, rows: grid.rows))
         }
       case .error(let error):
@@ -646,8 +659,8 @@ final class RemoteHostRouter {
     // The requester's stream may not be open yet (an `attach` still measuring
     // the grid) or already closed; any other phone's stream on that terminal
     // reaches the same zmx session.
-    let others = clients.compactMap { other, entry -> (String, ZmxRemoteStream)? in
-      guard other != connID, case .some(let shown) = entry, shown.contentID == request.contentID else { return nil }
+    let others = clients.compactMap { other, attachments -> (String, ZmxRemoteStream)? in
+      guard other != connID, let shown = attachments[request.contentID] else { return nil }
       return (other, shown.stream)
     }
     .sorted { $0.0 < $1.0 }
@@ -779,10 +792,6 @@ final class RemoteHostRouter {
     return settled ?? .failed(.notReady)
   }
 
-  private func cancelResizeWait(connID: String) {
-    resizeWaits.cancel(connID: connID)
-  }
-
   /// Stops this phone's request waits; they send nothing. A creation or
   /// deletion goes on and keeps its `worktree_busy` guard until it settles.
   private func endRequests(connID: String) {
@@ -795,7 +804,7 @@ final class RemoteHostRouter {
       endRequests(connID: connID)
     }
     for connID in clients.keys where lanSinks[connID] == nil {
-      detach(connID: connID)
+      detachAll(connID: connID)
       clients[connID] = nil
     }
     sameNetwork.removeAll()

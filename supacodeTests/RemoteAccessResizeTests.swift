@@ -287,6 +287,19 @@ struct RemoteAccessResizeTests {
     #expect(waits.pendingConnID(contentID: Self.contentID) == "A")
   }
 
+  @Test func aResizeWaitIsCancelledOnlyForItsOwnContentAndConnection() {
+    var waits = RemoteResizeWaits()
+    let tabA = UUID()
+    let tabB = UUID()
+    waits.start(contentID: tabA, connID: "c1", token: UUID(), task: Task {})
+    waits.start(contentID: tabB, connID: "c1", token: UUID(), task: Task {})
+    waits.cancel(connID: "c2", contentID: tabA)
+    #expect(waits.pendingConnID(contentID: tabA) == "c1")
+    waits.cancel(connID: "c1", contentID: tabA)
+    #expect(waits.pendingConnID(contentID: tabA) == nil)
+    #expect(waits.pendingConnID(contentID: tabB) == "c1")
+  }
+
   // MARK: - Redraw after a confirmed resize (ЗД9)
 
   /// Runs one `resize` the way the router does and records the input its

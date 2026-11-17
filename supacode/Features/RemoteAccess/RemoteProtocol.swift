@@ -141,10 +141,10 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
     case invalidSize
   }
 
-  /// The request, or why it is ignored: a content other than `attached` (or
-  /// none attached), or `cols` / `rows` missing or not an integer.
-  static func resolve(_ message: RemoteInboundMessage, attached: UUID?) -> Result<Self, Ignored> {
-    guard let attached, let raw = message.contentId, UUID(uuidString: raw) == attached else {
+  /// The request, or why it is ignored: a content that is not one of the
+  /// connection's `attached` contents, or `cols` / `rows` missing or not an integer.
+  static func resolve(_ message: RemoteInboundMessage, attached: Set<UUID>) -> Result<Self, Ignored> {
+    guard let raw = message.contentId, let contentID = UUID(uuidString: raw), attached.contains(contentID) else {
       return .failure(.notAttached)
     }
     guard let columns = message.cols?.value, let rows = message.rows?.value else {
@@ -154,7 +154,7 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
     let rowRange = RemoteTabNewGrid.rowRange
     return .success(
       Self(
-        contentID: attached,
+        contentID: contentID,
         columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
         rows: min(max(rows, rowRange.lowerBound), rowRange.upperBound)))
   }
@@ -249,6 +249,13 @@ nonisolated struct RemoteResizeWaits {
       wait.task.cancel()
       byContent[contentID] = nil
     }
+  }
+
+  /// Cancels the wait for `contentID` only when `connID` asked for it (that
+  /// phone detached from this terminal); another phone's wait stays.
+  mutating func cancel(connID: String, contentID: UUID) {
+    guard byContent[contentID]?.connID == connID else { return }
+    cancel(contentID: contentID)
   }
 
   /// Forgets a finished wait, unless a newer one replaced it.

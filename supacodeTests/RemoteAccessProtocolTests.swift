@@ -235,7 +235,7 @@ struct RemoteAccessProtocolTests {
 
   private typealias ResizeOutcome = Result<RemoteResizeRequest, RemoteResizeRequest.Ignored>
 
-  private static func resize(_ json: String, attached: UUID? = attachedContent) throws -> ResizeOutcome {
+  private static func resize(_ json: String, attached: Set<UUID> = [attachedContent]) throws -> ResizeOutcome {
     let message = try #require(RemoteJSON.decodeInbound(Data(json.utf8)))
     return RemoteResizeRequest.resolve(message, attached: attached)
   }
@@ -284,9 +284,20 @@ struct RemoteAccessProtocolTests {
     let other = #"{"t":"resize","contentId":"\#(UUID().uuidString)","cols":80,"rows":24}"#
     #expect(try Self.resize(other) == .failure(.notAttached))
     let attachedID = #"{"t":"resize","contentId":"6F9619FF-8B86-D011-B42D-00CF4FC964FF","cols":80,"rows":24}"#
-    #expect(try Self.resize(attachedID, attached: nil) == .failure(.notAttached))
+    #expect(try Self.resize(attachedID, attached: []) == .failure(.notAttached))
     #expect(try Self.resize(#"{"t":"resize","cols":80,"rows":24}"#) == .failure(.notAttached))
     #expect(try Self.resize(#"{"t":"resize","contentId":"tab-1","cols":80,"rows":24}"#) == .failure(.notAttached))
+  }
+
+  @Test func resizeResolvesForAnyAttachedContent() {
+    let first = UUID()
+    let second = UUID()
+    let message = RemoteInboundMessage(
+      t: "resize", contentId: second.uuidString, cols: RemoteLenientInt(100), rows: RemoteLenientInt(30))
+    let resolved = RemoteResizeRequest.resolve(message, attached: [first, second])
+    #expect(resolved == .success(RemoteResizeRequest(contentID: second, columns: 100, rows: 30)))
+    #expect(RemoteResizeRequest.resolve(message, attached: [first]) == .failure(.notAttached))
+    #expect(RemoteResizeRequest.resolve(message, attached: []) == .failure(.notAttached))
   }
 
   // MARK: - New inbound fields and capabilities
