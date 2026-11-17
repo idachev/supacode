@@ -26,6 +26,8 @@ nonisolated enum RemoteSnapshotBuilder {
     let tabs: [RemoteTab]
     /// `RemoteWorktree.canDeleteWorktree`.
     var canDeleteWorktree = false
+    /// `RemoteWorktree.layout`.
+    var layout: RemoteLayout?
   }
 
   static func build(repositories: [RepositoryInput]) -> [RemoteRepository] {
@@ -50,7 +52,8 @@ nonisolated enum RemoteSnapshotBuilder {
             title: worktree.title,
             working: worktree.tabs.contains(where: \.working),
             tabs: worktree.tabs,
-            canDeleteWorktree: worktree.canDeleteWorktree
+            canDeleteWorktree: worktree.canDeleteWorktree,
+            layout: worktree.layout
           )
         },
         canCreateWorktree: repository.canCreateWorktree

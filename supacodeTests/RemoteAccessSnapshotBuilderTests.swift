@@ -38,6 +38,19 @@ struct RemoteAccessSnapshotBuilderTests {
     #expect(repositories[0].worktrees.map(\.status) == ["main", "pinned", "pinned", "unpinned", "unpinned", "unpinned"])
   }
 
+  @Test func theLayoutPassesThroughToTheWorktree() {
+    let layout = RemoteLayout(
+      mode: "tabsPerSplit", activeGroupId: "main",
+      groups: [RemoteLayoutGroup(id: "main", tree: .pane("p"))],
+      panes: [RemoteLayoutPane(id: "p", tabIds: ["t"])])
+    var withLayout = worktree("w", .unpinned, index: 0)
+    withLayout.layout = layout
+    let repositories = RemoteSnapshotBuilder.build(repositories: [
+      .init(id: "r", name: "r", worktrees: [withLayout, worktree("none", .unpinned, index: 1)])
+    ])
+    #expect(repositories[0].worktrees.map(\.layout) == [layout, nil])
+  }
+
   @Test func worktreeIsWorkingWhenAnyTabIs() {
     let repositories = RemoteSnapshotBuilder.build(repositories: [
       .init(

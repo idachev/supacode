@@ -486,6 +486,9 @@ nonisolated struct RemoteWorktree: Encodable, Equatable, Sendable {
   /// Whether a client may send `worktree.delete` for this worktree
   /// (`RemoteWorktreeDeleteRejection.check`); absent on old hosts.
   var canDeleteWorktree = false
+  /// The arrangement of the tabs into panes and splits; omitted when the
+  /// worktree has no terminal tab.
+  var layout: RemoteLayout?
 }
 
 nonisolated struct RemoteTab: Encodable, Equatable, Sendable {

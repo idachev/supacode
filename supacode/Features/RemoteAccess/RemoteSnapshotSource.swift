@@ -96,7 +96,8 @@ final class RemoteSnapshotSource {
             tabs: tabs(of: worktree.id),
             canDeleteWorktree: RemoteWorktreeDeleteRejection.check(
               worktree: worktree, repository: repository, in: state,
-              inFlight: deletions[worktree.id] != nil) == nil
+              inFlight: deletions[worktree.id] != nil) == nil,
+            layout: layout(of: worktree.id)
           )
         },
         canCreateWorktree: Self.canCreateWorktree(
@@ -363,6 +364,11 @@ final class RemoteSnapshotSource {
   /// The highest git load generation whose result landed.
   func loadGenerationCompleted() -> Int {
     store.withState(\.repositories.loadGeneration.completed)
+  }
+
+  private func layout(of worktreeID: Worktree.ID) -> RemoteLayout? {
+    guard let state = terminalManager.layoutState(for: worktreeID) else { return nil }
+    return RemoteLayoutBuilder.build(state.layout, mode: state.mode)
   }
 
   private func tabs(of worktreeID: Worktree.ID) -> [RemoteTab] {
