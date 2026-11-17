@@ -42,7 +42,7 @@ final class RemoteHostRouter {
     let contentID: UUID
     let contentKey: String
     let socketPath: String
-    let stream: ZmxRemoteStream
+    let stream: any RemoteTerminalStream
     let pump: Task<Void, Never>
     let sizeWatch: Task<Void, Never>
   }
@@ -86,6 +86,9 @@ final class RemoteHostRouter {
   let hostID: String?
   /// The app build every `hello` reports (`RemoteHelloMessage.appLabel`); nil omits the field.
   private let appLabel: String?
+  /// How `attach` reaches zmx: the stream, the socket check and the PTY size
+  /// read (`RemoteStreamIO.live`); router tests pass fakes.
+  private let streamIO: RemoteStreamIO
   /// The missing-hardware-UUID warning goes out once per process, not per start.
   private static var warnedMissingHostID = false
 
@@ -94,13 +97,15 @@ final class RemoteHostRouter {
     hostName: String,
     hostID: String?,
     appLabel: String? = RemoteHelloMessage.currentAppLabel(),
-    clock: any Clock<Duration> = ContinuousClock()
+    clock: any Clock<Duration> = ContinuousClock(),
+    streamIO: RemoteStreamIO = .live
   ) {
     self.source = source
     self.hostName = hostName
     self.hostID = hostID
     self.appLabel = appLabel
     self.clock = clock
+    self.streamIO = streamIO
   }
 
   nonisolated deinit {}
@@ -369,12 +374,31 @@ final class RemoteHostRouter {
       replyError(connID, id: message.id, "no such terminal")
       return
     }
-    detachAll(connID: connID)
+    let keep = message.keep == true
+    let attached = clients[connID].map { Set($0.keys) } ?? []
+    switch RemoteAttachPolicy.decide(attached: attached, contentID: contentID, keep: keep) {
+    case .limitReached:
+      routerLogger.info("attach from \(connID) refused: \(attached.count) terminals already attached")
+      reply(
+        connID,
+        RemoteErrorMessage(
+          id: message.id, message: RemoteAttachPolicy.limitErrorMessage, code: RemoteAttachPolicy.limitErrorCode,
+          contentId: raw))
+      return
+    case .attach(let detaching):
+      // Before the new stream exists, so a re-attach never leaves the old
+      // pump, stream and size watch running beside it.
+      for other in detaching { detach(connID: connID, contentID: other) }
+      // As before for an attach without `keep`: also the `resize` waits of
+      // terminals whose stream already closed.
+      if !keep { resizeWaits.cancel(connID: connID) }
+    }
     let contentKey = raw
     let requestID = message.id
     let socketPath = ZmxRemoteStream.socketPath(contentID: contentID)
-    let needsWake = !FileManager.default.fileExists(atPath: socketPath) && source.wake(contentID: contentID)
-    let stream = ZmxRemoteStream(socketPath: socketPath)
+    let socketExists = streamIO.socketExists
+    let needsWake = !socketExists(socketPath) && source.wake(contentID: contentID)
+    let stream = streamIO.makeStream(socketPath)
     // Off the main actor: base64 and framing of every PTY chunk happen here,
     // and the main actor only hands finished frames to the socket, in order.
     let pump = Task.detached { [weak self] in
@@ -394,9 +418,9 @@ final class RemoteHostRouter {
     // the stream, then keeps pushing size changes. `attached` always precedes
     // the first `out`, because the stream starts only after it is sent.
     let lifecycle = Task { [weak self] in
-      if needsWake { await Self.waitForSocket(at: socketPath) }
+      if needsWake { await Self.waitForSocket(at: socketPath, exists: socketExists) }
       guard let self, self.isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
-      guard FileManager.default.fileExists(atPath: socketPath) else {
+      guard socketExists(socketPath) else {
         self.streamClosed(
           connID: connID, contentID: contentID, contentKey: contentKey, stream: stream,
           reason: needsWake ? "the terminal did not start on the Mac" : "session not running")
@@ -422,9 +446,9 @@ final class RemoteHostRouter {
   /// Reads the PTY grid and sends `size` when it differs from the one the
   /// phone last got for that terminal. A slow or failed PTY read keeps the
   /// last size instead of flapping to the view grid or the fallback.
-  private func sendSizeIfChanged(connID: String, contentID: UUID, stream: ZmxRemoteStream) async {
+  private func sendSizeIfChanged(connID: String, contentID: UUID, stream: any RemoteTerminalStream) async {
     guard let attachment = clients[connID]?[contentID], attachment.stream === stream else { return }
-    guard let current = await Self.ptySize(socketPath: attachment.socketPath) else { return }
+    guard let current = await streamIO.ptySize(attachment.socketPath) else { return }
     // The phone may have detached or attached elsewhere during the read.
     guard isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
     let grid = SentGrid(columns: current.columns, rows: current.rows)
@@ -443,32 +467,31 @@ final class RemoteHostRouter {
   }
 
   private func streamClosed(
-    connID: String, contentID: UUID, contentKey: String, stream: ZmxRemoteStream, reason: String
+    connID: String, contentID: UUID, contentKey: String, stream: any RemoteTerminalStream, reason: String
   ) {
+    // A stream a re-attach already replaced may still report its close: the
+    // phone has the new attachment, so it gets no `detached` for the old one.
+    guard isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
     reply(connID, RemoteDetachedMessage(contentId: contentKey, reason: reason))
     forgetAttachment(connID: connID, contentID: contentID, stream: stream)
   }
 
   /// Whether `stream` is still the phone's attachment to `contentID`.
-  private func isCurrent(connID: String, contentID: UUID, stream: ZmxRemoteStream) -> Bool {
+  private func isCurrent(connID: String, contentID: UUID, stream: any RemoteTerminalStream) -> Bool {
     clients[connID]?[contentID]?.stream === stream
   }
 
   /// The PTY's real size first (what every program in the session renders at),
   /// then the app's view grid, then a fixed fallback.
   private func measureGrid(contentID: UUID, socketPath: String) async -> (columns: Int, rows: Int) {
-    let pty = await Self.ptySize(socketPath: socketPath)
+    let pty = await streamIO.ptySize(socketPath)
     return pty ?? source.gridSize(contentID: contentID) ?? Self.fallbackGrid
   }
 
-  private static func ptySize(socketPath: String) async -> (columns: Int, rows: Int)? {
-    await Task.detached { ZmxRemoteStream.ptySize(socketPath: socketPath) }.value
-  }
-
   /// Polls for a waking session's socket for up to `wakeTimeout`.
-  private static func waitForSocket(at path: String) async {
+  private static func waitForSocket(at path: String, exists: @Sendable (String) -> Bool) async {
     let deadline = ContinuousClock.now + wakeTimeout
-    while ContinuousClock.now < deadline, !FileManager.default.fileExists(atPath: path) {
+    while ContinuousClock.now < deadline, !exists(path) {
       try? await Task.sleep(for: .milliseconds(200))
     }
   }
@@ -508,7 +531,7 @@ final class RemoteHostRouter {
   }
 
   /// Clears an attachment its stream already closed, unless a newer attach replaced it.
-  private func forgetAttachment(connID: String, contentID: UUID, stream: ZmxRemoteStream) {
+  private func forgetAttachment(connID: String, contentID: UUID, stream: any RemoteTerminalStream) {
     guard let attachment = clients[connID]?[contentID], attachment.stream === stream else { return }
     attachment.sizeWatch.cancel()
     clients[connID]?[contentID] = nil
@@ -560,6 +583,7 @@ final class RemoteHostRouter {
       let clock = self.clock
       let requestID = message.id
       let socketPath = ZmxRemoteStream.socketPath(contentID: request.contentID)
+      let readSize = streamIO.ptySize
       let attempt: @MainActor @Sendable () -> RemoteResizeAttempt = {
         source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
       }
@@ -569,7 +593,7 @@ final class RemoteHostRouter {
       let wait = Task { [weak self] in
         let probes = RemoteResizeProbes(
           wake: { source.wake(contentID: request.contentID) }, attempt: attempt,
-          readSize: { await Self.ptySize(socketPath: socketPath) })
+          readSize: { await readSize(socketPath) })
         await Self.runResize(
           request: request, first: first, clock: clock, probes: probes,
           finish: { outcome in
@@ -659,7 +683,7 @@ final class RemoteHostRouter {
     // The requester's stream may not be open yet (an `attach` still measuring
     // the grid) or already closed; any other phone's stream on that terminal
     // reaches the same zmx session.
-    let others = clients.compactMap { other, attachments -> (String, ZmxRemoteStream)? in
+    let others = clients.compactMap { other, attachments -> (String, any RemoteTerminalStream)? in
       guard other != connID, let shown = attachments[request.contentID] else { return nil }
       return (other, shown.stream)
     }
@@ -1101,4 +1125,35 @@ struct RemoteResizeProbes: Sendable {
   let attempt: @MainActor @Sendable () -> RemoteResizeAttempt
   /// Reads the session PTY's size; nil when the read failed (`confirmResize`).
   let readSize: @Sendable () async -> (columns: Int, rows: Int)?
+}
+
+/// The terminal stream an `attach` drives (`ZmxRemoteStream` in the app), so
+/// router tests can attach without a zmx session.
+nonisolated protocol RemoteTerminalStream: AnyObject, Sendable {
+  /// The screen, then live output, then at most one `closed`; finishes on `stop()`.
+  var events: AsyncStream<ZmxRemoteStream.Event> { get }
+  func start(scrollbackRows: Int)
+  /// Writes raw bytes to the PTY; false when the write failed.
+  @discardableResult
+  func send(_ bytes: [UInt8]) -> Bool
+  func stop()
+}
+
+extension ZmxRemoteStream: RemoteTerminalStream {}
+
+/// What `attach` reads from zmx and the file system, injected into the router
+/// (`RemoteHostRouter.init`); `live` is the app's.
+nonisolated struct RemoteStreamIO: Sendable {
+  /// A stream to the zmx session at a socket path; not started yet.
+  let makeStream: @Sendable (String) -> any RemoteTerminalStream
+  /// Whether the session socket exists (the session is running).
+  let socketExists: @Sendable (String) -> Bool
+  /// The session PTY's grid; nil when the read failed. Runs off the main actor.
+  let ptySize: @Sendable (String) async -> (columns: Int, rows: Int)?
+
+  static let live = RemoteStreamIO(
+    makeStream: { socketPath in ZmxRemoteStream(socketPath: socketPath) },
+    socketExists: { socketPath in FileManager.default.fileExists(atPath: socketPath) },
+    ptySize: { socketPath in await Task.detached { ZmxRemoteStream.ptySize(socketPath: socketPath) }.value }
+  )
 }

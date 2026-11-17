@@ -144,7 +144,7 @@ final class RemoteSnapshotSource {
 
   /// Whether any worktree currently lists this content as a tab.
   func containsContent(_ contentID: UUID) -> Bool {
-    store.repositories.repositories.contains { repository in
+    store.withState(\.repositories.repositories).contains { repository in
       repository.worktrees.contains { worktree in
         terminalManager.layoutState(for: worktree.id)?.layout.allContentIDs
           .contains(ContentID(rawValue: contentID)) ?? false
@@ -157,7 +157,7 @@ final class RemoteSnapshotSource {
   /// it from the CLI does. Returns false when no worktree lists the content.
   func wake(contentID: UUID) -> Bool {
     let content = ContentID(rawValue: contentID)
-    for repository in store.repositories.repositories {
+    for repository in store.withState(\.repositories.repositories) {
       for worktree in repository.worktrees {
         guard let tab = terminalManager.layoutState(for: worktree.id)?.layout.tab(containingContent: content)?.tab
         else { continue }
