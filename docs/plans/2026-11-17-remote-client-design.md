@@ -201,14 +201,15 @@ confirmed) and does not change which worktree its window shows.
   as the Mac's own close does (a pane left without tabs collapses). Clients attached to it get
   `detached`. Errors: `tab_invalid` (unknown tab), `tab_failed`.
 - **`pane.split`** —
-  `{"t":"pane.split","id":7,"paneId":"<pane id>","direction":"horizontal|vertical","cols":N,"rows":M}`
+  `{"t":"pane.split","id":7,"paneId":"<pane id>","direction":"horizontal|vertical"}`
   → `{"t":"pane.split","id":7,"worktreeId":"…","paneId":"<new pane id>","tabId":"…","contentId":"…"}`
   once the new terminal can be attached. `direction` is the two-way `SplitDirection` that the
   pane-addressed command takes (`TerminalClient.Command.splitPane`, the CLI's `pane split`); the
   new pane lands where that command puts it. The four-way direction exists only for focused-pane
-  menu commands and is not on the wire. `cols` / `rows` are optional and resolved as in `tab.new`.
-  Errors: `pane_invalid` (unknown pane or direction), `pane_failed` (also when the terminal does
-  not start within 10 s).
+  menu commands and is not on the wire. There is no start size (that command has none): the new
+  terminal takes its pane's size on the Mac, and a client that wants its own sends `resize` after
+  `attached`. Errors: `pane_invalid` (unknown pane or direction), `pane_failed` (also when the
+  terminal does not start within 10 s).
 - **`pane.close`** — `{"t":"pane.close","id":8,"paneId":"<pane id>"}` →
   `{"t":"pane.close","id":8,"paneId":"…","worktreeId":"…"}`. Closes every tab of that pane. Errors:
   `pane_invalid`, `pane_failed`.
@@ -226,16 +227,25 @@ Today a requested size lasts until the Mac's own pane for that tab changes layou
 pane decides the size (АВ1) would have to ask again after every such change, and two such clients
 would take the size from each other without end. So the size gets an owner.
 
-- `{"t":"resize","contentId":"…","cols":N,"rows":M,"hold":true}`. Everything in today's `resize`
-  stays: the clamp, the replies, `resize_failed`, Ctrl+L after a confirmed resize, the wake of a
-  terminal without a live surface.
-- With `hold:true` the size is held for that connection. While it is held, a layout change of the
-  Mac's own pane (a window resize, a split, the pane shown or hidden, zoom) does not change the
-  PTY's size; the Mac's pane shows the held grid as it shows a requested size today.
-- The hold ends when the holding connection detaches from that content or closes, or when a newer
-  `resize` of that terminal arrives from any client (last request wins; with `hold:true` the hold
-  moves to that client, without it the size is unowned again as today). When a hold ends with no
-  newer request, the Mac's pane size returns and every attached client gets `size`.
+- `{"t":"resize","contentId":"…","cols":N,"rows":M,"hold":true}`. The clamp, the replies,
+  `resize_failed` and the wake of a terminal without a live surface stay as in today's `resize`.
+- **No Ctrl+L.** A `resize` with `hold:true` sends no Ctrl+L to the terminal. It goes out by
+  itself on every window drag, and a typed 0x0C in a program that does not expect it is wrong; the
+  PTY's size change already makes programs redraw (SIGWINCH). Without `hold` the Ctrl+L stays.
+- **Held.** While a size is held, a layout change of the Mac's own pane (a window resize, a split,
+  the pane shown or hidden, zoom, the tab hibernated and woken) does not change the PTY's size;
+  the Mac's pane shows the held grid as it shows a requested size today.
+- **One owner.** The hold belongs to the connection that asked last. A newer `resize` of that
+  terminal from any connection wins: with `hold:true` the hold moves to it, without `hold` the hold
+  ends and the size is unowned as today.
+- **Release.** The hold ends at once when its owner sends `detach` for that content or attaches
+  another content without `keep`. When the owner's connection closes or its stream fails
+  (`conn.close`, a LAN socket closing, the relay socket dropping), the hold stays for 30 s without
+  an owner; a `resize` with `hold:true` in that time takes it over, and with the same size the PTY
+  never changes. After 30 s without one the hold ends. So a short network drop or a LAN ⇄ relay
+  switch does not reflow the terminal twice.
+- When a hold ends with no newer request, the Mac's pane size returns and every attached client
+  gets `size`.
 - A client never answers a `size` it did not ask for with a new `resize`. It sends `resize` only
   when its own pane's grid changes and after its own `attached`. This rule, not the host, is what
   prevents a loop between two holding clients.
@@ -371,8 +381,12 @@ changes stay in `supacode/Features/RemoteAccess/`.
   at the laptop's font. It sends `resize` with `hold:true` when that grid differs from the remote
   one: after its own `attached`, and when the pane's fitting grid has changed and stayed the same
   for 200 ms (a window resize, a new or closed split, zoom, a font change). The host's `size` reply
-  then sets the local grid (ТР7), which now fills the pane. `tab.new` and `pane.split` carry the
-  local pane's `cols` / `rows` as the start size. There is no resize button.
+  then sets the local grid (ТР7), which now fills the pane. `tab.new` carries the
+  local pane's `cols` / `rows` as the start size; `pane.split` has no start size, so the new pane is
+  sized by the `resize` after its `attached`. There is no resize button.
+- **ТР8в. Path switch and reconnect.** After the `attached` of a new path (LAN ⇄ relay) or of a
+  reconnect, the client first sends its `resize` with `hold:true` on that path and only then
+  `detach` on the old one, so the hold moves and is never released in between (ПТ6).
 - **ТР8а. When the sizes differ** (a refused resize, the host's clamp of 20…500 × 5…200, another
   client that took the hold): the surface is drawn at the normal font, anchored top left; a larger
   pane shows the terminal background around the grid, a smaller pane clips. The client does not
@@ -419,9 +433,14 @@ changes stay in `supacode/Features/RemoteAccess/`.
 - **ХС3.** The new actions go through the app's existing layout and terminal commands (as `tab.new`
   does), never around `LayoutFeature`: `pane.split` through `TerminalClient.Command.splitPane`,
   `tab.close` and `pane.close` through `LayoutFeature.Action.closeTab(id:)` and `closePane(id:)`.
-  A remote close must not raise the Mac's close confirmation; in `LayoutFeature` the confirmation
-  belongs to the `contentRequestedClose` path. If the direct actions turn out to confirm too, the
-  host needs a close path without it (see Not confirmed).
+  These two reducers close at once; the Mac's close confirmation belongs to the
+  `contentRequestedClose` path, which the host does not use.
+- **ХС7. Where the hold lives.** The router owns who holds what (content → owner connection, cols,
+  rows, the 30 s release). The terminal content keeps the pinned grid value and applies it to every
+  surface it has or creates, so a hibernate and wake keeps it. `GhosttySurfaceView` gets a
+  persistent hold next to `RequestedGridHold`: one that a different measured pane size and
+  `viewDidMoveToWindow` do not release. This is the same piece the client needs for ТР7; it is built
+  once, in ЕТ1.
 - **ХС6.** `remote-relay/scripts/phone-sim.mjs` (this repo) learns the new messages: it prints
   `caps` and `layout`, and gets switches for `watch`, a second `attach` with `keep`, `tab.close`,
   `pane.split`, `pane.close` and `resize` with `hold`. ЕТ1 is verified with it.
@@ -451,9 +470,10 @@ Not part of this repo's plan; the owner is told when each is needed.
 No `Task.sleep`; time comes from `TestClock` or an injected clock.
 
 - **Protocol and host** (`supacodeTests/RemoteAccess*Tests.swift`): `caps` in `hello`; `attach` with
-  and without `keep`, the limit, re-attach, `detach` of one; `resize` for any attached content; `resize` with `hold` (kept across the Mac's
-  layout changes, released at detach and at close, moved by a newer request, `size` to every
-  attached client on release);
+  and without `keep`, the limit, re-attach, `detach` of one; `resize` for any attached content; `resize` with `hold` (no Ctrl+L, kept across the Mac's
+  layout changes and a hibernate and wake, released at `detach`, kept 30 s after a lost connection
+  and taken over in that time, moved by a newer request, `size` to every attached client on
+  release);
   `layout` for `tabsPerSplit` and `splitPerTab` (parked groups, zoom, unresolved ids); `watch`
   (push on change, 250 ms trailing edge, no push without a change, stop, no tick without watchers);
   `tab.close`, `pane.split`, `pane.close`, `tab.new.paneId` with their errors.
@@ -479,7 +499,7 @@ Each stage builds and is tested on its own; the plan splits them into tasks.
 
 | ID | Stage | Result |
 |---|---|---|
-| ЕТ1 | Protocol doc + host (ПТ0–ПТ4, ПТ6, ХС1–ХС6) | `phone-sim.mjs` shows `caps`, `layout`, pushed `list`, two attached tabs, and the new actions |
+| ЕТ1 | Protocol doc + host (ПТ0–ПТ4, ПТ6, ХС1–ХС7) | `phone-sim.mjs` shows `caps`, `layout`, pushed `list`, two attached tabs, and the new actions |
 | ЕТ2 | Client core, no UI (КЛ1–КЛ7, МХ1–МХ4, `QueryFilter`, gate) | Unit tests pass against recorded frames |
 | ЕТ3 | Pipe + one remote tab in the new window (ТР1–ТР9, ПЗ1) | One tab of Mac A works as a real Ghostty in the remote window |
 | ЕТ4 | Sidebar, layout mirror and actions (СЛ1–СЛ5, РЗ1–РЗ6, ПЗ2–ПЗ4) | ОБ1–ОБ3 |
@@ -511,6 +531,9 @@ These were not decided by the owner; each can be changed before the plan.
   the remote window on one Mac.
 - **АР9.** A remote BEL rings locally; remote OSC 9 / 777 notifications are not shown (ИВ4).
 
+- **АР11.** An automatic resize sends no Ctrl+L (ПТ6).
+- **АР12.** After a lost connection the host keeps the laptop's size for 30 s before the Mac's own
+  size returns (ПТ6).
 - **АР10.** АВ1 changes the rule only for the Supacode remote window. The phone and the web app
   keep the explicit resize button (ЗД12).
 
@@ -523,6 +546,8 @@ These were not decided by the owner; each can be changed before the plan.
 - Bell and OSC 9 / 777 notifications are wired per content host (`LayoutSurfaceConduit.swift`); the
   remote window does its own wiring, so ИВ2 decides what a remote bell does.
 
+- `LayoutFeature.reduceCloseTab` and `reduceClosePane` close without the confirmation alert (ХС3).
+
 ## Not confirmed
 
 - That zmx's broadcast carries OSC 3008 from the remote hooks to an attached client (ТР4 drops it
@@ -532,8 +557,6 @@ These were not decided by the owner; each can be changed before the plan.
   the mirror of it today.
 - The cost of holding a pinned grid larger than the pane inside the surface's scroll wrapper (ТР7):
   the wrapper sets the surface frame from the scroll view's bounds today.
-- That `LayoutFeature.Action.closeTab(id:)` and `closePane(id:)` close without the confirmation
-  alert (ХС3); only their place in the action list was read, not their reducers.
 - Relay volume on the non-LAN path. Cloudflare bills an incoming WebSocket message to a Durable
   Object at 20:1 as a request, outgoing messages are free, and the Workers Free plan allows 100,000
   Durable Object requests a day, after which requests fail until 00:00 UTC (Cloudflare docs,
