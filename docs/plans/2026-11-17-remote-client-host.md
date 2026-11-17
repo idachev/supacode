@@ -80,7 +80,7 @@ tests is not 0.
   - New `### watch`: request, reply, the 250 ms rule, the 2 s rule for title-only changes, the end
     of a watch.
   - `resize`: "for any content the connection is attached to"; the `hold` field with every bullet
-    of ПТ6 (no Ctrl+L, held, one owner, release, the 30 s, the client rule).
+    of ПТ6 (Ctrl+L only for a tab with an agent, held, one owner, release, the 30 s, the client rule).
   - `tab.new`: optional `paneId`; an unknown or malformed `paneId` is ignored and logged.
   - New `### tab.close`, `### pane.split`, `### pane.close` with their replies and error codes.
   - `errors`: add `attach_limit`, `tab_invalid`, `tab_failed`, `pane_invalid`, `pane_failed`.
@@ -829,8 +829,14 @@ nonisolated struct RemoteGridHolds {
 }
 
 // RemoteHostRouter
+/// Ctrl+L after a confirmed resize: never for read-only; for a held resize only when an agent runs.
 nonisolated static func redrawInput(
-  for outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>, isReadOnly: Bool, hold: Bool) -> [UInt8]
+  for outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>,
+  isReadOnly: Bool, hold: Bool, hasAgent: Bool) -> [UInt8]
+
+// RemoteSnapshotSource
+/// The tab's chrome lists at least one agent (`TerminalTabChrome.agents`).
+func hasAgent(contentID: UUID) -> Bool
 ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -904,9 +910,13 @@ nonisolated static func redrawInput(
 
 ```swift
 // RemoteAccessResizeTests
-@Test func aHeldResizeSendsNoRedrawKey() {
-  #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: true).isEmpty)
-  #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: false) == [0x0C])
+@Test func aHeldResizeRedrawsOnlyATabWithAnAgent() {
+  #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: true, hasAgent: false).isEmpty)
+  #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: true, hasAgent: true) == [0x0C])
+  #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: false, hasAgent: false) == [0x0C])
+  #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: true, hold: true, hasAgent: true).isEmpty)
+  #expect(RemoteHostRouter.redrawInput(
+    for: .success(.mismatch(columns: 1, rows: 1)), isReadOnly: false, hold: true, hasAgent: true).isEmpty)
 }
 
 // RemoteAccessProtocolTests
@@ -921,8 +931,10 @@ nonisolated static func redrawInput(
 
 - [ ] **Step 2: Run `supacodeTests/RemoteAccessGridHoldTests`; expect compile failure.**
 
-- [ ] **Step 3: Implement `RemoteGridHolds`, `RemoteResizeRequest.hold` and the `hold:` parameter
-  of `redrawInput`** (update its existing callers and tests with `hold: false`).
+- [ ] **Step 3: Implement `RemoteGridHolds`, `RemoteResizeRequest.hold`, the `hold:` and `hasAgent:`
+  parameters of `redrawInput`** (existing callers and tests pass `hold: false, hasAgent: false`) and
+  `RemoteSnapshotSource.hasAgent(contentID:)` (`(runtime content's chrome as? TerminalTabChrome)?.agents.isEmpty == false`).
+  `finishResize` reads `hasAgent` when it writes the redraw key, not when the request arrived.
 
 - [ ] **Step 4: Wire the router.** It owns `private var gridHolds = RemoteGridHolds()` and one
   grace task per orphaned content (`[UUID: Task<Void, Never>]`, sleeping `RemoteGridHolds.grace` on
@@ -1004,7 +1016,9 @@ Expected: `** BUILD SUCCEEDED **`.
      shows no confirmation.
   5. `hold 100 30`: `size` 100×30; resize the Mac's window: no new `size`; press Enter: within
      about 32 s a `size` with the pane's own grid arrives on a second watching simulator.
-  6. The installed app stays online on the relay under its own host id the whole time.
+  6. `hold` on a plain shell tab: no `^L` appears and the prompt is not cleared; `hold` on a tab
+     where Claude Code runs: the agent's screen redraws once.
+  7. The installed app stays online on the relay under its own host id the whole time.
 
 - [ ] **Step 5: Measure the frame rate (РС1).** Run `rate 60` on a tab where an agent works and on
   an idle shell. Write both numbers into the spec's "Not confirmed" entry on relay volume, with the

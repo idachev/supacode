@@ -32,6 +32,8 @@ the other Supacode, not that Mac's repositories mixed into the local ones.
   no new settings field for the key.
 - **ОБ1–ОБ5** are the scope of the first version (see Goals). **ПС1–ПС5** come later (see Non-goals).
 - **ИЗ3.** A lost connection is visible above the terminal, not only as a frozen screen.
+- **АВ2.** An automatic resize sends Ctrl+L only to a tab where an agent runs (owner, 2026-11-17;
+  see ПТ6).
 - **АВ1.** In the remote window the size of a remote tab follows the laptop's pane automatically
   (owner, 2026-11-17). This replaces ЗД12 for the Supacode client only. The phone and the web app
   keep ЗД12: there the size belongs to the Mac and `resize` goes out only on an explicit action
@@ -229,9 +231,17 @@ would take the size from each other without end. So the size gets an owner.
 
 - `{"t":"resize","contentId":"…","cols":N,"rows":M,"hold":true}`. The clamp, the replies,
   `resize_failed` and the wake of a terminal without a live surface stay as in today's `resize`.
-- **No Ctrl+L.** A `resize` with `hold:true` sends no Ctrl+L to the terminal. It goes out by
-  itself on every window drag, and a typed 0x0C in a program that does not expect it is wrong; the
-  PTY's size change already makes programs redraw (SIGWINCH). Without `hold` the Ctrl+L stays.
+- **Ctrl+L only where an agent runs** (АВ2). After a confirmed `resize` with `hold:true` the host
+  sends Ctrl+L once only when the tab's chrome lists at least one agent
+  (`TerminalTabChrome.agents`, the data `list` sends as `tabs[].agents`), whatever its activity. A
+  tab without an agent (a shell, `vim`, `less`) gets none: the resize goes out by itself on every
+  window drag, and a typed 0x0C in a program that does not expect it is wrong; the PTY's size change
+  (SIGWINCH) already makes such programs redraw. Without `hold` the Ctrl+L stays as today.
+- How a tab "has an agent": the agent's hooks write OSC 3008 into the tab's terminal on the Mac
+  (session start, busy, idle, awaiting input, stop, compacting, error, session end); Supacode files
+  each event under the receiving surface (`AgentPresenceFeature`), and a liveness sweep every 2 s
+  drops an agent whose local process is gone. So an agent that exits without `session_end` leaves
+  the list within about 2 s.
 - **Held.** While a size is held, a layout change of the Mac's own pane (a window resize, a split,
   the pane shown or hidden, zoom, the tab hibernated and woken) does not change the PTY's size;
   the Mac's pane shows the held grid as it shows a requested size today.
@@ -470,7 +480,7 @@ Not part of this repo's plan; the owner is told when each is needed.
 No `Task.sleep`; time comes from `TestClock` or an injected clock.
 
 - **Protocol and host** (`supacodeTests/RemoteAccess*Tests.swift`): `caps` in `hello`; `attach` with
-  and without `keep`, the limit, re-attach, `detach` of one; `resize` for any attached content; `resize` with `hold` (no Ctrl+L, kept across the Mac's
+  and without `keep`, the limit, re-attach, `detach` of one; `resize` for any attached content; `resize` with `hold` (Ctrl+L only for a tab with an agent, kept across the Mac's
   layout changes and a hibernate and wake, released at `detach`, kept 30 s after a lost connection
   and taken over in that time, moved by a newer request, `size` to every attached client on
   release);
@@ -531,7 +541,6 @@ These were not decided by the owner; each can be changed before the plan.
   the remote window on one Mac.
 - **АР9.** A remote BEL rings locally; remote OSC 9 / 777 notifications are not shown (ИВ4).
 
-- **АР11.** An automatic resize sends no Ctrl+L (ПТ6).
 - **АР12.** After a lost connection the host keeps the laptop's size for 30 s before the Mac's own
   size returns (ПТ6).
 - **АР10.** АВ1 changes the rule only for the Supacode remote window. The phone and the web app
