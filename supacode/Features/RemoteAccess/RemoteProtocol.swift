@@ -420,6 +420,25 @@ nonisolated struct RemoteListMessage: Encodable, Equatable, Sendable {
   }
 }
 
+/// The reply to `watch`: whether the connection now watches (`RemoteWatch`).
+nonisolated struct RemoteWatchMessage: Encodable, Equatable, Sendable {
+  var t = "watch"
+  let id: Int?
+  let on: Bool
+
+  // Encode `id` as an explicit null so clients can match on it.
+  func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(t, forKey: .t)
+    try container.encode(id, forKey: .id)
+    try container.encode(on, forKey: .on)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case t, id, on
+  }
+}
+
 /// A repository the app could not load (`list.loadFailures`): clients show it
 /// as "cannot be read on the Mac: <message>".
 nonisolated struct RemoteLoadFailure: Encodable, Equatable, Sendable {

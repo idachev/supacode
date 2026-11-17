@@ -5,7 +5,7 @@ import SupacodeSettingsShared
 
 nonisolated private let routerLogger = SupaLogger("RemoteAccess")
 
-/// Answers the phones behind the relay: `hello`, `list`, terminal
+/// Answers the phones behind the relay: `hello`, `list`, `watch`, terminal
 /// `attach` / `detach` / `input` / `resize`, `tab.new`, `worktree.new`,
 /// `worktree.delete`, `worktrees.refresh` and `suggest`
 /// (`docs/remote-access-protocol.md`). One instance per app, started at launch
@@ -60,6 +60,11 @@ final class RemoteHostRouter {
   /// size); a newer `resize` of that terminal from any phone, or the
   /// requester's detach or end, cancels it (last request wins).
   private var resizeWaits = RemoteResizeWaits()
+  /// Phones that `watch` the snapshot, with the last `list` each one got.
+  private var watchers = RemoteWatchers()
+  /// Pushes `list` to the watchers every `RemoteWatch.interval`; runs only
+  /// while at least one phone watches (`endWatch(connID:)` stops it).
+  private var watchTick: Task<Void, Never>?
   /// The grid each phone last got per attached terminal (`attached` or `size`),
   /// shared by the poll and a resize's early check so neither sends the same size twice.
   private var sentGrids: [String: [UUID: SentGrid]] = [:]
@@ -114,6 +119,8 @@ final class RemoteHostRouter {
   var isRelayConnected: Bool { connection?.isConnected ?? false }
   var lanPort: UInt16? { lanServer?.port }
   var isLANStarting: Bool { lanStart != nil }
+  /// Whether the `watch` tick runs (some phone watches).
+  var isWatchTicking: Bool { watchTick != nil }
 
   /// Starts the host when remote access is configured; nil otherwise (and
   /// always nil inside a test process).
@@ -210,6 +217,7 @@ final class RemoteHostRouter {
 
   func lanClosed(_ connID: String) {
     endRequests(connID: connID)
+    endWatch(connID: connID)
     detachAll(connID: connID)
     clients[connID] = nil
     lanSinks[connID] = nil
@@ -248,6 +256,9 @@ final class RemoteHostRouter {
     lanServer = nil
     for connID in Array(lanSinks.keys) { lanClosed(connID) }
     dropAllClients()
+    watchers.removeAll()
+    watchTick?.cancel()
+    watchTick = nil
     connection?.stop()
     connection = nil
   }
@@ -267,6 +278,7 @@ final class RemoteHostRouter {
       connectionOpened(connID, sameNetwork: message.sameNetwork == true)
     case "conn.close":
       endRequests(connID: connID)
+      endWatch(connID: connID)
       detachAll(connID: connID)
       clients[connID] = nil
       sameNetwork.remove(connID)
@@ -280,7 +292,9 @@ final class RemoteHostRouter {
         replyHello(connID)
       }
     case "list":
-      reply(connID, source.listMessage(id: message.id))
+      replyList(connID, source.listMessage(id: message.id))
+    case "watch":
+      watch(connID: connID, message: message)
     case "attach":
       attach(connID: connID, message: message)
     case "detach":
@@ -361,6 +375,62 @@ final class RemoteHostRouter {
     deadline.cancel()
     continuation.finish()
     return outcome
+  }
+
+  // MARK: - Watch
+
+  /// Starts or ends the phone's watch (a missing `on` means `true`) and answers
+  /// with the state it asked for.
+  private func watch(connID: String, message: RemoteInboundMessage) {
+    let watching = message.on ?? true
+    if watching {
+      watchers.start(connID)
+      startWatchTick()
+    } else {
+      endWatch(connID: connID)
+    }
+    reply(connID, RemoteWatchMessage(id: message.id, on: watching))
+  }
+
+  /// Starts the tick unless it runs: every `RemoteWatch.interval` on `clock` it
+  /// builds the snapshot once and pushes it to the watchers it is due for.
+  private func startWatchTick() {
+    guard watchTick == nil, !watchers.isEmpty else { return }
+    let clock = self.clock
+    watchTick = Task { [weak self] in
+      while !Task.isCancelled {
+        do {
+          try await clock.sleep(for: RemoteWatch.interval)
+        } catch {
+          return
+        }
+        guard !Task.isCancelled, let self else { return }
+        self.pushWatchedLists()
+      }
+    }
+    routerLogger.info("watch: tick started")
+  }
+
+  private func pushWatchedLists() {
+    let list = source.listMessage(id: nil)
+    for connID in watchers.tick(list, elapsed: RemoteWatch.interval) {
+      reply(connID, list)
+    }
+  }
+
+  /// Ends the phone's watch; the tick stops with the last watcher.
+  private func endWatch(connID: String) {
+    watchers.end(connID)
+    guard watchers.isEmpty, let tick = watchTick else { return }
+    tick.cancel()
+    watchTick = nil
+    routerLogger.info("watch: tick stopped")
+  }
+
+  /// Answers a `list` request (or `worktrees.refresh`); a watching phone counts it as the last list sent.
+  private func replyList(_ connID: String, _ list: RemoteListMessage) {
+    watchers.recordSent(list, to: connID)
+    reply(connID, list)
   }
 
   // MARK: - Terminal stream
@@ -827,6 +897,9 @@ final class RemoteHostRouter {
     for connID in requestWaits.connIDs where lanSinks[connID] == nil {
       endRequests(connID: connID)
     }
+    for connID in watchers.connIDs where lanSinks[connID] == nil {
+      endWatch(connID: connID)
+    }
     for connID in clients.keys where lanSinks[connID] == nil {
       detachAll(connID: connID)
       clients[connID] = nil
@@ -1005,7 +1078,7 @@ final class RemoteHostRouter {
       self.requestWaits.remove(waitID: waitID, connID: connID)
       guard self.clients[connID] != nil else { return }
       switch outcome {
-      case .loaded: self.reply(connID, source.listMessage(id: requestID))
+      case .loaded: self.replyList(connID, source.listMessage(id: requestID))
       case .timedOut: self.reply(connID, Self.worktreesRefreshTimeoutError(requestID: requestID))
       case .cancelled: return
       }
