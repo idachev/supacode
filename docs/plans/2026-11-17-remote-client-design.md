@@ -32,8 +32,10 @@ the other Supacode, not that Mac's repositories mixed into the local ones.
   no new settings field for the key.
 - **ОБ1–ОБ5** are the scope of the first version (see Goals). **ПС1–ПС5** come later (see Non-goals).
 - **ИЗ3.** A lost connection is visible above the terminal, not only as a frozen screen.
-- **ЗД12.** The size of a remote tab belongs to the remote Mac. A client sends `resize` only on an
-  explicit user action, never by itself.
+- **АВ1.** In the remote window the size of a remote tab follows the laptop's pane automatically
+  (owner, 2026-11-17). This replaces ЗД12 for the Supacode client only. The phone and the web app
+  keep ЗД12: there the size belongs to the Mac and `resize` goes out only on an explicit action
+  (author's reading of the owner's answer; see АР10).
 - Protocol changes are written first in `docs/remote-access-protocol.md` here, then mirrored in
   `supacode-remote` (Android `protocol/Protocol.kt`, `ProtocolCodecTest`, web `web/src/protocol.mjs`).
 
@@ -43,7 +45,7 @@ the other Supacode, not that Mac's repositories mixed into the local ones.
   repositories, worktree rows with agent state, and a filter field.
 - **ОБ2.** Tabs and splits are arranged as on Mac A. Every tab is a real Ghostty surface.
 - **ОБ3.** Actions: new tab, close tab, select tab, split a pane, close a pane, new worktree, delete
-  worktree, refresh worktrees, explicit resize.
+  worktree, refresh worktrees. A tab's size follows its pane (АВ1).
 - **ОБ4.** "Agent is waiting" notifications from Mac A appear on laptop B.
 - **ОБ5.** A banner above the terminal says when there is no connection (ИЗ3).
 
@@ -56,7 +58,7 @@ the other Supacode, not that Mac's repositories mixed into the local ones.
 - **ПС5.** Mac A's settings, and the command palette for Mac A.
 - **ПС6.** Layout edits beyond ОБ3: moving a tab between panes, dragging a split divider, renaming
   a tab, reordering tabs, pane windows.
-- **ПС7.** Scaling the font so a remote grid always fills the local pane.
+- **ПС7.** Dropped: АВ1 makes font scaling unnecessary.
 - **ПС8.** Several remote windows at once (one per Mac), and notifications while the remote window
   is closed.
 - A host older than this design (see ПТ0). Both Macs run the owner's fork.
@@ -67,7 +69,8 @@ the other Supacode, not that Mac's repositories mixed into the local ones.
 
 - A second answer to a terminal query. Ghostty on Mac A already answered in the PTY; the local
   surface must never answer the same query as input (the stage 1 `QueryFilter` problem).
-- An automatic resize of a tab on Mac A (ЗД12).
+- A resize loop: two clients, or a client and Mac A's own pane, that keep taking a tab's size
+  from each other (see ПТ6).
 - Remote repositories, worktrees or ids entering `RepositoriesFeature`, `TerminalsFeature` or any
   persisted local file (`routes.json`, `layoutsFile`, `sidebarState`).
 - Content-specific state in `LayoutFeature` (see `CLAUDE.md`, the layout-layer rule).
@@ -120,10 +123,10 @@ host → client `hello` gains an optional string array:
 
 ```json
 {"t":"hello","v":1,"host":"Office Mac","hostId":"…",
- "caps":["attach.keep","watch","layout","tab.close","pane.split","pane.close"]}
+ "caps":["attach.keep","watch","layout","tab.close","pane.split","pane.close","resize.hold"]}
 ```
 
-A client ignores values it does not know. The Supacode client needs all six; when one is missing
+A client ignores values it does not know. The Supacode client needs all seven; when one is missing
 (an older host) it shows "<Mac name> runs an older Supacode" in the remote window and attaches
 nothing.
 
@@ -216,6 +219,28 @@ confirmed) and does not change which worktree its window shows.
 - Decoder rule for the new fields. Strict (a wrong type drops the message with no reply, as for
   `contentId` today): `keep` and `on` (booleans), `tabId` and `paneId` (strings). Lenient (answered
   with an error): `direction` (a value of another type or an unknown string gives `pane_invalid`).
+
+### ПТ6. A held size: `resize` with `hold`
+
+Today a requested size lasts until the Mac's own pane for that tab changes layout. A client whose
+pane decides the size (АВ1) would have to ask again after every such change, and two such clients
+would take the size from each other without end. So the size gets an owner.
+
+- `{"t":"resize","contentId":"…","cols":N,"rows":M,"hold":true}`. Everything in today's `resize`
+  stays: the clamp, the replies, `resize_failed`, Ctrl+L after a confirmed resize, the wake of a
+  terminal without a live surface.
+- With `hold:true` the size is held for that connection. While it is held, a layout change of the
+  Mac's own pane (a window resize, a split, the pane shown or hidden, zoom) does not change the
+  PTY's size; the Mac's pane shows the held grid as it shows a requested size today.
+- The hold ends when the holding connection detaches from that content or closes, or when a newer
+  `resize` of that terminal arrives from any client (last request wins; with `hold:true` the hold
+  moves to that client, without it the size is unowned again as today). When a hold ends with no
+  newer request, the Mac's pane size returns and every attached client gets `size`.
+- A client never answers a `size` it did not ask for with a new `resize`. It sends `resize` only
+  when its own pane's grid changes and after its own `attached`. This rule, not the host, is what
+  prevents a loop between two holding clients.
+- `hold` is a strict boolean (decoder rule). Without it the message means what it means today, so
+  the phone and the web app are unaffected.
 
 ### ПТ5. No new row fields
 
@@ -338,16 +363,23 @@ changes stay in `supacode/Features/RemoteAccess/`.
 - **ТР6. A new `attached`** (first attach, reconnect, path switch): before the redraw the client
   writes `CSI 3 J`, `CSI 2 J`, `CSI H` to the pipe, so the history is not doubled, and pins the grid
   (ТР7).
-- **ТР7. Pinned grid** (ПТ6). The local surface keeps exactly the `cols` × `rows` of the last
-  `attached` / `size`, whatever the pane's size: a persistent variant of `RequestedGridHold` that
-  layout and window changes do not release. The surface is drawn at its normal font, anchored top
-  left; a pane larger than the grid shows the terminal background around it, a smaller pane clips
-  (author's call; ПС7 is the alternative).
-- **ТР8. Explicit resize** (ЗД12). "Fit to This Window" (menu item, toolbar button with tooltip and
-  hotkey) sends `resize` for every attached tab of the selected worktree with the grid that fits
-  its local pane at the normal font. The host answers `size`, redraws with Ctrl+L, and the grids
-  then match until Mac A's own panes change layout. `tab.new` and `pane.split` send the local
-  pane's `cols` / `rows` as the start size.
+- **ТР7. The local grid is the remote grid.** The local surface always has exactly the `cols` ×
+  `rows` of the last `attached` / `size`, never the pane's own grid: a persistent variant of
+  `RequestedGridHold` that layout and window changes do not release. So the picture is right even
+  while a resize is on its way or was refused.
+- **ТР8. Automatic resize** (АВ1, ПТ6). The client computes the grid that fits the tab's local pane
+  at the laptop's font. It sends `resize` with `hold:true` when that grid differs from the remote
+  one: after its own `attached`, and when the pane's fitting grid has changed and stayed the same
+  for 200 ms (a window resize, a new or closed split, zoom, a font change). The host's `size` reply
+  then sets the local grid (ТР7), which now fills the pane. `tab.new` and `pane.split` carry the
+  local pane's `cols` / `rows` as the start size. There is no resize button.
+- **ТР8а. When the sizes differ** (a refused resize, the host's clamp of 20…500 × 5…200, another
+  client that took the hold): the surface is drawn at the normal font, anchored top left; a larger
+  pane shows the terminal background around the grid, a smaller pane clips. The client does not
+  ask again until its own pane changes (ПТ6).
+- **ТР8б. On Mac A** a held tab keeps the laptop's size while the remote window shows it. Closing
+  the remote window, or switching away from that tab for more than 30 s (РЗ5), detaches and gives
+  the Mac's pane its own size back.
 - **ТР9. `detached`.** The tab shows "This terminal ended on <Mac name>" in place of the surface
   until the next `list` removes it.
 
@@ -378,7 +410,8 @@ changes stay in `supacode/Features/RemoteAccess/`.
 ## Host changes (Supacode on Mac A)
 
 - **ХС1.** `RemoteHostRouter`: a set of attachments per connection (ПТ1), `caps` in `hello` (ПТ0),
-  `watch` (ПТ3), and the handlers for `tab.close`, `pane.split`, `pane.close`, `tab.new.paneId`
+  `watch` (ПТ3), the held size (ПТ6), and the handlers for `tab.close`, `pane.split`,
+  `pane.close`, `tab.new.paneId`
   (ПТ4).
 - **ХС2.** `RemoteSnapshotSource` / `RemoteSnapshotBuilder`: `layout` per worktree from
   `terminalManager.layoutState(for:)`, reading the flat `panes` and every group's tree (the
@@ -391,7 +424,7 @@ changes stay in `supacode/Features/RemoteAccess/`.
   host needs a close path without it (see Not confirmed).
 - **ХС6.** `remote-relay/scripts/phone-sim.mjs` (this repo) learns the new messages: it prints
   `caps` and `layout`, and gets switches for `watch`, a second `attach` with `keep`, `tab.close`,
-  `pane.split` and `pane.close`. ЕТ1 is verified with it.
+  `pane.split`, `pane.close` and `resize` with `hold`. ЕТ1 is verified with it.
 - **ХС4.** No change to the relay (`remote-relay/`), to the LAN server's trust, or to `mayHost`. A
   Mac may host and be a client at once: the client socket is separate from its host socket.
 - **ХС5. Test host id** (author's call). The host id comes only from the hardware UUID
@@ -409,7 +442,7 @@ changes stay in `supacode/Features/RemoteAccess/`.
 Not part of this repo's plan; the owner is told when each is needed.
 
 - `tools/mock-host.mjs`: `caps`, `attach.keep`, `watch`, `layout`, `tab.close`, `pane.split`,
-  `pane.close`, so the Swift client can be tried without a second Mac.
+  `pane.close`, `resize.hold`, so the Swift client can be tried without a second Mac.
 - `protocol/Protocol.kt`, `ProtocolCodecTest`, `web/src/protocol.mjs`: the new optional fields, only
   when the phone or the web app starts to use them. Until then they need no change.
 
@@ -418,7 +451,9 @@ Not part of this repo's plan; the owner is told when each is needed.
 No `Task.sleep`; time comes from `TestClock` or an injected clock.
 
 - **Protocol and host** (`supacodeTests/RemoteAccess*Tests.swift`): `caps` in `hello`; `attach` with
-  and without `keep`, the limit, re-attach, `detach` of one; `resize` for any attached content;
+  and without `keep`, the limit, re-attach, `detach` of one; `resize` for any attached content; `resize` with `hold` (kept across the Mac's
+  layout changes, released at detach and at close, moved by a newer request, `size` to every
+  attached client on release);
   `layout` for `tabsPerSplit` and `splitPerTab` (parked groups, zoom, unresolved ids); `watch`
   (push on change, 250 ms trailing edge, no push without a change, stop, no tick without watchers);
   `tab.close`, `pane.split`, `pane.close`, `tab.new.paneId` with their errors.
@@ -427,13 +462,14 @@ No `Task.sleep`; time comes from `TestClock` or an injected clock.
   host-choice rules (МХ1) from `HostChoiceTest`; the `hostOnline` edge rule; lenient decoding (КЛ5);
   the awaiting tracker (ИВ1).
 - **Reducer** (`TestStore`): the remote feature's connection states and banner texts; the projection
-  of `layout` with local selection kept (РЗ2); the attached set (РЗ5); each action sends the right
+  of `layout` with local selection kept (РЗ2); the attached set (РЗ5); automatic resize (ТР8: after `attached`, 200 ms after the grid settles,
+  none in answer to a foreign `size`); each action sends the right
   request and shows the host's error.
 - **Live check** (the owner's rule: finish the core and verify end to end): an isolated second
   Supacode as the host (`CFFIXED_USER_HOME`, `ZMX_DIR`, `SUPACODE_REMOTE_ACCESS=1` and
   `SUPACODE_REMOTE_HOST_ID`, ХС5; see `docs/remote-access.md`), with the installed or dev build as
   the client; the owner's second Mac is the final check. In the remote window run Claude Code, `vim`, `less`,
-  mouse scroll, paste, Cyrillic, a split, a new and a closed tab, "Fit to This Window", a LAN ⇄
+  mouse scroll, paste, Cyrillic, a split, a new and a closed tab, a window resize (the tab follows), a LAN ⇄
   relay switch, and Wi-Fi off and on for the banner. The installed dev build writes no unified log
   (`.agent-memory/dev-build-logs.md`), so the evidence is the window itself and `phone-sim.mjs`.
 
@@ -443,7 +479,7 @@ Each stage builds and is tested on its own; the plan splits them into tasks.
 
 | ID | Stage | Result |
 |---|---|---|
-| ЕТ1 | Protocol doc + host (ПТ0–ПТ4, ХС1–ХС5) | `phone-sim.mjs` shows `caps`, `layout`, pushed `list`, two attached tabs, and the new actions |
+| ЕТ1 | Protocol doc + host (ПТ0–ПТ4, ПТ6, ХС1–ХС6) | `phone-sim.mjs` shows `caps`, `layout`, pushed `list`, two attached tabs, and the new actions |
 | ЕТ2 | Client core, no UI (КЛ1–КЛ7, МХ1–МХ4, `QueryFilter`, gate) | Unit tests pass against recorded frames |
 | ЕТ3 | Pipe + one remote tab in the new window (ТР1–ТР9, ПЗ1) | One tab of Mac A works as a real Ghostty in the remote window |
 | ЕТ4 | Sidebar, layout mirror and actions (СЛ1–СЛ5, РЗ1–РЗ6, ПЗ2–ПЗ4) | ОБ1–ОБ3 |
@@ -456,8 +492,7 @@ Each stage builds and is tested on its own; the plan splits them into tasks.
 - The rendering route in РЗ6 and the banner's slot in БН1.
 - The pipe's header format and socket file name (ТР2, ТР3), the `scrollback` value sent in `attach`.
 - How the host detects a snapshot change for `watch` (ПТ3).
-- The hotkeys for "Open Remote Mac…" and "Fit to This Window" (they must not collide with existing
-  ones).
+- The hotkey for "Open Remote Mac…" (it must not collide with an existing one).
 
 ## Author's calls for the owner to check
 
@@ -465,8 +500,9 @@ These were not decided by the owner; each can be changed before the plan.
 
 - **АР1.** Tab selection, focus and zoom are local and are not sent to Mac A (РЗ2).
 - **АР2.** The connection lives only while the remote window is open (КЛ6).
-- **АР3.** A grid that does not match the pane is shown at the normal font, with background around
-  it or clipped, until "Fit to This Window" (ТР7, ТР8).
+- **АР3.** How automatic resize works: a held size on the host (`resize` with `hold`, ПТ6), sent
+  200 ms after the pane's grid settles (ТР8). While Mac A shows a tab that the laptop holds, Mac
+  A's own pane shows the laptop's grid (ТР8б).
 - **АР4.** Typing while there is no connection is dropped, and the banner says so (БН2).
 - **АР5.** No new row fields in `list` for now (ПТ5).
 - **АР6.** A host without the new capabilities is not supported by the remote window (ПТ0).
@@ -475,11 +511,8 @@ These were not decided by the owner; each can be changed before the plan.
   the remote window on one Mac.
 - **АР9.** A remote BEL rings locally; remote OSC 9 / 777 notifications are not shown (ИВ4).
 
-A consequence of АР3 to know before approving it: the protocol releases a requested size when the
-Mac's own pane for that tab changes layout. A split, a closed pane or a collapsing closed tab on
-Mac A is such a change, also when the laptop asked for it; so is a resize of the laptop's window
-(the local panes change, the remote grid does not). After each of these the grids differ again
-until "Fit to This Window" is pressed again.
+- **АР10.** АВ1 changes the rule only for the Supacode remote window. The phone and the web app
+  keep the explicit resize button (ЗД12).
 
 ## Checked by the design review
 
