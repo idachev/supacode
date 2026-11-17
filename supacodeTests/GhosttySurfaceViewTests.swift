@@ -116,6 +116,45 @@ struct GhosttySurfaceViewTests {
     #expect(Self.grid(of: surface) == paneGrid)
   }
 
+  // The wake order: a surface pinned while never shown keeps the grid once it
+  // joins a window, through layout passes at another pane size.
+  @Test func aGridPinnedBeforeTheFirstMountSurvivesTheMount() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let window = Self.makeWindow()
+    defer { window.close() }
+    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    #expect(surfaceView.pinGrid(columns: 40, rows: 12) == .applied)
+
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    window.contentView?.addSubview(surfaceView)
+    surfaceView.updateSurfaceSize()
+    surfaceView.updateSurfaceSize(contentSize: CGSize(width: 600, height: 500))
+    #expect(Self.grid(of: surface) == [40, 12])
+
+    surfaceView.unpinGrid()
+    surfaceView.updateSurfaceSize()
+    #expect(Self.grid(of: surface) != [40, 12])
+  }
+
+  // A font size change keeps a pinned grid's columns × rows.
+  @Test func aPinnedGridSurvivesAFontSizeChange() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let window = Self.makeWindow()
+    defer { window.close() }
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    window.contentView?.addSubview(surfaceView)
+    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    surfaceView.updateSurfaceSize()
+    #expect(surfaceView.pinGrid(columns: 40, rows: 12) == .applied)
+    let cellBefore = ghostty_surface_size(surface).cell_width_px
+
+    surfaceView.performBindingAction("increase_font_size:4")
+    #expect(ghostty_surface_size(surface).cell_width_px != cellBefore)
+    #expect(Self.grid(of: surface) == [40, 12])
+  }
+
   // A hibernate + wake installs a new surface; the content pins it with the
   // grid it recorded, including a pin made while there was no surface.
   @Test func terminalContentPinsEverySurfaceItInstalls() throws {
