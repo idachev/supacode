@@ -165,6 +165,13 @@ final class RemoteSnapshotSource {
     return chrome?.isReadOnly ?? false
   }
 
+  /// The tab's chrome lists at least one agent (`TerminalTabChrome.agents`,
+  /// what `list` sends as `tabs[].agents`), whatever its activity.
+  func hasAgent(contentID: UUID) -> Bool {
+    let chrome = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID))?.chrome as? TerminalTabChrome
+    return chrome?.agents.isEmpty == false
+  }
+
   /// Whether any worktree currently lists this content as a tab.
   func containsContent(_ contentID: UUID) -> Bool {
     store.withState(\.repositories.repositories).contains { repository in

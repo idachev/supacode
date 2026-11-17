@@ -60,6 +60,11 @@ final class RemoteHostRouter {
   /// size); a newer `resize` of that terminal from any phone, or the
   /// requester's detach or end, cancels it (last request wins).
   private var resizeWaits = RemoteResizeWaits()
+  /// The sizes held by `resize` with `hold` (pinned grids) and their owners.
+  private var gridHolds = RemoteGridHolds()
+  /// One timer per hold whose owner was lost: after `RemoteGridHolds.grace`
+  /// on `clock` the hold ends unless a connection took it over.
+  private var holdGraces: [UUID: Task<Void, Never>] = [:]
   /// Phones that `watch` the snapshot, with the last `list` each one got.
   private var watchers = RemoteWatchers()
   /// Pushes `list` to the watchers every `RemoteWatch.interval`; runs only
@@ -121,6 +126,10 @@ final class RemoteHostRouter {
   var isLANStarting: Bool { lanStart != nil }
   /// Whether the `watch` tick runs (some phone watches).
   var isWatchTicking: Bool { watchTick != nil }
+  /// The held sizes per terminal (`resize` with `hold`).
+  var heldGrids: [UUID: RemoteGridHolds.Hold] { gridHolds.byContent }
+  /// The terminals whose hold lost its owner and waits out `RemoteGridHolds.grace`.
+  var orphanedHolds: Set<UUID> { Set(holdGraces.keys) }
 
   /// Starts the host when remote access is configured; nil otherwise (and
   /// always nil inside a test process).
@@ -218,6 +227,8 @@ final class RemoteHostRouter {
   func lanClosed(_ connID: String) {
     endRequests(connID: connID)
     endWatch(connID: connID)
+    // Before the detach: a lost connection keeps its holds for their grace.
+    orphanHolds(connID: connID, contentID: nil)
     detachAll(connID: connID)
     clients[connID] = nil
     lanSinks[connID] = nil
@@ -256,6 +267,8 @@ final class RemoteHostRouter {
     lanServer = nil
     for connID in Array(lanSinks.keys) { lanClosed(connID) }
     dropAllClients()
+    // After the closes above, which start a grace per held terminal.
+    endAllHolds()
     watchers.removeAll()
     watchTick?.cancel()
     watchTick = nil
@@ -279,6 +292,7 @@ final class RemoteHostRouter {
     case "conn.close":
       endRequests(connID: connID)
       endWatch(connID: connID)
+      orphanHolds(connID: connID, contentID: nil)
       detachAll(connID: connID)
       clients[connID] = nil
       sameNetwork.remove(connID)
@@ -459,9 +473,14 @@ final class RemoteHostRouter {
       // Before the new stream exists, so a re-attach never leaves the old
       // pump, stream and size watch running beside it.
       for other in detaching { detach(connID: connID, contentID: other) }
-      // As before for an attach without `keep`: also the `resize` waits of
-      // terminals whose stream already closed.
-      if !keep { resizeWaits.cancel(connID: connID) }
+      if !keep {
+        // As before for an attach without `keep`: also the `resize` waits of
+        // terminals whose stream already closed.
+        resizeWaits.cancel(connID: connID)
+        // It releases the holds of the contents it leaves; a re-attach of the
+        // same content keeps its hold.
+        releaseHolds(connID: connID, contentIDs: detaching.subtracting([contentID]))
+      }
     }
     let contentKey = raw
     let requestID = message.id
@@ -542,6 +561,8 @@ final class RemoteHostRouter {
     // A stream a re-attach already replaced may still report its close: the
     // phone has the new attachment, so it gets no `detached` for the old one.
     guard isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
+    // A failed stream is a lost owner, not a detach: the hold waits out its grace.
+    orphanHolds(connID: connID, contentID: contentID)
     reply(connID, RemoteDetachedMessage(contentId: contentKey, reason: reason))
     forgetAttachment(connID: connID, contentID: contentID, stream: stream)
   }
@@ -572,10 +593,12 @@ final class RemoteHostRouter {
   private func detachRequested(connID: String, message: RemoteInboundMessage) {
     guard let raw = message.contentId else {
       detachAll(connID: connID)
+      releaseHolds(connID: connID, contentIDs: Set(gridHolds.byContent.keys))
       return
     }
     guard let contentID = UUID(uuidString: raw) else { return }
     detach(connID: connID, contentID: contentID)
+    releaseHolds(connID: connID, contentIDs: [contentID])
   }
 
   /// Ends the phone's attachment to `contentID` and the `resize` wait it asked
@@ -649,13 +672,17 @@ final class RemoteHostRouter {
     case .success(let request):
       // Before the new size is applied, so an older wait never retries its size over it.
       resizeWaits.cancel(contentID: request.contentID)
+      updateHold(for: request, connID: connID)
       let source = self.source
       let clock = self.clock
       let requestID = message.id
       let socketPath = ZmxRemoteStream.socketPath(contentID: request.contentID)
       let readSize = streamIO.ptySize
+      // A held size is pinned: it survives the Mac pane's layout changes and a hibernate + wake.
       let attempt: @MainActor @Sendable () -> RemoteResizeAttempt = {
-        source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
+        request.hold
+          ? source.pinGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
+          : source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
       }
       // In this turn, so a live terminal's grid changes before the next message.
       let first = attempt()
@@ -710,24 +737,35 @@ final class RemoteHostRouter {
   /// the PTY confirmed the requested size, also when the grid already had it
   /// (the client asks for a resize when the screen looks wrong, so it doubles
   /// as a redraw); nothing for a `resize_failed` outcome or a read-only terminal.
+  /// For a held resize only when an agent runs (`hasAgent`, ПТ6): an automatic
+  /// resize goes out on every window drag, and SIGWINCH already redraws a shell or `vim`.
   nonisolated static func redrawInput(
     for outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>,
-    isReadOnly: Bool
+    isReadOnly: Bool,
+    hold: Bool,
+    hasAgent: Bool
   ) -> [UInt8] {
     guard !isReadOnly, case .success(.matched) = outcome else { return [] }
+    guard !hold || hasAgent else { return [] }
     return redrawKey
   }
 
   /// Answers a settled `resize`, unless the phone left that terminal meanwhile,
-  /// then writes the redraw key (`redrawInput(for:isReadOnly:)`) once, as an
-  /// `input` would: through the requester's stream, or the first other open
-  /// stream of that terminal when the requester's is not open (`writeOnce`).
+  /// then writes the redraw key (`redrawInput(for:isReadOnly:hold:hasAgent:)`)
+  /// once, as an `input` would: through the requester's stream, or the first
+  /// other open stream of that terminal when the requester's is not open
+  /// (`writeOnce`). A held resize that did not get its size (every outcome but
+  /// `.matched`, the ones that answer `resize_failed`) ends its hold, also
+  /// when the requester's stream closed meanwhile.
   private func finishResize(
     connID: String,
     request: RemoteResizeRequest,
     requestID: Int?,
     outcome: Result<RemoteResizeConfirmation, RemoteResizeResult.Failure>
   ) {
+    if request.hold, outcome != .success(.matched), gridHolds.drop(contentID: request.contentID) {
+      endHold(contentID: request.contentID, reason: "the held resize from \(connID) failed")
+    }
     guard let attachment = clients[connID]?[request.contentID] else { return }
     let replies = Self.resizeReplies(
       for: outcome, request: request, contentKey: attachment.contentKey, requestID: requestID)
@@ -748,7 +786,10 @@ final class RemoteHostRouter {
         self.reply(connID, error)
       }
     }
-    let redraw = Self.redrawInput(for: outcome, isReadOnly: source.isReadOnly(contentID: request.contentID))
+    // The agent list now, when the key is written, not when the request arrived.
+    let redraw = Self.redrawInput(
+      for: outcome, isReadOnly: source.isReadOnly(contentID: request.contentID), hold: request.hold,
+      hasAgent: request.hold && source.hasAgent(contentID: request.contentID))
     guard !redraw.isEmpty else { return }
     // The requester's stream may not be open yet (an `attach` still measuring
     // the grid) or already closed; any other phone's stream on that terminal
@@ -901,10 +942,73 @@ final class RemoteHostRouter {
       endWatch(connID: connID)
     }
     for connID in clients.keys where lanSinks[connID] == nil {
+      orphanHolds(connID: connID, contentID: nil)
       detachAll(connID: connID)
       clients[connID] = nil
     }
     sameNetwork.removeAll()
+  }
+
+  // MARK: - Held size
+
+  /// A held `resize` takes the hold (and stops a running grace); one without
+  /// `hold` ends any hold of that terminal before its own size is applied,
+  /// so a pinned grid never returns over it at the next cell-size change.
+  private func updateHold(for request: RemoteResizeRequest, connID: String) {
+    if request.hold {
+      gridHolds.take(contentID: request.contentID, connID: connID, columns: request.columns, rows: request.rows)
+      holdGraces.removeValue(forKey: request.contentID)?.cancel()
+    } else if gridHolds.drop(contentID: request.contentID) {
+      endHold(contentID: request.contentID, reason: "a resize without hold from \(connID)")
+    }
+  }
+
+  /// The holds `connID` owns among `contentIDs` end at once (its `detach`, or
+  /// an `attach` of another content without `keep`).
+  private func releaseHolds(connID: String, contentIDs: Set<UUID>) {
+    for contentID in contentIDs where gridHolds.ownerDetached(contentID: contentID, connID: connID) {
+      endHold(contentID: contentID, reason: "\(connID) detached")
+    }
+  }
+
+  /// The owner's connection (`contentID` nil) or its stream of `contentID`
+  /// ended: each hold it owned stays without an owner for `RemoteGridHolds.grace`.
+  private func orphanHolds(connID: String, contentID: UUID?) {
+    for orphaned in gridHolds.ownerLost(connID: connID, contentID: contentID) {
+      holdGraces.removeValue(forKey: orphaned)?.cancel()
+      let clock = self.clock
+      holdGraces[orphaned] = Task { [weak self] in
+        do {
+          try await clock.sleep(for: RemoteGridHolds.grace)
+        } catch {
+          return
+        }
+        guard !Task.isCancelled, let self else { return }
+        self.holdGraces[orphaned] = nil
+        if self.gridHolds.graceExpired(contentID: orphaned) {
+          self.endHold(contentID: orphaned, reason: "no owner within the grace")
+        }
+      }
+      routerLogger.info("resize hold of \(orphaned) lost its owner \(connID); it ends in 30 s unless taken over")
+    }
+  }
+
+  /// A hold the bookkeeping already ended: stops its grace and unpins the
+  /// grid, so the Mac pane's size returns; the attached clients get that
+  /// `size` from their size poll.
+  private func endHold(contentID: UUID, reason: String) {
+    holdGraces.removeValue(forKey: contentID)?.cancel()
+    source.unpinGrid(contentID: contentID)
+    routerLogger.info("resize hold of \(contentID) ended: \(reason)")
+  }
+
+  /// `stop()`: every hold ends, with or without an owner.
+  private func endAllHolds() {
+    for contentID in Array(gridHolds.byContent.keys) where gridHolds.drop(contentID: contentID) {
+      endHold(contentID: contentID, reason: "the host stopped")
+    }
+    for task in holdGraces.values { task.cancel() }
+    holdGraces = [:]
   }
 
   // MARK: - New tab

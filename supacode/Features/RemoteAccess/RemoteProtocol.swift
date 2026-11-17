@@ -133,6 +133,8 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
   let contentID: UUID
   let columns: Int
   let rows: Int
+  /// `hold:true`: the requesting connection holds the size (`RemoteGridHolds`).
+  var hold = false
 
   /// Why a `resize` is ignored (logged on the host; the client gets no reply).
   /// A valid request the host cannot apply is answered instead (`Failure`).
@@ -156,7 +158,8 @@ nonisolated struct RemoteResizeRequest: Equatable, Sendable {
       Self(
         contentID: contentID,
         columns: min(max(columns, columnRange.lowerBound), columnRange.upperBound),
-        rows: min(max(rows, rowRange.lowerBound), rowRange.upperBound)))
+        rows: min(max(rows, rowRange.lowerBound), rowRange.upperBound),
+        hold: message.hold == true))
   }
 }
 

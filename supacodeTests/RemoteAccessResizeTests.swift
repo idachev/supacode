@@ -317,7 +317,8 @@ struct RemoteAccessResizeTests {
         request: Self.request, first: first, clock: clock,
         probes: RemoteResizeProbes(wake: wake, attempt: { first }, readSize: readSize),
         finish: { outcome in
-          let input = RemoteHostRouter.redrawInput(for: outcome, isReadOnly: isReadOnly)
+          let input = RemoteHostRouter.redrawInput(
+            for: outcome, isReadOnly: isReadOnly, hold: false, hasAgent: false)
           written.withValue { $0.append(input) }
         })
     }
@@ -420,11 +421,37 @@ struct RemoteAccessResizeTests {
   }
 
   @Test func onlyAMatchedOutcomeRedraws() {
-    #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false) == [0x0C])
-    #expect(RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: true).isEmpty)
-    #expect(RemoteHostRouter.redrawInput(for: .success(.mismatch(columns: 1, rows: 1)), isReadOnly: false).isEmpty)
-    #expect(RemoteHostRouter.redrawInput(for: .success(.unreadable), isReadOnly: false).isEmpty)
-    #expect(RemoteHostRouter.redrawInput(for: .failure(.notReady), isReadOnly: false).isEmpty)
+    #expect(
+      RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: false, hasAgent: false)
+        == [0x0C])
+    #expect(
+      RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: true, hold: false, hasAgent: false).isEmpty)
+    #expect(
+      RemoteHostRouter.redrawInput(
+        for: .success(.mismatch(columns: 1, rows: 1)), isReadOnly: false, hold: false, hasAgent: false
+      ).isEmpty)
+    #expect(
+      RemoteHostRouter.redrawInput(for: .success(.unreadable), isReadOnly: false, hold: false, hasAgent: false)
+        .isEmpty)
+    #expect(
+      RemoteHostRouter.redrawInput(for: .failure(.notReady), isReadOnly: false, hold: false, hasAgent: false).isEmpty)
+  }
+
+  @Test func aHeldResizeRedrawsOnlyATabWithAnAgent() {
+    #expect(
+      RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: true, hasAgent: false).isEmpty)
+    #expect(
+      RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: true, hasAgent: true)
+        == [0x0C])
+    #expect(
+      RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: false, hold: false, hasAgent: false)
+        == [0x0C])
+    #expect(
+      RemoteHostRouter.redrawInput(for: .success(.matched), isReadOnly: true, hold: true, hasAgent: true).isEmpty)
+    #expect(
+      RemoteHostRouter.redrawInput(
+        for: .success(.mismatch(columns: 1, rows: 1)), isReadOnly: false, hold: true, hasAgent: true
+      ).isEmpty)
   }
 
   @Test func theRedrawGoesThroughTheFirstOpenStreamOnly() {

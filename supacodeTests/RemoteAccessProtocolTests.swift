@@ -300,6 +300,21 @@ struct RemoteAccessProtocolTests {
     #expect(RemoteResizeRequest.resolve(message, attached: []) == .failure(.notAttached))
   }
 
+  @Test func resizeCarriesHold() {
+    let id = UUID()
+    let message = RemoteInboundMessage(
+      t: "resize", contentId: id.uuidString, cols: RemoteLenientInt(100), rows: RemoteLenientInt(30), hold: true)
+    #expect(
+      RemoteResizeRequest.resolve(message, attached: [id])
+        == .success(RemoteResizeRequest(contentID: id, columns: 100, rows: 30, hold: true)))
+    // Without `hold` (or with `false`) it is a plain resize.
+    var plain = message
+    plain.hold = false
+    #expect(
+      RemoteResizeRequest.resolve(plain, attached: [id])
+        == .success(RemoteResizeRequest(contentID: id, columns: 100, rows: 30, hold: false)))
+  }
+
   // MARK: - New inbound fields and capabilities
 
   @Test func inboundDecodesTheNewFields() throws {
