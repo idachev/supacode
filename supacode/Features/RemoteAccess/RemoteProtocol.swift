@@ -52,6 +52,18 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
   var repositoryId: RemoteLenientString?
   /// `worktree.new`: the branch name (required, trimmed by the host).
   var name: RemoteLenientString?
+  /// `attach`: keep the existing size and replay instead of resetting it.
+  var keep: Bool?
+  /// `watch`: start (`true`) or stop (`false`) watching the layout.
+  var on: Bool?
+  /// `resize`: the size is held until the phone detaches.
+  var hold: Bool?
+  /// `tab.close`: the tab to close.
+  var tabId: String?
+  /// `pane.split` / `pane.close`: the pane to act on.
+  var paneId: String?
+  /// `pane.split`: the split direction; a value of the wrong type decodes as invalid so the handler can answer it.
+  var direction: RemoteLenientString?
 }
 
 /// An optional string field that never fails the message: a value that is not
@@ -253,6 +265,13 @@ nonisolated struct RemoteResizeWaits {
 
 // MARK: - Outbound payloads
 
+/// The capability names a host announces in `hello.caps`.
+nonisolated enum RemoteCapability {
+  static let all = [
+    "attach.keep", "watch", "layout", "tab.close", "pane.split", "pane.close", "resize.hold",
+  ]
+}
+
 nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
   var t = "hello"
   var v = 1
@@ -265,6 +284,8 @@ nonisolated struct RemoteHelloMessage: Encodable, Equatable, Sendable {
   /// The app build the host runs, `Supacode <version> (<build>) · <build date> · <short git sha>`,
   /// the values About shows; each part only when known, nil when none is.
   var app: String?
+  /// What this host can do, so a phone shows only the actions an older host would not drop. Always sent.
+  var caps = RemoteCapability.all
 
   /// `Supacode 0.11.5 (154) · 2026-11-10 · 2e264f48`. Each part is added only when it is known: with
   /// one of version/build missing, what exists (`Supacode 0.11.5`); a missing date or sha is left out.

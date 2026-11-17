@@ -110,7 +110,7 @@ struct RemoteAccessProtocolTests {
   @Test func helloCarriesTheHostIDWhenThereIsOne() throws {
     let hello = RemoteHelloMessage(host: "Office Mac", hostId: "5ff84c3b79a7faaa")
     let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
-    #expect(json.count == 4)
+    #expect(json.count == 5)
     #expect(json["t"] as? String == "hello")
     #expect(json["v"] as? Int == 1)
     #expect(json["host"] as? String == "Office Mac")
@@ -120,7 +120,7 @@ struct RemoteAccessProtocolTests {
   @Test func helloWithoutAHostIDOmitsTheField() throws {
     let hello = RemoteHelloMessage(host: "Office Mac")
     let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
-    #expect(json.count == 3)
+    #expect(json.count == 4)
     #expect(!json.keys.contains("hostId"))
     #expect(!json.keys.contains("lan"))
   }
@@ -130,7 +130,7 @@ struct RemoteAccessProtocolTests {
     #expect(app == "Supacode 0.11.5 (154)")
     let hello = RemoteHelloMessage(host: "Office Mac", hostId: "5ff84c3b79a7faaa", app: app)
     let json = try #require(try JSONSerialization.jsonObject(with: RemoteJSON.encode(hello)) as? [String: Any])
-    #expect(json.count == 5)
+    #expect(json.count == 6)
     #expect(json["app"] as? String == "Supacode 0.11.5 (154)")
   }
 
@@ -287,5 +287,39 @@ struct RemoteAccessProtocolTests {
     #expect(try Self.resize(attachedID, attached: nil) == .failure(.notAttached))
     #expect(try Self.resize(#"{"t":"resize","cols":80,"rows":24}"#) == .failure(.notAttached))
     #expect(try Self.resize(#"{"t":"resize","contentId":"tab-1","cols":80,"rows":24}"#) == .failure(.notAttached))
+  }
+
+  // MARK: - New inbound fields and capabilities
+
+  @Test func inboundDecodesTheNewFields() throws {
+    let attach = try #require(RemoteJSON.decodeInbound(Data(#"{"t":"attach","contentId":"C","keep":true}"#.utf8)))
+    #expect(attach.keep == true)
+    let split = try #require(
+      RemoteJSON.decodeInbound(Data(#"{"t":"pane.split","id":7,"paneId":"P","direction":"vertical"}"#.utf8)))
+    #expect(split.paneId == "P")
+    #expect(split.direction?.value == "vertical")
+    let resize = try #require(
+      RemoteJSON.decodeInbound(Data(#"{"t":"resize","contentId":"C","cols":80,"rows":24,"hold":true}"#.utf8)))
+    #expect(resize.hold == true)
+  }
+
+  @Test func aStrictNewFieldOfTheWrongTypeDropsTheMessage() {
+    #expect(RemoteJSON.decodeInbound(Data(#"{"t":"attach","contentId":"C","keep":"yes"}"#.utf8)) == nil)
+    #expect(RemoteJSON.decodeInbound(Data(#"{"t":"watch","on":1}"#.utf8)) == nil)
+    #expect(RemoteJSON.decodeInbound(Data(#"{"t":"tab.close","tabId":5}"#.utf8)) == nil)
+  }
+
+  @Test func aLenientDirectionOfTheWrongTypeStillDecodes() throws {
+    let split = try #require(RemoteJSON.decodeInbound(Data(#"{"t":"pane.split","paneId":"P","direction":3}"#.utf8)))
+    #expect(split.direction?.value == nil)
+  }
+
+  @Test func helloCarriesTheCapabilities() throws {
+    let data = RemoteJSON.encode(RemoteHelloMessage(host: "Mac", hostId: nil, lan: nil, app: nil))
+    let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(
+      json["caps"] as? [String] == [
+        "attach.keep", "watch", "layout", "tab.close", "pane.split", "pane.close", "resize.hold",
+      ])
   }
 }

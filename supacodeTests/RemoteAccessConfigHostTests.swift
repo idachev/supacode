@@ -111,17 +111,46 @@ struct RemoteAccessConfigHostTests {
 
   @Test func hostURLOmitsANilIdAndAnEmptyName() throws {
     let base = try #require(URL(string: "wss://relay.example.com/host"))
-    #expect(RemoteAccessConfig.hostURL(base: base, hostID: nil, name: "Mac").absoluteString
-      == "wss://relay.example.com/host?name=Mac")
-    #expect(RemoteAccessConfig.hostURL(base: base, hostID: "abc", name: "  ").absoluteString
-      == "wss://relay.example.com/host?id=abc")
-    #expect(RemoteAccessConfig.hostURL(base: base, hostID: nil, name: "").absoluteString
-      == "wss://relay.example.com/host")
+    #expect(
+      RemoteAccessConfig.hostURL(base: base, hostID: nil, name: "Mac").absoluteString
+        == "wss://relay.example.com/host?name=Mac")
+    #expect(
+      RemoteAccessConfig.hostURL(base: base, hostID: "abc", name: "  ").absoluteString
+        == "wss://relay.example.com/host?id=abc")
+    #expect(
+      RemoteAccessConfig.hostURL(base: base, hostID: nil, name: "").absoluteString
+        == "wss://relay.example.com/host")
   }
 
   @Test func hostURLNormalizesTheName() throws {
     let base = try #require(URL(string: "wss://relay.example.com/host"))
     let url = RemoteAccessConfig.hostURL(base: base, hostID: nil, name: " a\nb ")
     #expect(url.absoluteString == "wss://relay.example.com/host?name=a%20b")
+  }
+
+  // MARK: - Test host id override
+
+  @Test func theTestHostIDReplacesTheDerivedOneOnlyWithForcedHosting() {
+    let derived = RemoteAccessConfig.hostID(hardwareUUID: "U")
+    #expect(
+      RemoteAccessConfig.hostID(
+        hardwareUUID: "U", environment: ["SUPACODE_REMOTE_ACCESS": "1", "SUPACODE_REMOTE_HOST_ID": "test-mac_2"])
+        == "test-mac_2")
+    #expect(
+      RemoteAccessConfig.hostID(hardwareUUID: "U", environment: ["SUPACODE_REMOTE_HOST_ID": "test-mac_2"]) == derived)
+    #expect(
+      RemoteAccessConfig.hostID(
+        hardwareUUID: "U", environment: ["SUPACODE_REMOTE_ACCESS": "0", "SUPACODE_REMOTE_HOST_ID": "test-mac_2"])
+        == derived)
+  }
+
+  @Test func anInvalidTestHostIDIsIgnored() {
+    let derived = RemoteAccessConfig.hostID(hardwareUUID: "U")
+    for bad in ["", "has space", "ъ", String(repeating: "a", count: 65)] {
+      #expect(
+        RemoteAccessConfig.hostID(
+          hardwareUUID: "U", environment: ["SUPACODE_REMOTE_ACCESS": "1", "SUPACODE_REMOTE_HOST_ID": bad])
+          == derived)
+    }
   }
 }

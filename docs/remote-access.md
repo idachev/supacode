@@ -234,4 +234,7 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
 - **A second Supacode for tests** needs `CFFIXED_USER_HOME=<dir>` and `ZMX_DIR=<short dir>`
   (Foundation ignores `HOME`); otherwise it shares `~/.supacode` state and zmx sessions with the
   real app. It connects to the relay only with `SUPACODE_REMOTE_ACCESS=1`, and then it takes the
-  host slot of this Mac from the installed app until that one restarts.
+  host slot of this Mac from the installed app until that one restarts. Add
+  `SUPACODE_REMOTE_HOST_ID=<id>` (1 to 64 characters of `A-Z a-z 0-9 _ -`, honoured only together
+  with `SUPACODE_REMOTE_ACCESS=1`) and that copy gets its own place on the relay, so it does not
+  take the installed app's slot.

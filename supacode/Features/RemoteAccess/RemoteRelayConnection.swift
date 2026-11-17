@@ -58,8 +58,32 @@ nonisolated struct RemoteAccessConfig: Decodable, Equatable, Sendable {
     return String(hex.prefix(16))
   }
 
+  /// A test-only host id for a second Supacode: with `overrideVariable` set to `1` the copy files itself
+  /// under this id, so it does not take the installed app's slot on the relay.
+  static let hostIDVariable = "SUPACODE_REMOTE_HOST_ID"
+
+  /// The derived id, or the `hostIDVariable` value when forcing remote access on (`overrideVariable` = `1`)
+  /// and the value is 1 to 64 characters of `A-Z a-z 0-9 _ -`. A non-empty value that is ignored is logged
+  /// without its text.
+  static func hostID(hardwareUUID: String?, environment: [String: String]) -> String? {
+    guard environment[overrideVariable] == "1", let requested = environment[hostIDVariable] else {
+      return hostID(hardwareUUID: hardwareUUID)
+    }
+    let allowed = requested.utf8.allSatisfy {
+      ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x5F
+        || $0 == 0x2D
+    }
+    guard allowed, (1...64).contains(requested.utf8.count) else {
+      if !requested.isEmpty { relayLogger.warning("Ignoring an invalid \(hostIDVariable)") }
+      return hostID(hardwareUUID: hardwareUUID)
+    }
+    return requested
+  }
+
   /// The id of the Mac this process runs on.
-  static var currentHostID: String? { hostID(hardwareUUID: HardwareInfo.uuid) }
+  static var currentHostID: String? {
+    hostID(hardwareUUID: HardwareInfo.uuid, environment: ProcessInfo.processInfo.environment)
+  }
 
   /// The Mac's computer name from the system configuration store, which does
   /// no network lookup (`Host.current()` can block on name resolution).
