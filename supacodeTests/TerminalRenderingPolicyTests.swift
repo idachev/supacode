@@ -216,4 +216,40 @@ struct TerminalRenderingPolicyTests {
     let kept = hold.keeps(layoutBackingSize: pane)
     #expect(!kept)
   }
+
+  // MARK: - Pinned grid hold (a held `resize`, kept until unpinned)
+
+  @Test func aPinnedHoldSurvivesADifferentPaneSize() {  // РФ5
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    hold.pin(replacing: CGSize(width: 800, height: 600))
+    let first = hold.keeps(layoutBackingSize: CGSize(width: 1000, height: 700))
+    let second = hold.keeps(layoutBackingSize: CGSize(width: 640, height: 480))
+    #expect(first)
+    #expect(second)
+    #expect(hold.isPinned)
+  }
+
+  @Test func releasingAPinnedHoldReturnsTheNewestPaneSize() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    hold.pin(replacing: CGSize(width: 800, height: 600))
+    _ = hold.keeps(layoutBackingSize: CGSize(width: 1000, height: 700))
+    let released = hold.release()
+    #expect(released == CGSize(width: 1000, height: 700))
+    #expect(!hold.isPinned)
+  }
+
+  @Test func anOrdinaryHoldStillEndsOnADifferentPaneSize() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    hold.hold(replacing: CGSize(width: 800, height: 600))
+    let kept = hold.keeps(layoutBackingSize: CGSize(width: 1000, height: 700))
+    #expect(!kept)
+  }
+
+  @Test func pinningOverAnOrdinaryHoldKeepsThePaneSizeItReplaced() {
+    var hold = GhosttySurfaceView.RequestedGridHold()
+    hold.hold(replacing: CGSize(width: 800, height: 600))
+    hold.pin(replacing: CGSize(width: 111, height: 111))
+    let released = hold.release()
+    #expect(released == CGSize(width: 800, height: 600))
+  }
 }

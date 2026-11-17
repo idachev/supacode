@@ -62,6 +62,131 @@ struct GhosttySurfaceViewTests {
     #expect(Int(resized.rows) == 12)
   }
 
+  // A never-shown surface takes a pinned grid as its start size, and a second
+  // pin with another grid replaces it. Needs a live core surface with cell
+  // metrics, absent when the display sleeps; then only the record is checked.
+  @Test func pinGridOnANeverShownSurfaceSizesItAndRepins() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let outcome = surfaceView.pinGrid(columns: 40, rows: 12)
+    #expect(surfaceView.pinnedGrid?.columns == 40)
+    #expect(surfaceView.pinnedGrid?.rows == 12)
+    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    #expect(outcome == .applied)
+    #expect(Self.grid(of: surface) == [40, 12])
+
+    #expect(surfaceView.pinGrid(columns: 50, rows: 20) == .applied)
+    #expect(Self.grid(of: surface) == [50, 20])
+    #expect(surfaceView.pinGrid(columns: 50, rows: 20) == .unchanged)
+
+    surfaceView.unpinGrid()
+    #expect(surfaceView.pinnedGrid == nil)
+  }
+
+  // A shown surface keeps a pinned grid through layout passes that measure
+  // another pane size and through a move to another window; unpinning puts
+  // the pane's newest size back.
+  @Test func aPinnedGridSurvivesLayoutAndAWindowMove() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let first = Self.makeWindow()
+    let second = Self.makeWindow()
+    defer {
+      first.close()
+      second.close()
+    }
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    first.contentView?.addSubview(surfaceView)
+    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    surfaceView.updateSurfaceSize()
+    let paneGrid = Self.grid(of: surface)
+
+    #expect(surfaceView.pinGrid(columns: 40, rows: 12) == .applied)
+    #expect(Self.grid(of: surface) == [40, 12])
+    surfaceView.updateSurfaceSize(contentSize: CGSize(width: 600, height: 500))
+    surfaceView.updateSurfaceSize(contentSize: CGSize(width: 400, height: 300))
+    #expect(Self.grid(of: surface) == [40, 12])
+
+    surfaceView.removeFromSuperview()
+    second.contentView?.addSubview(surfaceView)
+    surfaceView.updateSurfaceSize()
+    #expect(Self.grid(of: surface) == [40, 12])
+
+    surfaceView.unpinGrid()
+    #expect(Self.grid(of: surface) == paneGrid)
+  }
+
+  // A hibernate + wake installs a new surface; the content pins it with the
+  // grid it recorded, including a pin made while there was no surface.
+  @Test func terminalContentPinsEverySurfaceItInstalls() throws {
+    var made: [GhosttySurfaceView] = []
+    let content = TerminalContent(
+      id: ContentID(),
+      makeSurface: { geometry, _, _ in
+        let view = Self.makeSurfaceView(geometry: geometry)
+        made.append(view)
+        return TerminalContent.SpawnedSurface(view: view, usesZmx: true)
+      },
+      initialState: TerminalContentState(workingDirectory: nil)
+    )
+    defer { content.tearDown() }
+
+    #expect(content.pinGrid(columns: 40, rows: 12) == nil)
+    #expect(content.pinnedGrid?.columns == 40)
+    #expect(content.pinnedGrid?.rows == 12)
+
+    content.startSession(at: .fallback)
+    let firstView = try #require(made.first)
+    #expect(firstView.pinnedGrid?.columns == 40)
+    #expect(firstView.pinnedGrid?.rows == 12)
+
+    content.hibernate()
+    content.startSession(at: .fallback)
+    #expect(made.count == 2)
+    let woken = try #require(made.last)
+    #expect(woken !== firstView)
+    #expect(woken.pinnedGrid?.columns == 40)
+    #expect(woken.pinnedGrid?.rows == 12)
+    if let surface = woken.surface, Self.hasCellMetrics(surface) {
+      #expect(Self.grid(of: surface) == [40, 12])
+    }
+
+    content.unpinGrid()
+    #expect(content.pinnedGrid == nil)
+    #expect(woken.pinnedGrid == nil)
+  }
+
+  private static func makeSurfaceView(geometry: ContentGeometry = .fallback) -> GhosttySurfaceView {
+    GhosttySurfaceView(
+      id: UUID(),
+      runtime: GhosttyRuntime(),
+      workingDirectory: nil,
+      initialGeometry: geometry,
+      context: GHOSTTY_SURFACE_CONTEXT_TAB
+    )
+  }
+
+  private static func makeWindow() -> NSWindow {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.borderless],
+      backing: .buffered,
+      defer: true
+    )
+    window.isReleasedWhenClosed = false
+    return window
+  }
+
+  private static func hasCellMetrics(_ surface: ghostty_surface_t) -> Bool {
+    let size = ghostty_surface_size(surface)
+    return size.cell_width_px > 0 && size.cell_height_px > 0
+  }
+
+  private static func grid(of surface: ghostty_surface_t) -> [Int] {
+    let size = ghostty_surface_size(surface)
+    return [Int(size.columns), Int(size.rows)]
+  }
+
   @Test func surfaceBackingSizeInWindowConvertsAtTheWindowScale() {
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),

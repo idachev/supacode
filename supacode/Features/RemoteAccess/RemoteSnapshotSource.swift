@@ -128,11 +128,33 @@ final class RemoteSnapshotSource {
   /// launch, or hibernated); the router then wakes it (`wake(contentID:)`).
   func resizeGrid(contentID: UUID, columns: Int, rows: Int) -> RemoteResizeAttempt {
     let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
-    switch content?.applyRequestedGrid(columns: columns, rows: rows) {
-    case .applied: return .applied
-    case .unchanged: return .unchanged
-    case .notReady: return .notReady
-    case nil: return content?.sessionFailedToStart == true ? .failedToStart : .noSurface
+    return Self.resizeAttempt(content?.applyRequestedGrid(columns: columns, rows: rows), content: content)
+  }
+
+  /// One try at pinning a terminal's grid (a held `resize`): it then survives
+  /// the pane's layout changes, window moves and hibernate + wake until
+  /// `unpinGrid`. Mapped as `resizeGrid`; on `.noSurface` the pin is already
+  /// recorded and the next surface takes it.
+  func pinGrid(contentID: UUID, columns: Int, rows: Int) -> RemoteResizeAttempt {
+    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    return Self.resizeAttempt(content?.pinGrid(columns: columns, rows: rows), content: content)
+  }
+
+  /// Ends a pinned grid; the terminal returns to its pane's size.
+  func unpinGrid(contentID: UUID) {
+    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    content?.unpinGrid()
+  }
+
+  private static func resizeAttempt(
+    _ outcome: GhosttySurfaceView.RequestedGridOutcome?,
+    content: TerminalContent?
+  ) -> RemoteResizeAttempt {
+    switch outcome {
+    case .applied: .applied
+    case .unchanged: .unchanged
+    case .notReady: .notReady
+    case nil: content?.sessionFailedToStart == true ? .failedToStart : .noSurface
     }
   }
 

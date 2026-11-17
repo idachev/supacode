@@ -157,6 +157,8 @@ final class TerminalContent: TabContent {
   private var usesZmx = false
   private var hasSpawned = false
   private(set) var sessionFailedToStart = false
+  /// The pinned grid, kept across hibernate and wake; nil when not pinned.
+  private(set) var pinnedGrid: (columns: Int, rows: Int)?
 
   init(
     id: ContentID,
@@ -198,6 +200,21 @@ final class TerminalContent: TabContent {
     surfaceView?.applyRequestedGrid(columns: columns, rows: rows)
   }
 
+  /// Holds exactly `columns` × `rows` on the surface until `unpinGrid()`, across
+  /// pane layout changes, window moves and hibernate + wake (every surface
+  /// `startSession` installs is pinned). Nil while there is no live surface:
+  /// the pin is recorded and applied when one exists.
+  func pinGrid(columns: Int, rows: Int) -> GhosttySurfaceView.RequestedGridOutcome? {
+    pinnedGrid = (columns, rows)
+    return surfaceView?.pinGrid(columns: columns, rows: rows)
+  }
+
+  /// Ends the pin; the surface returns to its pane's size.
+  func unpinGrid() {
+    pinnedGrid = nil
+    surfaceView?.unpinGrid()
+  }
+
   // Hibernated terminals have no live surface, so nothing is interruptible.
   // A locked tab (completed blocking script) parks its runner alive, so
   // Ghostty keeps reporting confirm-quit for work nothing can lose; the lock
@@ -222,6 +239,10 @@ final class TerminalContent: TabContent {
     searchToolbar.surfaceView = spawned.view
     usesZmx = spawned.usesZmx
     hasSpawned = true
+    // A wake creates a new surface; it takes the pin the old one had.
+    if let pinnedGrid {
+      _ = spawned.view.pinGrid(columns: pinnedGrid.columns, rows: pinnedGrid.rows)
+    }
   }
 
   func hibernate() {

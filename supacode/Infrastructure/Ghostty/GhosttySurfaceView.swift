@@ -103,6 +103,8 @@ final class GhosttySurfaceView: NSView, Identifiable {
   private var lastAppliedBackingSize: CGSize = .zero
   // A remote client's `resize` held over the pane's own size; see RequestedGridHold.
   private var requestedGridHold = RequestedGridHold()
+  /// The grid `pinGrid` holds until `unpinGrid()`; nil while nothing is pinned.
+  private(set) var pinnedGrid: GridCap.Grid?
   private var lastPerformKeyEvent: TimeInterval?
   private var currentCursor: NSCursor = .iBeam
   private var focused = false
@@ -522,7 +524,12 @@ final class GhosttySurfaceView: NSView, Identifiable {
       hasBeenInWindow = true
     }
     // Shown or hidden is a layout change of the pane: a held remote grid ends.
-    releaseRequestedGrid()
+    // A pinned grid stays; a surface first shown now pins its hold here.
+    if pinnedGrid != nil {
+      _ = applyPinnedGrid()
+    } else {
+      releaseRequestedGrid()
+    }
     updateScreenObservers()
     updateContentScale()
     notifySizeChanged()
@@ -1076,10 +1083,14 @@ final class GhosttySurfaceView: NSView, Identifiable {
 
   /// A grid a remote client asked for (`resize`), held over the pane's own
   /// size until the pane's next layout change: a layout pass that measures a
-  /// different size, or the view leaving or joining a window.
+  /// different size, or the view leaving or joining a window. A pinned hold
+  /// (`pin`) survives every layout change until `release()`.
   struct RequestedGridHold: Equatable {
     /// The pane's backing size the held grid replaced; nil while nothing is held.
+    /// While pinned it follows the pane's newest measured size.
     private(set) var paneBackingSize: CGSize?
+    /// Whether the hold survives layout changes until `release()`.
+    private(set) var isPinned = false
 
     /// Starts a hold over `paneBackingSize`. A hold already active keeps its
     /// pane size, so a second request never records the first one as the pane's.
@@ -1087,18 +1098,33 @@ final class GhosttySurfaceView: NSView, Identifiable {
       if self.paneBackingSize == nil { self.paneBackingSize = paneBackingSize }
     }
 
+    /// Like `hold`, and the hold then survives every layout pass until `release()`.
+    mutating func pin(replacing paneBackingSize: CGSize) {
+      hold(replacing: paneBackingSize)
+      isPinned = true
+    }
+
     /// A layout pass measured `backingSize`. True keeps the requested grid (the
-    /// pane did not change); false ends any hold, so the pane's size applies.
+    /// pane did not change, or the hold is pinned, which records the size as the
+    /// pane's newest); false ends any hold, so the pane's size applies.
     mutating func keeps(layoutBackingSize backingSize: CGSize) -> Bool {
       guard let pane = paneBackingSize else { return false }
+      if isPinned {
+        paneBackingSize = backingSize
+        return true
+      }
       if backingSize == pane { return true }
       paneBackingSize = nil
       return false
     }
 
-    /// Ends the hold; the pane size it replaced, or nil when nothing was held.
+    /// Ends the hold, pinned or not; the pane size it replaced (a pinned
+    /// hold's newest), or nil when nothing was held.
     mutating func release() -> CGSize? {
-      defer { paneBackingSize = nil }
+      defer {
+        paneBackingSize = nil
+        isPinned = false
+      }
       return paneBackingSize
     }
   }
@@ -1252,9 +1278,58 @@ final class GhosttySurfaceView: NSView, Identifiable {
     pushSurfaceSize(pane)
   }
 
+  /// Holds exactly this grid until `unpinGrid()`, whatever the pane measures and
+  /// whichever window the view is in; re-applied when the cell metrics change.
+  /// The pin is recorded even when the outcome is `.notReady`: the first cell
+  /// metrics apply it.
+  func pinGrid(columns: Int, rows: Int) -> RequestedGridOutcome {
+    pinnedGrid = (columns, rows)
+    return applyPinnedGrid()
+  }
+
+  /// Ends the pin and puts the pane's newest size back.
+  func unpinGrid() {
+    pinnedGrid = nil
+    releaseRequestedGrid()
+  }
+
+  /// Sets the grid to `pinnedGrid`. A surface the Mac never showed takes it as
+  /// its start size (`capUnmountedGrid`) and pins the hold once it joins a
+  /// window; a shown one pins the hold over the pane's size first, so the
+  /// layout passes that follow keep the grid.
+  private func applyPinnedGrid() -> RequestedGridOutcome {
+    guard let pinnedGrid else { return .unchanged }
+    guard let surface else { return .notReady }
+    let size = ghostty_surface_size(surface)
+    guard size.cell_width_px > 0, size.cell_height_px > 0 else { return .notReady }
+    let matches = Int(size.columns) == pinnedGrid.columns && Int(size.rows) == pinnedGrid.rows
+    guard window != nil || hasBeenInWindow else {
+      if matches { return .unchanged }
+      return capUnmountedGrid(maxColumns: pinnedGrid.columns, maxRows: pinnedGrid.rows, exact: true)
+        ? .applied : .notReady
+    }
+    requestedGridHold.pin(replacing: lastAppliedBackingSize)
+    guard
+      !matches,
+      let pinned = GridCap.backingSize(
+        current: CGSize(width: CGFloat(size.width_px), height: CGFloat(size.height_px)),
+        grid: (Int(size.columns), Int(size.rows)),
+        cell: CGSize(width: CGFloat(size.cell_width_px), height: CGFloat(size.cell_height_px)),
+        limit: pinnedGrid,
+        exact: true
+      )
+    else { return .unchanged }
+    // Recorded as applied, so the hibernation freeze pairs it with the grid it renders.
+    lastAppliedBackingSize = pinned
+    pushSurfaceSize(pinned)
+    return .applied
+  }
+
   func updateCellSize(width: UInt32, height: UInt32) {
     cellSize = CGSize(width: CGFloat(width), height: CGFloat(height))
     scrollWrapper?.updateSurfaceSize()
+    // A font or scale change keeps a pinned grid's columns × rows.
+    if pinnedGrid != nil { _ = applyPinnedGrid() }
   }
 
   func updateScrollbar(total: UInt64, offset: UInt64, length: UInt64) {
