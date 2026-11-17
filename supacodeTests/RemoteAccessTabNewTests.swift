@@ -178,8 +178,16 @@ struct RemoteAccessTabNewTests {
         return probes.value >= 4 ? content : nil
       }
     }
-    await Task.megaYield()
-    await clock.advance(by: .milliseconds(300))
+    // One poll interval at a time: under parallel load the poller may register
+    // its next sleep after one long `advance` already passed it, and hang.
+    var steps = 0
+    while probes.value < 4, steps < 50 {
+      await Task.megaYield()
+      await clock.advance(by: .milliseconds(100))
+      steps += 1
+    }
+    // Fails fast instead of waiting out the time limit.
+    if probes.value < 4 { wait.cancel() }
     #expect(await wait.value == content)
     #expect(probes.value == 4)
   }
