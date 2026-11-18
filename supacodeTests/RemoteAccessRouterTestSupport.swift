@@ -294,4 +294,36 @@ enum RemoteRouterTestSupport {
     }
     return condition()
   }
+
+  /// Moves `clock` forward by `total` in steps of `increment`, yielding before
+  /// each so the router's sleeps are registered.
+  static func step(
+    _ clock: TestClock<Duration>, by total: Duration, increment: Duration = .milliseconds(250)
+  ) async {
+    var elapsed: Duration = .zero
+    while elapsed < total {
+      await Task.megaYield()
+      await clock.advance(by: increment)
+      elapsed += increment
+    }
+    await Task.megaYield()
+  }
+
+  /// Steps `clock` in `increment`s until `condition` holds, for at most
+  /// `limit`, settling before each step (`settle`). Returns whether it held.
+  /// Never one big `advance`: under parallel load a sleep registered late
+  /// would miss it and the wait would hang.
+  @discardableResult
+  static func step(
+    _ clock: TestClock<Duration>, until condition: () -> Bool, within limit: Duration,
+    increment: Duration = .milliseconds(250)
+  ) async -> Bool {
+    var elapsed: Duration = .zero
+    while elapsed < limit {
+      if await settle(condition) { return true }
+      await clock.advance(by: increment)
+      elapsed += increment
+    }
+    return await settle(condition)
+  }
 }

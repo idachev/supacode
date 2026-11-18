@@ -122,9 +122,10 @@ struct RemoteAccessAttachTests {
     #expect(streamA.stopped.value)
     #expect(!streamB.stopped.value)
     // B's wait goes on: it ends at its own timeout and answers for B only.
-    await Task.megaYield()
-    await clock.advance(by: RemoteHostRouter.resizeReadyTimeout)
-    await RemoteRouterTestSupport.settle { !phone.messages(ofType: "error").isEmpty }
+    let answered = await RemoteRouterTestSupport.step(
+      clock, until: { !phone.messages(ofType: "error").isEmpty },
+      within: RemoteHostRouter.resizeReadyTimeout + .seconds(2))
+    #expect(answered)
     let errors = phone.messages(ofType: "error")
     #expect(errors.count == 1)
     #expect(errors.first?["id"] as? Int == 5)

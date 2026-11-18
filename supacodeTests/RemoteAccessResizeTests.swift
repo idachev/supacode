@@ -31,8 +31,9 @@ struct RemoteAccessResizeTests {
     let clock = TestClock()
     let woken = LockIsolated(0)
     let tries = LockIsolated(0)
+    let result = LockIsolated<RemoteResizeResult?>(nil)
     let wait = Task { @MainActor in
-      await RemoteHostRouter.settleResize(
+      let settled = await RemoteHostRouter.settleResize(
         first: .noSurface, clock: clock,
         wake: {
           woken.withValue { $0 += 1 }
@@ -43,10 +44,15 @@ struct RemoteAccessResizeTests {
           // The woken surface reports cell metrics on the third try.
           return tries.value >= 3 ? .applied : .notReady
         })
+      result.setValue(settled)
     }
-    await Task.megaYield()
-    await clock.advance(by: RemoteHostRouter.resizeRetryInterval * 2)
-    #expect(await wait.value == .applied)
+    // One retry interval at a time, well short of the 6 s deadline.
+    let settled = await RemoteRouterTestSupport.step(
+      clock, until: { result.value != nil }, within: RemoteHostRouter.resizeRetryInterval * 10,
+      increment: RemoteHostRouter.resizeRetryInterval)
+    #expect(settled)
+    await wait.value
+    #expect(result.value == .applied)
     #expect(woken.value == 1)
     #expect(tries.value == 3)
   }
