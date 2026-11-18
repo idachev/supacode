@@ -1152,7 +1152,6 @@ final class GhosttySurfaceView: NSView, Identifiable {
       return .apply
     }
 
-    /// Whether ending a held grid pushes the pane size the hold recorded.
     /// Whether ending a held grid pushes the pane size the hold recorded. A
     /// pinned hold records every size a layout pass measured, a degenerate one
     /// too; that one stays off the PTY (`decision` rejects it), and the next
