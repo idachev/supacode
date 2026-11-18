@@ -258,6 +258,22 @@ struct RemoteAccessLayoutActionTests {
     #expect(phone.messages(ofType: "error").isEmpty)
   }
 
+  /// Review F11: the `tab.new` wait reads the layout through the real store on
+  /// every poll (`contentID(ofTab:in:)`), which must not trap on the
+  /// test-built `Store`. The harness's terminal never gets a live surface to
+  /// size, so the wait answers its error at the deadline.
+  @Test func aNewTabWithoutALiveTerminalAnswersItsErrorAtTheDeadline() async throws {
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock, liveLayouts: true)
+    defer { harness.router.stop() }
+    let phone = harness.openPhone("phone-1")
+    harness.send("phone-1", #"{"t":"tab.new","id":9,"worktreeId":"\#(harness.worktreeID.rawValue)"}"#)
+    let error = try #require(await Self.awaitFrame("error", on: phone, clock: clock))
+    #expect(error["id"] as? Int == 9)
+    #expect(error["message"] as? String == "the new tab did not start on the Mac")
+    #expect(phone.messages(ofType: "tab.new").isEmpty)
+  }
+
   /// The no-op store never splits: the wait gives up at the deadline.
   @Test func aSplitThatNeverLandsAnswersPaneFailed() async throws {
     let clock = TestClock()

@@ -258,7 +258,7 @@ final class RemoteSnapshotSource {
   /// needs); nil until then.
   func contentID(ofTab tabID: UUID, in worktreeRaw: String) -> UUID? {
     let tab = TabID(rawValue: tabID)
-    for repository in store.repositories.repositories {
+    for repository in store.withState(\.repositories.repositories) {
       guard let worktree = repository.worktrees.first(where: { $0.id.rawValue == worktreeRaw }) else { continue }
       let layout = terminalManager.layoutState(for: worktree.id)?.layout
       return layout?.pane(containingTab: tab)?.tabs[id: tab]?.content.id.rawValue
