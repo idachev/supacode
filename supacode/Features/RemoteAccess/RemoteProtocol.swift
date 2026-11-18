@@ -52,11 +52,16 @@ nonisolated struct RemoteInboundMessage: Decodable, Equatable, Sendable {
   var repositoryId: RemoteLenientString?
   /// `worktree.new`: the branch name (required, trimmed by the host).
   var name: RemoteLenientString?
-  /// `attach`: keep the existing size and replay instead of resetting it.
+  /// `attach`: `true` keeps the connection's other attachments; without it
+  /// (or `false`) every other attachment of that connection is detached.
   var keep: Bool?
-  /// `watch`: start (`true`) or stop (`false`) watching the layout.
+  /// `watch`: start (`true`, also when missing) or stop (`false`) the pushed `list`.
   var on: Bool?
-  /// `resize`: the size is held until the phone detaches.
+  /// `resize`: the size is held with this connection as its owner: the Mac
+  /// pane's layout changes do not change it, and it ends at the owner's
+  /// `detach` of that content, its `attach` of another content without `keep`,
+  /// a newer `resize` without `hold`, or 30 s after the owner's connection or
+  /// stream was lost unless a held `resize` takes it over.
   var hold: Bool?
   /// `tab.close`: the tab to close.
   var tabId: String?
