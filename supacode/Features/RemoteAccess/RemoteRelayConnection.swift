@@ -63,10 +63,14 @@ nonisolated struct RemoteAccessConfig: Decodable, Equatable, Sendable {
   static let hostIDVariable = "SUPACODE_REMOTE_HOST_ID"
 
   /// The derived id, or the `hostIDVariable` value when forcing remote access on (`overrideVariable` = `1`)
-  /// and the value is 1 to 64 characters of `A-Z a-z 0-9 _ -`. A non-empty value that is ignored is logged
-  /// without its text.
+  /// and the value is 1 to 64 characters of `A-Z a-z 0-9 _ -`. A non-empty value that is ignored (invalid,
+  /// or set without `overrideVariable` = `1`) is logged without its text.
   static func hostID(hardwareUUID: String?, environment: [String: String]) -> String? {
-    guard environment[overrideVariable] == "1", let requested = environment[hostIDVariable] else {
+    guard let requested = environment[hostIDVariable] else { return hostID(hardwareUUID: hardwareUUID) }
+    guard environment[overrideVariable] == "1" else {
+      if !requested.isEmpty {
+        relayLogger.warning("Ignoring \(hostIDVariable): it applies only with \(overrideVariable)=1")
+      }
       return hostID(hardwareUUID: hardwareUUID)
     }
     let allowed = requested.utf8.allSatisfy {
