@@ -37,26 +37,45 @@ nonisolated final class FakeRemoteStream: RemoteTerminalStream, @unchecked Senda
     }
   }
 
-  /// A `.closed` the pump took off `events` but hands to the router only
-  /// once the test releases it (`holdClosed`).
-  nonisolated final class CloseHold: Sendable {
+  /// Which events the pump parks (`hold(_:)`).
+  nonisolated enum HeldEvent: Sendable {
+    case closed
+    case output
+  }
+
+  /// An event of the held kind that the pump took off `events` but hands to
+  /// the router only once the test releases it (`hold(_:)`).
+  nonisolated final class EventHold: Sendable {
+    let kind: HeldEvent
     let taken = Latch()
     let release = Latch()
+
+    init(kind: HeldEvent) {
+      self.kind = kind
+    }
+
+    func matches(_ event: ZmxRemoteStream.Event?) -> Bool {
+      switch (kind, event) {
+      case (.closed, .closed?): true
+      case (.output, .output?), (.output, .snapshot?): true
+      default: false
+      }
+    }
   }
 
   /// Pulls the next event from the test's queue for the router's pump.
   private final class Pull: @unchecked Sendable {
     var iterator: AsyncStream<ZmxRemoteStream.Event>.Iterator
-    let closeHold: LockIsolated<CloseHold?>
+    let eventHold: LockIsolated<EventHold?>
 
-    init(_ iterator: AsyncStream<ZmxRemoteStream.Event>.Iterator, closeHold: LockIsolated<CloseHold?>) {
+    init(_ iterator: AsyncStream<ZmxRemoteStream.Event>.Iterator, eventHold: LockIsolated<EventHold?>) {
       self.iterator = iterator
-      self.closeHold = closeHold
+      self.eventHold = eventHold
     }
 
     func next() async -> ZmxRemoteStream.Event? {
       let event = await iterator.next()
-      if case .closed = event, let hold = closeHold.value {
+      if let hold = eventHold.value, hold.matches(event) {
         hold.taken.open()
         await hold.release.wait()
       }
@@ -71,34 +90,34 @@ nonisolated final class FakeRemoteStream: RemoteTerminalStream, @unchecked Senda
   let starts = LockIsolated<[Int]>([])
   let stopped = LockIsolated(false)
   let sent = LockIsolated<[[UInt8]]>([])
-  /// Set by `holdClosed`; without it a `.closed` reaches the router at once.
-  private let closeHold: LockIsolated<CloseHold?>
+  /// Set by `hold(_:)`; without it every event reaches the router at once.
+  private let eventHold: LockIsolated<EventHold?>
 
   init(socketPath: String) {
     self.socketPath = socketPath
     let (queue, continuation) = AsyncStream.makeStream(of: ZmxRemoteStream.Event.self)
     self.continuation = continuation
-    let closeHold = LockIsolated<CloseHold?>(nil)
-    self.closeHold = closeHold
-    let pull = Pull(queue.makeAsyncIterator(), closeHold: closeHold)
+    let eventHold = LockIsolated<EventHold?>(nil)
+    self.eventHold = eventHold
+    let pull = Pull(queue.makeAsyncIterator(), eventHold: eventHold)
     events = AsyncStream(unfolding: { await pull.next() })
   }
 
-  /// From now on the pump parks a `.closed` it took until `releaseClosed()`,
-  /// so the test decides when the router's handler gets it.
-  func holdClosed() {
-    closeHold.setValue(CloseHold())
+  /// From now on the pump parks the next event of `kind` it takes until
+  /// `releaseHeld()`, so the test decides when the router's pump hands it on.
+  func hold(_ kind: HeldEvent) {
+    eventHold.setValue(EventHold(kind: kind))
   }
 
-  /// Returns once the pump took a held `.closed` off `events`; it has not
-  /// reached the router yet. Returns at once when nothing is held.
-  func closedTaken() async {
-    await closeHold.value?.taken.wait()
+  /// Returns once the pump took a held event off `events`; it has not reached
+  /// the router yet. Returns at once when nothing is held.
+  func heldTaken() async {
+    await eventHold.value?.taken.wait()
   }
 
-  /// Hands a held `.closed` on to the router's pump (idempotent).
-  func releaseClosed() {
-    closeHold.value?.release.open()
+  /// Hands a held event on to the router's pump (idempotent).
+  func releaseHeld() {
+    eventHold.value?.release.open()
   }
 
   var isStarted: Bool { !starts.value.isEmpty }

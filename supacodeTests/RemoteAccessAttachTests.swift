@@ -204,12 +204,12 @@ struct RemoteAccessAttachTests {
     let old = try #require(harness.streams(of: tab).first)
     // The old pump takes the close now but hands it to the router's
     // `streamClosed` only after the re-attach below replaced that stream.
-    old.holdClosed()
-    defer { old.releaseClosed() }
+    old.hold(.closed)
+    defer { old.releaseHeld() }
     old.emit(.closed(reason: "session closed"))
-    await old.closedTaken()
+    await old.heldTaken()
     harness.send("phone-1", Self.attach(tab, id: 2, keep: true))
-    old.releaseClosed()
+    old.releaseHeld()
     await RemoteRouterTestSupport.settle { phone.messages(ofType: "attached").count == 2 }
     for _ in 0..<5 { await Task.megaYield() }
     #expect(phone.messages(ofType: "detached").isEmpty)
@@ -227,6 +227,50 @@ struct RemoteAccessAttachTests {
     current.emit(.closed(reason: "current closed"))
     await RemoteRouterTestSupport.settle { !phone.messages(ofType: "detached").isEmpty }
     #expect(phone.messages(ofType: "detached").map { $0["reason"] as? String } == ["current closed"])
+  }
+
+  @Test func anOldStreamsBufferedOutputAfterAReAttachIsNotDelivered() async throws {  // review F4
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock, tabs: 1)
+    defer { harness.router.stop() }
+    let phone = harness.openPhone("phone-1")
+    let tab = harness.contents[0]
+    harness.send("phone-1", Self.attach(tab, id: 1, keep: true))
+    await RemoteRouterTestSupport.settle { phone.messages(ofType: "attached").count == 1 }
+    let old = try #require(harness.streams(of: tab).first)
+    // The old pump takes this output now but hands it on only after the
+    // re-attach below replaced that stream.
+    old.hold(.output)
+    defer { old.releaseHeld() }
+    old.emit(.output(Array("old".utf8)))
+    await old.heldTaken()
+    harness.send("phone-1", Self.attach(tab, id: 2, keep: true))
+    await RemoteRouterTestSupport.settle { phone.messages(ofType: "attached").count == 2 }
+    old.releaseHeld()
+    for _ in 0..<5 { await Task.megaYield() }
+    #expect(phone.messages(ofType: "out").isEmpty)
+    // The new stream's output still arrives.
+    let current = try #require(harness.streams(of: tab).last)
+    current.emit(.output(Array("new".utf8)))
+    await RemoteRouterTestSupport.settle { !phone.messages(ofType: "out").isEmpty }
+    let payloads = phone.messages(ofType: "out").compactMap { $0["b64"] as? String }
+    #expect(payloads == [Data("new".utf8).base64EncodedString()])
+  }
+
+  @Test func aDetachDuringTheWakeWaitStopsCheckingTheSocket() async throws {  // review F3
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock, tabs: 1, socketsUp: false)
+    defer { harness.router.stop() }
+    let phone = harness.openPhone("phone-1")
+    let tab = harness.contents[0]
+    harness.send("phone-1", Self.attach(tab, id: 1, keep: true))
+    for _ in 0..<5 { await Task.megaYield() }
+    harness.send("phone-1", #"{"t":"detach","contentId":"\#(tab.uuidString)"}"#)
+    let checksAtDetach = harness.socketChecks.value
+    for _ in 0..<20 { await Task.megaYield() }
+    // A cancelled wait returns; it must not spin on the socket until its deadline.
+    #expect(harness.socketChecks.value - checksAtDetach <= 1)
+    #expect(phone.messages(ofType: "attached").isEmpty)
   }
 
   @Test func aReAttachStopsTheOldStreamBeforeTheNewOne() async throws {

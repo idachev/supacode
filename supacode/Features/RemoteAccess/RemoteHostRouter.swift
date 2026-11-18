@@ -495,7 +495,7 @@ final class RemoteHostRouter {
         switch event {
         case .snapshot(let bytes), .output(let bytes):
           let messages = RemoteJSON.outputMessages(contentID: contentKey, bytes: bytes)
-          await self?.deliver(connID, messages)
+          await self?.deliverOutput(connID, contentID: contentID, stream: stream, messages)
         case .closed(let reason):
           await self?.streamClosed(
             connID: connID, contentID: contentID, contentKey: contentKey, stream: stream, reason: reason)
@@ -559,6 +559,16 @@ final class RemoteHostRouter {
     reply(connID, RemoteSizeMessage(contentId: attachment.contentKey, cols: grid.columns, rows: grid.rows))
   }
 
+  /// Hands a stream's output to the phone, unless a re-attach or a detach
+  /// replaced or ended that stream meanwhile: an old stream's buffered `out`
+  /// must not follow the new attachment's `attached`.
+  private func deliverOutput(
+    _ connID: String, contentID: UUID, stream: any RemoteTerminalStream, _ messages: [String]
+  ) {
+    guard isCurrent(connID: connID, contentID: contentID, stream: stream) else { return }
+    deliver(connID, messages)
+  }
+
   /// Hands finished JSON messages to the phone's transport, in order.
   private func deliver(_ connID: String, _ messages: [String]) {
     if let lan = lanSinks[connID] {
@@ -596,7 +606,13 @@ final class RemoteHostRouter {
   private static func waitForSocket(at path: String, exists: @Sendable (String) -> Bool) async {
     let deadline = ContinuousClock.now + wakeTimeout
     while ContinuousClock.now < deadline, !exists(path) {
-      try? await Task.sleep(for: .milliseconds(200))
+      // A cancelled wait (a detach or re-attach) returns at once instead of
+      // spinning on the socket check until the deadline.
+      do {
+        try await Task.sleep(for: .milliseconds(200))
+      } catch {
+        return
+      }
     }
   }
 
