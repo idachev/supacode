@@ -252,4 +252,24 @@ struct TerminalRenderingPolicyTests {
     let released = hold.release()
     #expect(released == CGSize(width: 800, height: 600))
   }
+
+  // Review F5: a pinned hold records every measured pane size, a degenerate
+  // one too; its release must not push that to the PTY.
+  @Test func aReleasedHoldDoesNotPushADegeneratePaneSize() {
+    let pinned = CGSize(width: 400, height: 240)
+    let degenerate = GhosttySurfaceView.ResizePolicy.pushesReleasedPaneSize(
+      CGSize(width: 48, height: 30), lastAppliedBackingSize: pinned, cellWidth: 10, cellHeight: 20)
+    #expect(!degenerate)
+    let usable = GhosttySurfaceView.ResizePolicy.pushesReleasedPaneSize(
+      CGSize(width: 1600, height: 1200), lastAppliedBackingSize: pinned, cellWidth: 10, cellHeight: 20)
+    #expect(usable)
+    // As before for every other case: the pane size equal to the pinned one,
+    // and unknown cell metrics, still push.
+    let unchanged = GhosttySurfaceView.ResizePolicy.pushesReleasedPaneSize(
+      pinned, lastAppliedBackingSize: pinned, cellWidth: 10, cellHeight: 20)
+    #expect(unchanged)
+    let unmeasured = GhosttySurfaceView.ResizePolicy.pushesReleasedPaneSize(
+      CGSize(width: 2, height: 2), lastAppliedBackingSize: pinned, cellWidth: 0, cellHeight: 0)
+    #expect(unmeasured)
+  }
 }

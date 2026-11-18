@@ -1151,6 +1151,26 @@ final class GhosttySurfaceView: NSView, Identifiable {
       guard columns >= 5, rows >= 2 else { return .rejectDegenerate }
       return .apply
     }
+
+    /// Whether ending a held grid pushes the pane size the hold recorded.
+    /// Whether ending a held grid pushes the pane size the hold recorded. A
+    /// pinned hold records every size a layout pass measured, a degenerate one
+    /// too; that one stays off the PTY (`decision` rejects it), and the next
+    /// layout pass at a usable size applies the pane's grid. Every other size
+    /// is pushed, as `updateSurfaceSize` would.
+    static func pushesReleasedPaneSize(
+      _ paneBackingSize: CGSize,
+      lastAppliedBackingSize: CGSize,
+      cellWidth: Int,
+      cellHeight: Int
+    ) -> Bool {
+      decision(
+        backingSize: paneBackingSize,
+        lastAppliedBackingSize: lastAppliedBackingSize,
+        cellWidth: cellWidth,
+        cellHeight: cellHeight
+      ) != .rejectDegenerate
+    }
   }
 
   /// Caps a grid by whole cells, keeping the padding remainder.
@@ -1274,6 +1294,17 @@ final class GhosttySurfaceView: NSView, Identifiable {
   /// joins then re-measures it in the layout pass that follows.
   private func releaseRequestedGrid() {
     guard let pane = requestedGridHold.release() else { return }
+    // A degenerate pane size a pinned hold recorded stays off the PTY;
+    // `lastAppliedBackingSize` keeps the held size, so the next layout pass
+    // re-evaluates the pane.
+    if let surface {
+      let size = ghostty_surface_size(surface)
+      guard
+        ResizePolicy.pushesReleasedPaneSize(
+          pane, lastAppliedBackingSize: lastAppliedBackingSize,
+          cellWidth: Int(size.cell_width_px), cellHeight: Int(size.cell_height_px))
+      else { return }
+    }
     lastAppliedBackingSize = pane
     pushSurfaceSize(pane)
   }

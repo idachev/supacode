@@ -176,6 +176,27 @@ struct GhosttySurfaceViewTests {
     #expect(Self.grid(of: surface) == [40, 12])
   }
 
+  // Review F5: a degenerate pane size measured while pinned is not pushed when
+  // the pin ends; the next layout pass at a usable size applies the pane's grid.
+  @Test func unpinningOverADegeneratePaneSizeKeepsAUsableGrid() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let window = Self.makeWindow()
+    defer { window.close() }
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    window.contentView?.addSubview(surfaceView)
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
+    surfaceView.updateSurfaceSize()
+    let paneGrid = Self.grid(of: surface)
+    #expect(surfaceView.pinGrid(columns: 40, rows: 12) == .applied)
+    surfaceView.updateSurfaceSize(contentSize: CGSize(width: 4, height: 4))
+
+    surfaceView.unpinGrid()
+    #expect(Self.grid(of: surface) == [40, 12])
+    surfaceView.updateSurfaceSize()
+    #expect(Self.grid(of: surface) == paneGrid)
+  }
+
   // A hibernate + wake installs a new surface; the content pins it with the
   // grid it recorded, including a pin made while there was no surface.
   @Test func terminalContentPinsEverySurfaceItInstalls() throws {
