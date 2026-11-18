@@ -162,11 +162,22 @@ final class RemoteRouterHarness {
   /// Streams made while an earlier stream of the same terminal still ran
   /// (a re-attach must stop the old one first).
   let overlappingStarts = LockIsolated(0)
+  /// The grid every PTY read returns; a test changes it to stand in for the
+  /// session taking another size.
+  let ptySize = LockIsolated<(columns: Int, rows: Int)>(RemoteRouterHarness.ptyGrid)
+  /// Whether the session sockets exist (`RemoteStreamIO.socketExists`), and
+  /// how many times the router checked.
+  let socketsUp: LockIsolated<Bool>
+  let socketChecks = LockIsolated(0)
+  /// The terminal contents the snapshot source finds (`registerTerminal`);
+  /// the process-wide `ContentRuntime.liveValue` stays untouched.
+  let terminals = RemoteTestTerminals()
 
   /// `liveLayouts`: the store runs `TerminalsFeature` (inert contents, no
   /// session kills), so layout actions the router sends really change the
   /// layout; otherwise the reducer is a no-op and the layout never changes.
-  init(clock: TestClock<Duration>, tabs: Int = 2, liveLayouts: Bool = false) {
+  init(clock: TestClock<Duration>, tabs: Int = 2, liveLayouts: Bool = false, socketsUp: Bool = true) {
+    self.socketsUp = LockIsolated(socketsUp)
     let contents = (0..<tabs).map { _ in UUID() }
     self.contents = contents
     let worktree = Worktree(
@@ -188,6 +199,10 @@ final class RemoteRouterHarness {
     self.terminalManager = terminalManager
     let streams = self.streams
     let overlappingStarts = self.overlappingStarts
+    let ptySize = self.ptySize
+    let sockets = self.socketsUp
+    let socketChecks = self.socketChecks
+    let terminals = self.terminals
     let streamIO = RemoteStreamIO(
       makeStream: { socketPath in
         let stream = FakeRemoteStream(socketPath: socketPath)
@@ -199,10 +214,14 @@ final class RemoteRouterHarness {
         }
         return stream
       },
-      socketExists: { _ in true },
-      ptySize: { _ in Self.ptyGrid })
+      socketExists: { _ in
+        socketChecks.withValue { $0 += 1 }
+        return sockets.value
+      },
+      ptySize: { _ in ptySize.value })
     router = RemoteHostRouter(
-      source: RemoteSnapshotSource(store: store, terminalManager: terminalManager),
+      source: RemoteSnapshotSource(
+        store: store, terminalManager: terminalManager, content: { terminals.byID[$0] }),
       hostName: "Mac", hostID: nil, appLabel: nil, clock: clock, streamIO: streamIO)
   }
 
@@ -262,11 +281,33 @@ final class RemoteRouterHarness {
     router.receiveDirect(connID: connID, json: Data(json.utf8))
   }
 
+  /// Registers a terminal content for `contentID` that never started a
+  /// surface, so the router's pin and unpin reach it and leave `pinnedGrid`.
+  @discardableResult
+  func registerTerminal(_ contentID: UUID) -> TerminalContent {
+    let content = TerminalContent(
+      id: ContentID(rawValue: contentID), makeSurface: { _, _, _ in nil },
+      initialState: TerminalContentState(workingDirectory: nil))
+    terminals.byID[content.id] = content
+    return content
+  }
+
   /// The streams the router made for `contentID`, oldest first.
   func streams(of contentID: UUID) -> [FakeRemoteStream] {
     let path = ZmxRemoteStream.socketPath(contentID: contentID)
     return streams.value.filter { $0.socketPath == path }
   }
+}
+
+/// The contents a harness's snapshot source looks up instead of the app's
+/// `ContentRuntime.liveValue`.
+@MainActor
+final class RemoteTestTerminals {
+  var byID: [ContentID: any TabContent] = [:]
+
+  nonisolated init() {}
+
+  nonisolated deinit {}
 }
 
 /// Router fixtures shared by the router suites.

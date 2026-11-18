@@ -521,15 +521,28 @@ final class RemoteHostRouter {
       self.reply(
         connID, RemoteAttachedMessage(id: requestID, contentId: contentKey, cols: first.columns, rows: first.rows))
       stream.start(scrollbackRows: scrollback)
-      while !Task.isCancelled {
-        try? await Task.sleep(for: Self.sizePollInterval)
-        guard !Task.isCancelled else { return }
-        await self.sendSizeIfChanged(connID: connID, contentID: contentID, stream: stream)
-      }
+      await self.pollSize(connID: connID, contentID: contentID, stream: stream)
     }
     clients[connID, default: [:]][contentID] = Attachment(
       contentID: contentID, contentKey: contentKey, socketPath: socketPath,
       stream: stream, pump: pump, sizeWatch: lifecycle)
+  }
+
+  /// Sends the terminal's size changes (`sendSizeIfChanged`) every
+  /// `sizePollInterval` on the router's `clock` until the attachment's task is
+  /// cancelled; also how the clients get the size a terminal returns to when
+  /// its hold ends.
+  private func pollSize(connID: String, contentID: UUID, stream: any RemoteTerminalStream) async {
+    let clock = self.clock
+    while !Task.isCancelled {
+      do {
+        try await clock.sleep(for: Self.sizePollInterval)
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      await sendSizeIfChanged(connID: connID, contentID: contentID, stream: stream)
+    }
   }
 
   /// Reads the PTY grid and sends `size` when it differs from the one the

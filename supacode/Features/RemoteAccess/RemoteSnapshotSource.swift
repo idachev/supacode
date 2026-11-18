@@ -10,10 +10,19 @@ import SupacodeSettingsShared
 final class RemoteSnapshotSource {
   private let store: StoreOf<AppFeature>
   private let terminalManager: WorktreeTerminalManager
+  /// The live content of one terminal (`ContentRuntime.liveValue` in the app);
+  /// router tests hand in their own, so they can watch a pin without touching
+  /// the process-wide registry.
+  private let content: @MainActor (ContentID) -> (any TabContent)?
 
-  init(store: StoreOf<AppFeature>, terminalManager: WorktreeTerminalManager) {
+  init(
+    store: StoreOf<AppFeature>,
+    terminalManager: WorktreeTerminalManager,
+    content: @escaping @MainActor (ContentID) -> (any TabContent)? = { ContentRuntime.liveValue.content(for: $0) }
+  ) {
     self.store = store
     self.terminalManager = terminalManager
+    self.content = content
   }
 
   nonisolated deinit {}
@@ -111,7 +120,7 @@ final class RemoteSnapshotSource {
   /// The live grid of a content's terminal, or nil when the content has no
   /// surface and no recorded grid yet.
   func gridSize(contentID: UUID) -> (columns: Int, rows: Int)? {
-    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    let content = self.content(ContentID(rawValue: contentID)) as? TerminalContent
     return content?.gridSize
   }
 
@@ -119,7 +128,7 @@ final class RemoteSnapshotSource {
   /// the phone asked for (`exact`), or capped so the phone does not get the
   /// whole Mac window's width. False while the terminal has no surface.
   func sizeNewTabGrid(contentID: UUID, columns: Int, rows: Int, exact: Bool) -> Bool {
-    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    let content = self.content(ContentID(rawValue: contentID)) as? TerminalContent
     return content?.capUnmountedGrid(maxColumns: columns, maxRows: rows, exact: exact) ?? false
   }
 
@@ -127,7 +136,7 @@ final class RemoteSnapshotSource {
   /// `.noSurface` while the terminal has no live surface (never started since
   /// launch, or hibernated); the router then wakes it (`wake(contentID:)`).
   func resizeGrid(contentID: UUID, columns: Int, rows: Int) -> RemoteResizeAttempt {
-    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    let content = self.content(ContentID(rawValue: contentID)) as? TerminalContent
     return Self.resizeAttempt(content?.applyRequestedGrid(columns: columns, rows: rows), content: content)
   }
 
@@ -136,13 +145,13 @@ final class RemoteSnapshotSource {
   /// `unpinGrid`. Mapped as `resizeGrid`; on `.noSurface` the pin is already
   /// recorded and the next surface takes it.
   func pinGrid(contentID: UUID, columns: Int, rows: Int) -> RemoteResizeAttempt {
-    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    let content = self.content(ContentID(rawValue: contentID)) as? TerminalContent
     return Self.resizeAttempt(content?.pinGrid(columns: columns, rows: rows), content: content)
   }
 
   /// Ends a pinned grid; the terminal returns to its pane's size.
   func unpinGrid(contentID: UUID) {
-    let content = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID)) as? TerminalContent
+    let content = self.content(ContentID(rawValue: contentID)) as? TerminalContent
     content?.unpinGrid()
   }
 
@@ -161,14 +170,14 @@ final class RemoteSnapshotSource {
   /// Whether the terminal refuses input (a completed blocking script's parked
   /// shell); the phone must not type where the Mac would not.
   func isReadOnly(contentID: UUID) -> Bool {
-    let chrome = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID))?.chrome as? TerminalTabChrome
+    let chrome = self.content(ContentID(rawValue: contentID))?.chrome as? TerminalTabChrome
     return chrome?.isReadOnly ?? false
   }
 
   /// The tab's chrome lists at least one agent (`TerminalTabChrome.agents`,
   /// what `list` sends as `tabs[].agents`), whatever its activity.
   func hasAgent(contentID: UUID) -> Bool {
-    let chrome = ContentRuntime.liveValue.content(for: ContentID(rawValue: contentID))?.chrome as? TerminalTabChrome
+    let chrome = self.content(ContentID(rawValue: contentID))?.chrome as? TerminalTabChrome
     return chrome?.agents.isEmpty == false
   }
 

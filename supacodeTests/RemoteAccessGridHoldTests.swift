@@ -6,10 +6,11 @@ import Testing
 @testable import supacode
 
 /// `resize` with `hold` (ПТ6): the owner bookkeeping (`RemoteGridHolds`), then
-/// the router with fake zmx streams (`RemoteRouterHarness`). The harness has no
-/// live terminal, so `pinGrid` / `unpinGrid` cannot be observed there; the
-/// router tests check the holds the router keeps (`heldGrids`, `orphanedHolds`).
-/// A held resize in the harness ends in `resize_failed` after
+/// the router with fake zmx streams (`RemoteRouterHarness`). The router tests
+/// check the holds the router keeps (`heldGrids`, `orphanedHolds`) and, through
+/// a terminal content registered in the harness that never starts a surface,
+/// the pin and unpin they cause (`TerminalContent.pinnedGrid`). A held resize
+/// in the harness ends in `resize_failed` after
 /// `RemoteHostRouter.resizeReadyTimeout` (no surface ever gets ready).
 @MainActor
 @Suite(.serialized, .timeLimit(.minutes(1)))
@@ -307,6 +308,122 @@ struct RemoteAccessGridHoldTests {
     #expect(harness.router.heldGrids[tabA] != nil)
     #expect(harness.router.heldGrids[tabB]?.owner == "phone-1")
     #expect(harness.router.orphanedHolds == [tabA])
+  }
+
+  // MARK: - Pin and unpin (review F2)
+
+  private static func pinned(_ content: TerminalContent) -> [Int]? {
+    content.pinnedGrid.map { [$0.columns, $0.rows] }
+  }
+
+  @Test func aHeldResizePinsTheTerminalAndTheOwnersDetachUnpinsIt() {
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock)
+    defer { harness.router.stop() }
+    let tab = harness.contents[0]
+    let content = harness.registerTerminal(tab)
+    _ = harness.openPhone("phone-1")
+    _ = harness.openPhone("phone-2")
+    harness.send("phone-1", Self.attach(tab, keep: true))
+    harness.send("phone-2", Self.attach(tab, keep: true))
+    harness.send("phone-1", Self.resize(tab, cols: 120, rows: 40, hold: true))
+    #expect(Self.pinned(content) == [120, 40])
+    // Another phone's detach leaves the owner's pin.
+    harness.send("phone-2", #"{"t":"detach","contentId":"\#(tab.uuidString)"}"#)
+    #expect(Self.pinned(content) == [120, 40])
+    harness.send("phone-1", #"{"t":"detach","contentId":"\#(tab.uuidString)"}"#)
+    #expect(Self.pinned(content) == nil)
+  }
+
+  @Test func aPlainResizeUnpinsAndDoesNotPin() {
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock)
+    defer { harness.router.stop() }
+    let tab = harness.contents[0]
+    let content = harness.registerTerminal(tab)
+    _ = harness.openPhone("phone-1")
+    harness.send("phone-1", Self.attach(tab, keep: true))
+    harness.send("phone-1", Self.resize(tab, cols: 90, rows: 25, hold: false))
+    #expect(Self.pinned(content) == nil)
+    harness.send("phone-1", Self.resize(tab, cols: 120, rows: 40, hold: true))
+    #expect(Self.pinned(content) == [120, 40])
+    harness.send("phone-1", Self.resize(tab, cols: 90, rows: 25, hold: false))
+    #expect(Self.pinned(content) == nil)
+  }
+
+  @Test func theGraceKeepsThePinAndItsExpiryUnpins() async {
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock)
+    defer { harness.router.stop() }
+    let tab = harness.contents[0]
+    let content = harness.registerTerminal(tab)
+    _ = harness.openPhone("phone-1")
+    harness.send("phone-1", Self.attach(tab, keep: true))
+    harness.send("phone-1", Self.resize(tab, cols: 120, rows: 40, hold: true))
+    harness.router.lanClosed("phone-1")
+    await RemoteRouterTestSupport.step(clock, by: RemoteGridHolds.grace - .milliseconds(500))
+    #expect(Self.pinned(content) == [120, 40])
+    let unpinned = await RemoteRouterTestSupport.step(
+      clock, until: { content.pinnedGrid == nil }, within: .seconds(3))
+    #expect(unpinned)
+  }
+
+  @Test func stopUnpinsEveryHeldTerminal() {
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock)
+    let (tabA, tabB) = (harness.contents[0], harness.contents[1])
+    let contentA = harness.registerTerminal(tabA)
+    let contentB = harness.registerTerminal(tabB)
+    _ = harness.openPhone("phone-1")
+    harness.send("phone-1", Self.attach(tabA, keep: true))
+    harness.send("phone-1", Self.attach(tabB, keep: true))
+    harness.send("phone-1", Self.resize(tabA, cols: 120, rows: 40, hold: true))
+    harness.send("phone-1", #"{"t":"conn.close"}"#)
+    _ = harness.openPhone("phone-2")
+    harness.send("phone-2", Self.attach(tabB, keep: true))
+    harness.send("phone-2", Self.resize(tabB, cols: 80, rows: 24, hold: true))
+    // One hold in its grace, one owned: `stop()` ends both.
+    #expect(Self.pinned(contentA) == [120, 40])
+    #expect(Self.pinned(contentB) == [80, 24])
+    harness.router.stop()
+    #expect(Self.pinned(contentA) == nil)
+    #expect(Self.pinned(contentB) == nil)
+  }
+
+  /// "When a hold ends … every attached client gets `size`": the size poll on
+  /// the router's clock picks up the size the PTY returns to.
+  @Test func everyAttachedPhoneGetsTheSizeTheTerminalReturnsToWhenAHoldEnds() async {
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock)
+    defer { harness.router.stop() }
+    let tab = harness.contents[0]
+    let content = harness.registerTerminal(tab)
+    let owner = harness.openPhone("phone-1")
+    let second = harness.openPhone("phone-2")
+    let third = harness.openPhone("phone-3")
+    for phone in ["phone-1", "phone-2", "phone-3"] { harness.send(phone, Self.attach(tab, keep: true)) }
+    let attached = await RemoteRouterTestSupport.settle {
+      [owner, second, third].allSatisfy { $0.messages(ofType: "attached").count == 1 }
+    }
+    #expect(attached)
+    harness.send("phone-1", Self.resize(tab, cols: 120, rows: 40, hold: true))
+    harness.send("phone-1", #"{"t":"detach","contentId":"\#(tab.uuidString)"}"#)
+    #expect(content.pinnedGrid == nil)
+    // The Mac pane's size comes back on the session PTY.
+    harness.ptySize.setValue((columns: 90, rows: 25))
+    // Only the router's clock drives the poll, never wall time: nothing before
+    // one poll interval, then every other phone has it.
+    let everyOtherPhoneSized = { [second, third].allSatisfy { !$0.messages(ofType: "size").isEmpty } }
+    await RemoteRouterTestSupport.step(clock, by: RemoteHostRouter.sizePollInterval - .milliseconds(250))
+    #expect(!everyOtherPhoneSized())
+    await RemoteRouterTestSupport.step(clock, by: .milliseconds(250))
+    let sized = await RemoteRouterTestSupport.settle(everyOtherPhoneSized)
+    #expect(sized)
+    for phone in [second, third] {
+      let sizes = phone.messages(ofType: "size").map { [$0["cols"] as? Int, $0["rows"] as? Int] }
+      #expect(sizes == [[90, 25]])
+    }
+    #expect(owner.messages(ofType: "size").isEmpty)
   }
 
   @Test func stopEndsEveryHold() {
