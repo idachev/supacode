@@ -296,6 +296,19 @@ struct RemoteAccessWatchTests {
     #expect(!harness.router.isWatchTicking)
   }
 
+  @Test func aLateWatchAfterTheConnectionClosedStartsNothing() {  // review F7
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock)
+    defer { harness.router.stop() }
+    harness.send("r1", #"{"t":"conn.open"}"#)
+    harness.send("r1", #"{"t":"conn.close"}"#)
+    harness.send("r1", Self.watchOn)
+    #expect(!harness.router.isWatchTicking)
+    // Nor from a connection the router never knew.
+    harness.send("r2", Self.watchOn)
+    #expect(!harness.router.isWatchTicking)
+  }
+
   @Test func aDetachOfEverythingKeepsTheWatch() {
     let clock = TestClock()
     let harness = RemoteRouterHarness(clock: clock)
@@ -310,6 +323,7 @@ struct RemoteAccessWatchTests {
     let clock = TestClock()
     let harness = RemoteRouterHarness(clock: clock)
     _ = harness.openPhone("c1")
+    harness.send("r1", #"{"t":"conn.open"}"#)
     harness.send("r1", Self.watchOn)
     harness.send("c1", Self.watchOn)
     harness.router.stop()

@@ -396,6 +396,12 @@ final class RemoteHostRouter {
   /// Starts or ends the phone's watch (a missing `on` means `true`) and answers
   /// with the state it asked for.
   private func watch(connID: String, message: RemoteInboundMessage) {
+    // A frame that arrives after `conn.close` (or from a connection never
+    // announced) must not leave the tick pushing to a dead connection.
+    guard clients[connID] != nil else {
+      routerLogger.info("watch from \(connID) ignored: the connection is not open")
+      return
+    }
     let watching = message.on ?? true
     if watching {
       watchers.start(connID)
