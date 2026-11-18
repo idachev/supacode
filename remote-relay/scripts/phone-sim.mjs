@@ -1,7 +1,9 @@
 // Simulates the phone against the live relay with the client key from
 // ~/.config/supacode/remote-client-key.txt. Every frame it receives is printed as one JSON line,
 // prefixed with the seconds since start; an `out` frame shows its byte count instead of `b64`.
-// Host and Mac names and the LAN details are replaced by "<redacted>", so the output can be shared.
+// Only host and Mac names and the LAN details are replaced by "<redacted>". The output is NOT safe to
+// share as is: `list` carries worktree paths (with the user name), repository and branch names and tab
+// titles, and OUT-TEXT prints terminal text. Remove those before you share it.
 // Usage: node scripts/phone-sim.mjs [--host <hostId>]                       -> hello (CAPS) + list (LAYOUT per worktree)
 //        node scripts/phone-sim.mjs [--host <hostId>] --watch <seconds>     -> watch on, pushed list frames for that time
 //        node scripts/phone-sim.mjs [--host <hostId>] <contentId> attach    -> attach, type a line, suggest, detach

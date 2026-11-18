@@ -472,7 +472,9 @@ list the sidebar's sections and drive any terminal tab, shell or agent. Design:
 ### How to verify
 
 Run the phone simulator from `remote-relay/` or the Android app. Every mode prints each frame as one
-JSON line, with host names and LAN details redacted:
+JSON line. Only the host names and the LAN details are redacted, so the output is not safe to share
+as is: `list` carries worktree paths (with the user name), repository and branch names and tab
+titles, and `OUT-TEXT` prints terminal text.
 
 - `node scripts/phone-sim.mjs [--host <hostId>]`: `CAPS` and each worktree's `LAYOUT`; without
   `--host` only the relay's host list.
