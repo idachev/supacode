@@ -129,7 +129,9 @@ host → relay, on the reserved `connId` `@`: `@\n{"t":"host.name","name":"<new 
 
 All of the above is additive and optional, so `v` stays `1` and this document stays "wire protocol
 v1". `v` changes only when an existing field changes meaning, or when a message that the other side
-must understand is added. New optional fields and new relay-only frames do not change it. The LAN
+must understand is added. New optional fields and new relay-only frames do not change it. Nor do new
+optional messages: the host lists each one in `hello`'s `caps`, and a client sends it only to a host
+whose `caps` has it (see "hello"), so an old host never gets a message it does not know. The LAN
 MAC input `supacode-lan-fp-v1:` is unchanged.
 
 Mixed versions (not confirmed on a live relay): a new host or client against an old relay works as a
@@ -251,7 +253,7 @@ pinned, then the rest. `contentId` is the id the terminal messages use. `agent` 
 value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw activity value.
 
 Each worktree may carry `layout`, the arrangement of its tabs into panes and splits as the Mac
-shows it. It is omitted when the worktree has no tabs. The `tabs` array does not change, so old
+shows it. It is omitted when the worktree has no terminal tab (the only kind `tabs` lists). The `tabs` array does not change, so old
 clients are unaffected.
 
 ```json
@@ -277,14 +279,22 @@ clients are unaffected.
 - `zoomedPaneId` is present only when that group's tree is zoomed on a single pane.
 - `panes` is flat: every pane of every group. `tabIds` refer to the worktree's `tabs[].id`;
   `selectedTabId` is the pane's selected tab. A client skips ids it cannot resolve.
+- Only terminal tabs are listed. A pane whose tabs are all of another kind comes with an empty
+  `tabIds` and no `selectedTabId`; a pane whose selected tab is not a terminal has no
+  `selectedTabId`.
 
 ### watch
 
 - client → host `{"t":"watch","id":5,"on":true}`
 - host → client `{"t":"watch","id":5,"on":true}`
+- `on` is optional: a `watch` without it means `"on":true`. The reply always carries `on`.
 - While a connection watches, the host sends it a full `list` frame with `"id":null` whenever the
   snapshot differs from the last `list` it sent to that connection. At most one push goes out per
   250 ms per connection, on the trailing edge, so the last state always arrives.
+- The first push comes at the first check after `watch`, up to 250 ms later, even right after a
+  `list`: only a `list` answered while the connection watches counts as the last one sent. A
+  client may therefore skip its own `list` request after `watch`, or ignore a pushed `list` equal
+  to the one it has.
 - Tab titles are the exception. `tabs[].title` is the live reported title, and an agent TUI rewrites
   it several times a second. A snapshot that differs from the last one sent only in tab titles is
   pushed at most once per 2 s per connection (trailing edge). Any other difference follows the
@@ -352,8 +362,10 @@ clients are unaffected.
     (`id` echoes the request's `id` when it had one; `message` is a short English reason).
   - A newer `resize` of the same terminal from any client, or the requester's `detach` of that
     content (an `attach` of another content without `keep` detaches it too), cancels a pending
-    one; an `attach` with `keep:true` cancels nothing. The cancelled request gets no reply of its
-    own (the newer one's `size` reaches every attached client).
+    one. An `attach` of the same content again (with or without `keep`) restarts its stream and
+    cancels that content's pending resize; its hold stays (see `hold`). An `attach` with
+    `keep:true` of another content cancels nothing. The cancelled request gets no reply of its own
+    (the newer one's `size` reaches every attached client).
 - After a confirmed resize without `hold` (the PTY took the requested size, the point where the
   clients get `size`), the host sends Ctrl+L (0x0C) to the terminal once, written exactly as an
   `input` would, so shells and TUIs (Claude Code, vim, htop) redraw at the new size. Also for a
@@ -692,8 +704,9 @@ LAN link is standard TLS 1.3 with a self-signed certificate that the phone pins.
 
 ### Client behaviour
 
-Try the addresses with a short connect timeout (about 2.5 s). On success send `hello`, `list` and
-the open `attach` over the LAN socket and keep the relay socket open as an idle fallback (ping
-only). When the LAN socket closes, go back to the relay and re-attach. Try the LAN again whenever a
+Try the addresses with a short connect timeout (about 2.5 s). On success send `hello`, `list`, an
+`attach` with `keep:true` for every open content and, when the client watched, `watch` again over
+the LAN socket, and keep the relay socket open as an idle fallback (ping only). When the LAN socket
+closes, go back to the relay, re-attach every open content the same way and `watch` again. Try the LAN again whenever a
 `hello` reply carries `lan`.
 When the client switches to another host, it closes the LAN socket together with the relay socket.

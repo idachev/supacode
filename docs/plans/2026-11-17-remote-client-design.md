@@ -144,8 +144,9 @@ nothing.
   screen).
 - `detach` stops the named content only. Closing the socket detaches all.
 - `resize` is accepted for any content the connection is attached to. A pending resize is cancelled
-  by a newer `resize` of that terminal or by the requester's `detach` of that content; an `attach`
-  with `keep:true` cancels nothing.
+  by a newer `resize` of that terminal or by the requester's `detach` of that content. An `attach`
+  of the same content again restarts its stream and cancels its pending resize (its hold stays); an
+  `attach` with `keep:true` of another content cancels nothing.
 - `out`, `size`, `detached` and `input` already carry `contentId` and do not change.
 
 ### ПТ2. The layout in `list`
