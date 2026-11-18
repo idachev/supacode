@@ -48,13 +48,16 @@ struct GhosttySurfaceViewTests {
       context: GHOSTTY_SURFACE_CONTEXT_TAB
     )
     defer { surfaceView.closeSurface() }
-    guard let surface = surfaceView.surface else { return }
+    guard let surface = surfaceView.surface else {
+      Self.recordSkippedLiveChecks()
+      return
+    }
     #expect(surfaceView.window == nil)
 
     let start = ghostty_surface_size(surface)
     #expect(CGFloat(start.width_px) == ContentGeometry.fallback.pixelSize.width)
     #expect(CGFloat(start.height_px) == ContentGeometry.fallback.pixelSize.height)
-    guard start.cell_width_px > 0, start.cell_height_px > 0 else { return }
+    guard Self.measuredSurface(of: surfaceView) != nil else { return }
 
     #expect(surfaceView.applyRequestedGrid(columns: 40, rows: 12) == .applied)
     let resized = ghostty_surface_size(surface)
@@ -71,7 +74,7 @@ struct GhosttySurfaceViewTests {
     let outcome = surfaceView.pinGrid(columns: 40, rows: 12)
     #expect(surfaceView.pinnedGrid?.columns == 40)
     #expect(surfaceView.pinnedGrid?.rows == 12)
-    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
     #expect(outcome == .applied)
     #expect(Self.grid(of: surface) == [40, 12])
 
@@ -97,7 +100,7 @@ struct GhosttySurfaceViewTests {
     }
     surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     first.contentView?.addSubview(surfaceView)
-    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
     surfaceView.updateSurfaceSize()
     let paneGrid = Self.grid(of: surface)
 
@@ -123,7 +126,7 @@ struct GhosttySurfaceViewTests {
     defer { surfaceView.closeSurface() }
     let window = Self.makeWindow()
     defer { window.close() }
-    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
     #expect(surfaceView.pinGrid(columns: 40, rows: 12) == .applied)
 
     surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
@@ -146,7 +149,7 @@ struct GhosttySurfaceViewTests {
     defer { window.close() }
     surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     window.contentView?.addSubview(surfaceView)
-    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
     surfaceView.updateSurfaceSize()
     #expect(surfaceView.applyRequestedGrid(columns: 40, rows: 12) == .applied)
 
@@ -163,7 +166,7 @@ struct GhosttySurfaceViewTests {
     defer { window.close() }
     surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     window.contentView?.addSubview(surfaceView)
-    guard let surface = surfaceView.surface, Self.hasCellMetrics(surface) else { return }
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
     surfaceView.updateSurfaceSize()
     #expect(surfaceView.pinGrid(columns: 40, rows: 12) == .applied)
     let cellBefore = ghostty_surface_size(surface).cell_width_px
@@ -204,7 +207,7 @@ struct GhosttySurfaceViewTests {
     #expect(woken !== firstView)
     #expect(woken.pinnedGrid?.columns == 40)
     #expect(woken.pinnedGrid?.rows == 12)
-    if let surface = woken.surface, Self.hasCellMetrics(surface) {
+    if let surface = Self.measuredSurface(of: woken) {
       #expect(Self.grid(of: surface) == [40, 12])
     }
 
@@ -232,6 +235,22 @@ struct GhosttySurfaceViewTests {
     )
     window.isReleasedWhenClosed = false
     return window
+  }
+
+  /// The view's core surface when it has cell metrics. Without them (no live
+  /// core surface, e.g. while the display sleeps) the live grid checks cannot
+  /// run: this records a known issue, so the run reports the skip instead of
+  /// passing silently, and returns nil.
+  private static func measuredSurface(of view: GhosttySurfaceView) -> ghostty_surface_t? {
+    if let surface = view.surface, hasCellMetrics(surface) { return surface }
+    recordSkippedLiveChecks()
+    return nil
+  }
+
+  private static func recordSkippedLiveChecks() {
+    withKnownIssue("No Ghostty surface with cell metrics here: the live grid checks were skipped") {
+      Issue.record("the surface has no cell metrics")
+    }
   }
 
   private static func hasCellMetrics(_ surface: ghostty_surface_t) -> Bool {
