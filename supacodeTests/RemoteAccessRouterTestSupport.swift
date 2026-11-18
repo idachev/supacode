@@ -9,19 +9,57 @@ import IdentifiedCollections
 /// A stand-in for the zmx stream an `attach` starts: records `start`, `stop`
 /// and `send`, and hands the router the events a test yields (`emit`).
 nonisolated final class FakeRemoteStream: RemoteTerminalStream, @unchecked Sendable {
+  /// A one-shot gate: `wait` returns once `open` was called, also when it was
+  /// called first. Not cancellation-aware on purpose: a cancelled pump parked
+  /// here stays parked until the test opens it.
+  nonisolated final class Latch: Sendable {
+    private let state = LockIsolated<(isOpen: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+    func open() {
+      let waiters = state.withValue { state -> [CheckedContinuation<Void, Never>] in
+        guard !state.isOpen else { return [] }
+        state.isOpen = true
+        let waiters = state.waiters
+        state.waiters = []
+        return waiters
+      }
+      for waiter in waiters { waiter.resume() }
+    }
+
+    func wait() async {
+      await withCheckedContinuation { continuation in
+        let isOpen = state.withValue { state -> Bool in
+          if !state.isOpen { state.waiters.append(continuation) }
+          return state.isOpen
+        }
+        if isOpen { continuation.resume() }
+      }
+    }
+  }
+
+  /// A `.closed` the pump took off `events` but hands to the router only
+  /// once the test releases it (`holdClosed`).
+  nonisolated final class CloseHold: Sendable {
+    let taken = Latch()
+    let release = Latch()
+  }
+
   /// Pulls the next event from the test's queue for the router's pump.
   private final class Pull: @unchecked Sendable {
     var iterator: AsyncStream<ZmxRemoteStream.Event>.Iterator
-    let closedTaken: LockIsolated<Bool>
+    let closeHold: LockIsolated<CloseHold?>
 
-    init(_ iterator: AsyncStream<ZmxRemoteStream.Event>.Iterator, closedTaken: LockIsolated<Bool>) {
+    init(_ iterator: AsyncStream<ZmxRemoteStream.Event>.Iterator, closeHold: LockIsolated<CloseHold?>) {
       self.iterator = iterator
-      self.closedTaken = closedTaken
+      self.closeHold = closeHold
     }
 
     func next() async -> ZmxRemoteStream.Event? {
       let event = await iterator.next()
-      if case .closed = event { closedTaken.setValue(true) }
+      if case .closed = event, let hold = closeHold.value {
+        hold.taken.open()
+        await hold.release.wait()
+      }
       return event
     }
   }
@@ -33,17 +71,34 @@ nonisolated final class FakeRemoteStream: RemoteTerminalStream, @unchecked Senda
   let starts = LockIsolated<[Int]>([])
   let stopped = LockIsolated(false)
   let sent = LockIsolated<[[UInt8]]>([])
-  /// True once the router's pump took a `.closed` event off `events`.
-  let closedTaken: LockIsolated<Bool>
+  /// Set by `holdClosed`; without it a `.closed` reaches the router at once.
+  private let closeHold: LockIsolated<CloseHold?>
 
   init(socketPath: String) {
     self.socketPath = socketPath
     let (queue, continuation) = AsyncStream.makeStream(of: ZmxRemoteStream.Event.self)
     self.continuation = continuation
-    let closedTaken = LockIsolated(false)
-    self.closedTaken = closedTaken
-    let pull = Pull(queue.makeAsyncIterator(), closedTaken: closedTaken)
+    let closeHold = LockIsolated<CloseHold?>(nil)
+    self.closeHold = closeHold
+    let pull = Pull(queue.makeAsyncIterator(), closeHold: closeHold)
     events = AsyncStream(unfolding: { await pull.next() })
+  }
+
+  /// From now on the pump parks a `.closed` it took until `releaseClosed()`,
+  /// so the test decides when the router's handler gets it.
+  func holdClosed() {
+    closeHold.setValue(CloseHold())
+  }
+
+  /// Returns once the pump took a held `.closed` off `events`; it has not
+  /// reached the router yet. Returns at once when nothing is held.
+  func closedTaken() async {
+    await closeHold.value?.taken.wait()
+  }
+
+  /// Hands a held `.closed` on to the router's pump (idempotent).
+  func releaseClosed() {
+    closeHold.value?.release.open()
   }
 
   var isStarted: Bool { !starts.value.isEmpty }
