@@ -679,10 +679,17 @@ final class RemoteHostRouter {
       let socketPath = ZmxRemoteStream.socketPath(contentID: request.contentID)
       let readSize = streamIO.ptySize
       // A held size is pinned: it survives the Mac pane's layout changes and a hibernate + wake.
-      let attempt: @MainActor @Sendable () -> RemoteResizeAttempt = {
-        request.hold
-          ? source.pinGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
-          : source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
+      let attempt: @MainActor @Sendable () -> RemoteResizeAttempt = { [weak self] in
+        guard request.hold else {
+          return source.resizeGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
+        }
+        // Only while its own hold stands. Every path that ends or moves a hold
+        // also cancels this wait, so `.notReady` here is never answered.
+        guard
+          self?.gridHolds.allowsPin(
+            contentID: request.contentID, connID: connID, columns: request.columns, rows: request.rows) == true
+        else { return .notReady }
+        return source.pinGrid(contentID: request.contentID, columns: request.columns, rows: request.rows)
       }
       // In this turn, so a live terminal's grid changes before the next message.
       let first = attempt()
@@ -1283,15 +1290,23 @@ final class RemoteHostRouter {
       try? await clock.sleep(for: timeout)
       continuation.yield(nil)
     }
-    var outcome: Value?
-    for await first in outcomes {
-      outcome = first
-      break
+    // The poller is not a child task: cancel it the moment the wait is
+    // cancelled, in that turn, so a probe already woken never runs once more
+    // (a held resize's pin after its hold ended).
+    return await withTaskCancellationHandler {
+      var outcome: Value?
+      for await first in outcomes {
+        outcome = first
+        break
+      }
+      poller.cancel()
+      deadline.cancel()
+      continuation.finish()
+      return outcome
+    } onCancel: {
+      poller.cancel()
+      deadline.cancel()
     }
-    poller.cancel()
-    deadline.cancel()
-    continuation.finish()
-    return outcome
   }
 
   // MARK: - Suggestions

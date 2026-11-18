@@ -236,6 +236,33 @@ struct RemoteAccessResizeTests {
     gate.continuation.finish()
   }
 
+  // MARK: - A cancelled wait never probes again (ПТ6 review F1)
+
+  /// The poller's interval sleep ends and the wait is cancelled in the same
+  /// main-actor turn: the poller must not run the probe (a held resize's pin)
+  /// once more. Repeated, because without the fix which job runs first is a race.
+  @Test func aCancelledPollNeverProbesAgain() async {
+    let clock = ManualSleepClock()
+    defer { clock.failAll() }
+    let interval: Duration = .milliseconds(100)
+    for _ in 0..<20 {
+      let probes = LockIsolated(0)
+      let wait = Task { @MainActor in
+        await RemoteHostRouter.poll(every: interval, within: .seconds(6), clock: clock) { () -> Int? in
+          probes.withValue { $0 += 1 }
+          return nil
+        }
+      }
+      let sleeping = await RemoteRouterTestSupport.settle { probes.value == 1 && clock.sleepers(for: interval) == 1 }
+      #expect(sleeping)
+      clock.wake(interval)
+      wait.cancel()
+      #expect(await wait.value == nil)
+      for _ in 0..<20 { await Task.megaYield() }
+      #expect(probes.value == 1)
+    }
+  }
+
   // MARK: - Waits per terminal (ЗД3 review F2)
 
   private static func parked() -> (task: Task<Void, Never>, release: AsyncStream<Void>.Continuation) {
@@ -493,5 +520,60 @@ struct RemoteAccessResizeTests {
     // must not fail on permissions the way `proc_pidinfo` did.
     #expect(ZmxRemoteStream.controllingTerminal(pid: 1) == nil)
     #expect(ZmxRemoteStream.controllingTerminal(pid: Int32.max) == nil)
+  }
+}
+
+/// A clock whose sleeps end only when the test says so (`wake`), whatever the
+/// clock time: so a sleeper's wake and a task cancel can land in one turn.
+/// A sleep ignores cancellation (a woken sleeper always returns normally);
+/// `failAll` ends the remaining ones with `CancellationError`.
+nonisolated final class ManualSleepClock: Clock, @unchecked Sendable {
+  nonisolated struct Instant: InstantProtocol {
+    let offset: Duration
+
+    func advanced(by duration: Duration) -> Self { Self(offset: offset + duration) }
+    func duration(to other: Self) -> Duration { other.offset - offset }
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.offset < rhs.offset }
+  }
+
+  private struct Sleeper {
+    let duration: Duration
+    let continuation: CheckedContinuation<Void, any Error>
+  }
+
+  private let sleepers = LockIsolated<[Sleeper]>([])
+
+  /// Always zero, so a `sleep(for:)` deadline is its duration.
+  var now: Instant { Instant(offset: .zero) }
+  var minimumResolution: Duration { .zero }
+
+  func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+    try await withCheckedThrowingContinuation { continuation in
+      sleepers.withValue { $0.append(Sleeper(duration: deadline.offset, continuation: continuation)) }
+    }
+  }
+
+  /// How many sleeps of `duration` wait now.
+  func sleepers(for duration: Duration) -> Int {
+    sleepers.value.count { $0.duration == duration }
+  }
+
+  /// Ends every sleep of `duration`.
+  func wake(_ duration: Duration) {
+    let woken = sleepers.withValue { all -> [Sleeper] in
+      let matching = all.filter { $0.duration == duration }
+      all.removeAll { $0.duration == duration }
+      return matching
+    }
+    for sleeper in woken { sleeper.continuation.resume() }
+  }
+
+  /// Ends every remaining sleep with `CancellationError`.
+  func failAll() {
+    let all = sleepers.withValue { all -> [Sleeper] in
+      defer { all.removeAll() }
+      return all
+    }
+    for sleeper in all { sleeper.continuation.resume(throwing: CancellationError()) }
   }
 }

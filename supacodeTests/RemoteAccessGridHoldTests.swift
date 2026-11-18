@@ -90,15 +90,55 @@ struct RemoteAccessGridHoldTests {
     #expect(holds.byContent[Self.tab]?.owner == "c1")
   }
 
+  @Test func onlyTheRequestsOwnHoldMayStillPin() {  // review F1
+    var holds = RemoteGridHolds()
+    #expect(!holds.allowsPin(contentID: Self.tab, connID: "c1", columns: 100, rows: 30))
+    holds.take(contentID: Self.tab, connID: "c1", columns: 100, rows: 30)
+    #expect(holds.allowsPin(contentID: Self.tab, connID: "c1", columns: 100, rows: 30))
+    // Another size or another owner: a newer request's hold.
+    #expect(!holds.allowsPin(contentID: Self.tab, connID: "c1", columns: 120, rows: 30))
+    #expect(!holds.allowsPin(contentID: Self.tab, connID: "c2", columns: 100, rows: 30))
+    // Its own hold in the grace after its stream closed still pins.
+    _ = holds.ownerLost(connID: "c1", contentID: Self.tab)
+    #expect(holds.allowsPin(contentID: Self.tab, connID: "c1", columns: 100, rows: 30))
+    _ = holds.drop(contentID: Self.tab)
+    #expect(!holds.allowsPin(contentID: Self.tab, connID: "c1", columns: 100, rows: 30))
+  }
+
   // MARK: - Router
 
   private static func attach(_ contentID: UUID, keep: Bool) -> String {
     #"{"t":"attach","id":1,"contentId":"\#(contentID.uuidString)","keep":\#(keep)}"#
   }
 
-  private static func resize(_ contentID: UUID, cols: Int = 100, rows: Int = 30, hold: Bool) -> String {
+  private static func resize(
+    _ contentID: UUID, id: Int = 5, cols: Int = 100, rows: Int = 30, hold: Bool
+  ) -> String {
     let holdField = hold ? #","hold":true"# : ""
-    return #"{"t":"resize","id":5,"contentId":"\#(contentID.uuidString)","cols":\#(cols),"rows":\#(rows)\#(holdField)}"#
+    return
+      #"{"t":"resize","id":\#(id),"contentId":"\#(contentID.uuidString)","cols":\#(cols),"rows":\#(rows)\#(holdField)}"#
+  }
+
+  @Test func aHeldResizeSupersededInTheSameTurnLeavesNoHoldAndNoReply() async {  // review F1
+    let clock = TestClock()
+    let harness = RemoteRouterHarness(clock: clock)
+    defer { harness.router.stop() }
+    let tab = harness.contents[0]
+    let phone = harness.openPhone("phone-1")
+    harness.send("phone-1", Self.attach(tab, keep: true))
+    harness.send("phone-1", Self.resize(tab, id: 7, hold: true))
+    harness.send("phone-1", Self.resize(tab, id: 8, cols: 90, rows: 25, hold: false))
+    #expect(harness.router.heldGrids.isEmpty)
+    // Both waits would end by `resizeReadyTimeout` (no surface ever gets ready);
+    // only the plain one is still waiting, so only it answers.
+    let answered = await Self.step(
+      clock, until: { !phone.messages(ofType: "error").isEmpty },
+      within: RemoteHostRouter.resizeReadyTimeout + .seconds(2))
+    #expect(answered)
+    await Self.step(clock, by: .seconds(1))
+    #expect(phone.messages(ofType: "error").compactMap { $0["id"] as? Int } == [8])
+    #expect(harness.router.heldGrids.isEmpty)
+    #expect(harness.router.orphanedHolds.isEmpty)
   }
 
   /// Moves `clock` forward by `total` in small steps, yielding before each so

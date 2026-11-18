@@ -48,6 +48,14 @@ nonisolated struct RemoteGridHolds {
     return lost
   }
 
+  /// Whether a held `resize` from `connID` may (still) pin `columns` × `rows`:
+  /// the current hold is the one it took, owned by it or lost by it and in its
+  /// grace. False once that hold ended or moved to a newer request.
+  func allowsPin(contentID: UUID, connID: String, columns: Int, rows: Int) -> Bool {
+    guard let hold = byContent[contentID], hold.columns == columns, hold.rows == rows else { return false }
+    return hold.owner == connID || hold.owner == nil
+  }
+
   /// The 30 s passed. True when the hold is still without an owner and so ends.
   mutating func graceExpired(contentID: UUID) -> Bool {
     guard let hold = byContent[contentID], hold.owner == nil else { return false }
