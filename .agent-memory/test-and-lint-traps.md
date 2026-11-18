@@ -17,6 +17,20 @@ paths:
   A single Swift Testing test needs its `()`: `-only-testing:supacodeFeatureTests/RepositoriesFeatureTests/requestArchiveWorktreeShowsConfirmation()`.
   Without `()` no test runs and xcodebuild still prints `** TEST SUCCEEDED **`; a suite name
   alone needs no `()`. **Why:** on 2026-11-10 three reruns "passed" with 0 tests executed.
+  A NEW test file is in no target until `mise exec -- tuist generate --no-open --cache-profile development`
+  runs; before that `-only-testing:` on it also runs 0 tests and prints `TEST SUCCEEDED`.
+- **A locked screen stops every test run.** The test bundles are hosted in `supacode.app`; while
+  the Mac's screen is locked the build finishes (`Validate supacode.app`) and the test session
+  never starts (the host hangs in `XCTestDriver _prepareTestConfigurationAndIDESession`), for
+  `make test` and for one suite alike, signed or not. Check `ioreg -n Root -d1 -a | grep -A1
+  IOConsoleLocked`; ask the owner to unlock, do not restart `testmanagerd`. **Why:** on
+  2026-11-17 three probes hung 30–40 min each until the owner unlocked the screen.
+- **Clock-driven tests step in small increments.** One `megaYield` followed by one long
+  `clock.advance` misses a sleep that registers late and hangs under the parallel `make test`
+  load; step the `TestClock` until the condition holds (`step(_:until:within:)` in
+  `RemoteAccessRouterTestSupport.swift`). A wait loop in production code uses
+  `do { try await Task.sleep(…) } catch { return }`: `try? await Task.sleep` in a `while` spins
+  at full speed once the task is cancelled.
 - **`@Shared` settings leak between tests.** Tests run in one process, and `@Shared` settings
   (for example `deleteScript`) are process-global. A test that changes one sets it back with
   `defer`, or later tests see the changed value. **Why:** this leak came back twice, once as a
