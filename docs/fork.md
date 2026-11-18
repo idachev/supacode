@@ -456,21 +456,59 @@ list the sidebar's sections and drive any terminal tab, shell or agent. Design:
 - **Suggestions.** `RemoteSuggestionRunner` runs `claude -p --model claude-sonnet-5-5` in a login
   shell with hooks, MCP, slash commands and tools off, over the last 80 plain lines. The phone only
   fills its input field with a suggestion.
+- **Several terminals and the layout** (plan `docs/plans/2026-11-17-remote-client-host.md`). `hello`
+  lists `caps`; `attach` with `keep` holds up to 16 terminals per connection
+  (`RemoteAttachPolicy.swift`); `list` carries each worktree's `layout`
+  (`RemoteLayoutBuilder.swift`); `watch` pushes `list` on a change, titles at most every 2 s
+  (`RemoteWatch.swift`); `tab.close`, `pane.split`, `pane.close` and `tab.new` with `paneId` act
+  without a confirmation on the Mac (`RemoteLayoutActions.swift`); `resize` with `hold` gives a size
+  one owner and keeps it 30 s after a lost connection (`RemoteGridHolds.swift`). The router is
+  `RemoteHostRouter.swift`, the Mac side `RemoteSnapshotSource.swift`.
+- **Pinned grid.** A held size is a pinned grid: `GhosttySurfaceView.pinGrid` / `unpinGrid` hold
+  exactly that grid across layout passes, window moves and a font size change, and
+  `TerminalContent.pinGrid` (`Features/Terminal/Content/TabContent.swift`) keeps the pin across
+  hibernate and wake. Without a pin the surface follows its pane as upstream does.
 
 ### How to verify
 
-Run the phone simulator `node remote-relay/scripts/phone-sim.mjs [<contentId> attach]` or the
-Android app. An isolated second Supacode for tests needs
+Run the phone simulator from `remote-relay/` or the Android app. Every mode prints each frame as one
+JSON line, with host names and LAN details redacted:
+
+- `node scripts/phone-sim.mjs [--host <hostId>]`: `CAPS` and each worktree's `LAYOUT`; without
+  `--host` only the relay's host list.
+- `--watch <seconds>`, `<contentId> attach`, `<contentA> <contentB> attach2`,
+  `<contentId> rate <seconds>` (out frames and bytes per second), `<contentId> hold <cols> <rows>`
+  (waits for Enter), `<tabId> tab-close`, `<paneId> pane-split <horizontal|vertical>`,
+  `<paneId> pane-close`.
+
+An isolated second Supacode for tests needs
 `CFFIXED_USER_HOME=<dir>` and `ZMX_DIR=<short dir>`; `HOME` alone is ignored by Foundation, and
 without both the second instance shares `~/.supacode` state and zmx sessions with the real app.
 Only the installed app hosts remote access; a build run from DerivedData needs
-`SUPACODE_REMOTE_ACCESS=1` (and then takes the relay's host slot from the installed app).
+`SUPACODE_REMOTE_ACCESS=1` (and then takes the relay's host slot from the installed app), plus
+`SUPACODE_REMOTE_HOST_ID=<id>` to get its own slot. Two traps when it is started from a Supacode
+terminal:
+
+- Start it from an empty environment (`env -i HOME=… PATH=… open -n -g <app> --env …`); `open`
+  passes the caller's environment on. An inherited `ZMX_SESSION` makes its zmx "switch session"
+  instead of starting one, so no terminal of the second instance ever starts.
+- Started this way it may open no main window, and its terminals then never start. A second
+  `open -g <app>` (a reopen) opens the window.
+- Its zmx sessions outlive it: after quitting it, stop the `zmx` processes on its `ZMX_DIR`
+  (`lsof +D <dir>`) and delete the directory.
 
 ### Keeping It On Upstream Merges
 
 - The fork-only files are `supacode/Features/RemoteAccess/*`, `remote-relay/*`, `docs/remote-access*.md`, the
   `remoteAccessHost` lines in `supacode/App/supacodeApp.swift`, `TerminalContent.gridSize` and the
-  `maxPayloadSize` init of `ZmxIPCFrameDecoder`.
+  `maxPayloadSize` init of `ZmxIPCFrameDecoder`, and the pinned grid: `pinGrid` / `unpinGrid` /
+  `pinnedGrid` in `GhosttySurfaceView` (with the pinned hold of its requested-grid state) and in
+  `TerminalContent`.
+- The suites that guard them: `RemoteAccessAttachTests`, `RemoteAccessLayoutTests`,
+  `RemoteAccessWatchTests`, `RemoteAccessLayoutActionTests`, `RemoteAccessGridHoldTests`,
+  `RemoteAccessResizeTests`, `RemoteAccessProtocolTests` and, for the pinned grid,
+  `GhosttySurfaceViewTests` and `TerminalRenderingPolicyTests`. A merge that touches
+  `GhosttySurfaceView` layout or hibernation must keep them green.
 - If upstream changes the zmx IPC tags (`ThirdParty/zmx/src/ipc.zig`: `Send` 18, `Capture` 22) or
   the `supa-<content-uuid>` session name, `ZmxRemoteStreamTests` and `RemoteAccessProtocolTests`
   must be updated with them.

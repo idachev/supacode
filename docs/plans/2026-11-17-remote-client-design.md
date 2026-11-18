@@ -572,6 +572,18 @@ These were not decided by the owner; each can be changed before the plan.
   Durable Objects pricing, read 2026-11-17). That is 2,000,000 incoming frames a day for the whole
   relay: every `out` and pushed `list` from a host and every `input` from a client. Several busy
   terminals attached through the relay for a working day could reach it; the phone attaches one.
-  How many `out` frames a busy agent tab produces per second was not measured. The LAN path costs
-  nothing. If the measured rate is too high, the host can join `out` frames per content over a
-  short window before sending; that needs no protocol change.
+  The LAN path costs nothing. If the rate is too high, the host can join `out` frames per content
+  over a short window before sending; that needs no protocol change.
+  Measured on 2026-11-18 with `phone-sim.mjs <contentId> rate 60` (host plan, Task 10), plain
+  attach through the relay, one sample each:
+  - Claude Code at work, waiting on a subagent (spinner and elapsed time): 1.03 and 1.01 `out`
+    frames/s (60 s and 120 s), about 85 bytes/s.
+  - Claude Code streaming a reply: 8.3 frames/s over the 11 s it streamed, at most 10 in one
+    second, about 1,400 bytes/s; 0 once it was idle again.
+  - An idle shell: 0 frames/s over 60 s.
+  Four busy tabs for eight hours are 115,200 tab-seconds: about 119,000 frames at 1 frame/s, about
+  956,000 at 8.3 frames/s and about 1,152,000 at 10 frames/s, against the 2,000,000 limit. Even
+  four tabs streaming the whole day stay under it, and an agent alternates streaming with waiting
+  and tools, so joining `out` frames on the host is not needed now. It becomes needed when a tab
+  averages more than about 17 frames/s over the day (2,000,000 / 115,200). Not measured: an agent
+  that prints large tool output (diffs, test logs); one sample per case.
