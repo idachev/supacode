@@ -15,6 +15,7 @@ struct RemoteClientWindowsTests {
     private(set) var broughtForward = 0
     private(set) var closes = 0
     private(set) var closedNow = 0
+    var relayListsNoHosts = false
 
     nonisolated deinit {}
 
@@ -80,9 +81,41 @@ struct RemoteClientWindowsTests {
     #expect(rig.registry.focus("office"))
     #expect(office.broughtForward == 1)
     #expect(!rig.registry.focus("home"))
-    // "Open Remote Mac…" with the saved Mac shown: no second window.
+    // "Open Remote Mac…" while a window is open: a new window with the picker, whichever Mac is
+    // saved (the picker leaves out the Macs already shown).
     rig.registry.openRemoteMac(saved: "office")
     #expect(rig.opened.values == [RemoteClientWindowValue(hostID: nil)])
+    #expect(office.broughtForward == 1)
+  }
+
+  /// F3: an old relay lists no Macs, so a second window would show its one Mac again. The window on
+  /// it comes forward instead, bound or not; once its relay lists Macs, a picker opens again.
+  @Test func anOldRelaysWindowComesForwardInsteadOfASecondOne() {
+    let rig = Rig()
+    let (_, office) = rig.window("office")
+    let (_, picker) = rig.window(nil)
+    office.relayListsNoHosts = true
+    rig.registry.openRemoteMac(saved: "office")
+    #expect(rig.opened.values.isEmpty)
+    #expect(office.broughtForward == 1)
+    #expect(picker.broughtForward == 0)
+    office.relayListsNoHosts = false
+    rig.registry.openRemoteMac(saved: "office")
+    #expect(rig.opened.values == [RemoteClientWindowValue(hostID: nil)])
+  }
+
+  /// F9: a notification tap before any view installed the opener opens its window once the opener
+  /// is set, and only once though the opener is set again.
+  @Test func aTapBeforeTheOpenerIsInstalledOpensWhenItIs() throws {
+    let registry = RemoteClientWindowRegistry()
+    let opened = OpenLog()
+    let router = RemoteClientNotificationRouter(windows: registry)
+    let url = try #require(RemoteClientNotifier.url(hostID: "home", worktreeID: "w1", contentID: "c1"))
+    #expect(router.open(url))
+    registry.openWindow = { [opened] in opened.values.append($0) }
+    #expect(opened.values == [RemoteClientWindowValue(hostID: "home")])
+    registry.openWindow = { [opened] in opened.values.append($0) }
+    #expect(opened.values == [RemoteClientWindowValue(hostID: "home")])
   }
 
   /// R29: with no remote window, the saved Mac's window (the one-Mac flow); with one, a picker.

@@ -20,6 +20,9 @@ final class RemoteClientWindowModel: RemoteClientWindowHandle {
     let session = RemoteClientSession(ghostty: ghostty)
     self.id = id
     self.session = session
+    // The one place a remote window's store is made. Both clients must be bound to this window:
+    // the default session client connects nothing, and the default windows client lets this window
+    // claim every Mac (each logs an error when reached).
     store = Store(initialState: RemoteClientFeature.State(selectedHostID: hostID)) {
       RemoteClientFeature()
     } withDependencies: {
@@ -36,6 +39,10 @@ final class RemoteClientWindowModel: RemoteClientWindowHandle {
 
   func notificationOpened(_ target: RemoteClientNotifier.Target) {
     store.send(.notificationOpened(hostID: target.hostID, worktreeID: target.worktreeID, contentID: target.contentID))
+  }
+
+  var relayListsNoHosts: Bool {
+    session.connection?.relayListsNoHosts == true
   }
 
   func bringForward() {

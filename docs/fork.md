@@ -518,10 +518,11 @@ terminal:
 ## Remote Client Window
 
 File ▸ **Open Remote Mac…** (⌃⌘O) opens a "Remote Mac" window that shows another Mac's Supacode: its
-sidebar, tabs and splits, each pane a real Ghostty terminal. Each Mac gets its own window. It is the reverse of "Remote Access From
-The Android App": the same relay, protocol and keys, with this Mac as the client. Design:
-`docs/plans/2026-11-17-remote-client-design.md`; plan: `docs/plans/2026-11-17-remote-client-app.md`;
-how to use it: `docs/remote-access.md` → "Use another Mac from Supacode".
+sidebar, tabs and splits, each pane a real Ghostty terminal. Each Mac gets its own window. It is the
+reverse of "Remote Access From The Android App": the same relay, protocol and keys, with this Mac as
+the client. Design: `docs/plans/2026-11-17-remote-client-design.md`; plan:
+`docs/plans/2026-11-17-remote-client-app.md`; how to use it: `docs/remote-access.md` → "Use another
+Mac from Supacode".
 
 - **Fork-only code.** `supacode/Features/RemoteClient/` (the TCA feature `RemoteClientFeature`, the
   connection `RemoteClientConnection` and its sockets, the layout projection, the window views and
@@ -532,7 +533,9 @@ how to use it: `docs/remote-access.md` → "Use another Mac from Supacode".
   `RemoteClientWindowRegistry` knows every open window: a window claims its Mac there, so no Mac
   is open twice; the menu, the picker and a notification tap bring that Mac's window forward
   instead. Closing a window closes only its session; quitting closes every session
-  (`applicationWillTerminate` → `closeAll()`).
+  (`applicationWillTerminate` → `closeAll()`). On an old relay (no host list) "Open Remote Mac…"
+  brings the window on it forward instead of a second one for the same Mac. A notification tap
+  before any view installed the opener is parked and opens once the opener is set.
 - **A remote tab is a local surface.** Its Ghostty child process is the hidden command
   `supacode remote-pipe <pipe key>`, which copies bytes between the terminal and the app over a
   private unix socket (`RemotePipeServer`). One server serves every window (`RemotePipeRouter`):

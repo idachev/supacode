@@ -65,6 +65,9 @@ final class RemoteClientConnection {
 
   private(set) var status: RemoteClientStatus = .idle
   private(set) var hosts: [RemoteClientHostInfo]?
+  /// The relay's last `relay` frame had no `hosts`: an old relay with one Mac, which an unbound
+  /// connection shows. False until a `relay` frame came, and after `stop()`.
+  private(set) var relayListsNoHosts = false
   private(set) var hostName: String?
   private(set) var list: RemoteClientList?
   /// Grows with every `list` frame, so observers react to a list that arrived.
@@ -139,6 +142,7 @@ final class RemoteClientConnection {
     terminals = [:]
     if hostName != nil { hostName = nil }
     if hosts != nil { hosts = nil }
+    if relayListsNoHosts { relayListsNoHosts = false }
     if list != nil { list = nil }
     refreshStatus()
   }
@@ -582,6 +586,7 @@ extension RemoteClientConnection {
 
   private func relayStatusChanged(_ update: RemoteClientRelayStatus, on link: Link) {
     if hosts != update.hosts { hosts = update.hosts }
+    if relayListsNoHosts != (update.hosts == nil) { relayListsNoHosts = update.hosts == nil }
     if !link.sawRelayFrame {
       // The relay answered this socket: the next drop starts the backoff over.
       link.sawRelayFrame = true

@@ -279,7 +279,8 @@ struct RemoteClientFeature {
   /// comes forward instead and this one keeps its Mac.
   private func switchHost(to hostID: String, state: inout State) -> Effect<Action> {
     guard windows.claim(hostID) else {
-      state.isHostPickerPresented = false
+      // A window with no Mac of its own keeps its picker: closed, it would be an empty window.
+      state.isHostPickerPresented = state.selectedHostID == nil
       return focus(hostID)
     }
     // First: the old Mac's notifications go under its own id.
@@ -501,38 +502,6 @@ nonisolated extension DependencyValues {
   var remoteClientSession: RemoteClientSessionClient {
     get { self[RemoteClientSessionClient.self] }
     set { self[RemoteClientSessionClient.self] = newValue }
-  }
-}
-
-/// The reducer's door to the other remote windows (`RemoteClientWindowRegistry`), so tests need no
-/// window. Each window's store gets its own, bound to that window.
-nonisolated struct RemoteClientWindowsClient: Sendable {
-  /// Takes the Mac for this window; false when another remote window shows it.
-  var claim: @MainActor @Sendable (_ hostID: String) -> Bool
-  /// Brings forward the window that shows the Mac.
-  var focus: @MainActor @Sendable (_ hostID: String) -> Void
-}
-
-extension RemoteClientWindowsClient {
-  @MainActor
-  static func live(_ registry: RemoteClientWindowRegistry, window: UUID) -> RemoteClientWindowsClient {
-    RemoteClientWindowsClient(
-      claim: { registry.claim($0, for: window) },
-      focus: { registry.focus($0) }
-    )
-  }
-}
-
-nonisolated extension RemoteClientWindowsClient: DependencyKey {
-  /// The only remote window: every Mac is free. The window's store replaces it with `.live`.
-  static let liveValue = RemoteClientWindowsClient(claim: { _ in true }, focus: { _ in })
-  static let testValue = liveValue
-}
-
-nonisolated extension DependencyValues {
-  var remoteClientWindows: RemoteClientWindowsClient {
-    get { self[RemoteClientWindowsClient.self] }
-    set { self[RemoteClientWindowsClient.self] = newValue }
   }
 }
 

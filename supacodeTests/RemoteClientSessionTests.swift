@@ -501,9 +501,29 @@ struct RemoteClientSessionTests {
 
     // The surface of office's `c1` connects: office attaches on its own relay, home does nothing.
     let officeKey = RemotePipeRouter.pipeKey(prefix: office.session.pipePrefix, contentID: "c1")
-    office.session.pipes.server.onOpened?(officeKey)
-    #expect(await settle { office.sockets.relays[0].types.contains("attach") })
-    #expect(!home.sockets.relays[0].types.contains("attach"))
+    let server = office.session.pipes.server
+    server.onOpened?(officeKey)
+    let officeRelay = office.sockets.relays[0]
+    let homeRelay = home.sockets.relays[0]
+    #expect(await settle { officeRelay.types.contains("attach") })
+    #expect(!homeRelay.types.contains("attach"))
+
+    // Typing on office's pipe is office's input, on its own relay only.
+    officeRelay.receive(
+      RemoteClientConnectionTests.attached("c1", id: RemoteClientConnectionTests.lastID(officeRelay, "attach")))
+    #expect(await settle { officeContent.isAttached })
+    server.onInput?(officeKey, [0x61])
+    #expect(await settle { officeRelay.types.contains("input") })
+    #expect(!homeRelay.types.contains("input"))
+
+    // Office's pipe closing ends office's `c1` only: it detaches there, home's stays as it was.
+    let homePhase = homeContent.phase
+    server.onClosed?(officeKey)
+    #expect(await settle { officeRelay.types.contains("detach") })
+    #expect(!homeRelay.types.contains("detach"))
+    #expect(home.session.attachedContent("c1") === homeContent)
+    #expect(homeContent.phase == homePhase)
+    #expect(officeContent.phase != homePhase)
   }
 
   @Test func closingOneSessionStopsOnlyItsOwn() throws {

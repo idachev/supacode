@@ -1518,6 +1518,24 @@ struct RemoteClientFeatureTests {
     #expect(store.state.selectedHostID == "b")
   }
 
+  /// F4: a picker-only window keeps its picker when the pick is refused: closing it would leave an
+  /// empty window.
+  @Test func aRefusedPickInAPickerOnlyWindowKeepsThePicker() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession()
+    var state = RemoteClientFeature.State()
+    state.isHostPickerPresented = true
+    let store = Self.makeStore(state, session: session)
+    let windows = FakeWindows(shown: ["a"])
+    store.dependencies.remoteClientWindows = windows.client
+    await store.send(.hostPicked("a"))
+    await store.finish()
+    #expect(windows.focused.value == ["a"])
+    #expect(session.opens.isEmpty)
+    #expect(store.state.isHostPickerPresented)
+  }
+
   /// A window opened for a Mac another window took meanwhile: that window comes forward and this
   /// one shows the picker.
   @Test func aWindowOpenedForAMacShownElsewhereShowsThePicker() async {

@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import SupacodeSettingsShared
 
@@ -22,6 +23,9 @@ protocol RemoteClientWindowHandle: AnyObject {
   /// A tap on a notification of the Mac this window shows; the window is already in front.
   func notificationOpened(_ target: RemoteClientNotifier.Target)
   func bringForward()
+  /// Its connection's relay sends no host list (an old relay): its one Mac is what any other
+  /// window on that relay would show too.
+  var relayListsNoHosts: Bool { get }
   /// The window closed: disconnects its Mac (КЛ6) and lets its last notification removals land.
   func close() async
   /// The app quits: stops the session now, with no effect left to run (R30).
@@ -35,8 +39,11 @@ protocol RemoteClientWindowHandle: AnyObject {
 final class RemoteClientWindowRegistry {
   static let shared = RemoteClientWindowRegistry()
 
-  /// Opens a new remote window; set by a view that can reach SwiftUI's `openWindow`.
-  var openWindow: ((RemoteClientWindowValue) -> Void)?
+  /// Opens a new remote window; set by a view that can reach SwiftUI's `openWindow`. Setting it
+  /// opens what was asked for before it was set.
+  var openWindow: ((RemoteClientWindowValue) -> Void)? {
+    didSet { openParked() }
+  }
 
   private struct Entry {
     let handle: any RemoteClientWindowHandle
@@ -49,6 +56,8 @@ final class RemoteClientWindowRegistry {
   private var entries: [(id: UUID, entry: Entry)] = []
   /// Closed windows whose close has not finished: kept alive, and stopped too on quit.
   private var closing: [UUID: any RemoteClientWindowHandle] = [:]
+  /// Windows asked for before any view installed `openWindow` (a notification tap at launch).
+  private var parked: [RemoteClientWindowValue] = []
 
   nonisolated deinit {}
 
@@ -93,11 +102,15 @@ final class RemoteClientWindowRegistry {
     return true
   }
 
-  /// File ▸ "Open Remote Mac…" (R29).
+  /// File ▸ "Open Remote Mac…" (R29). A window on an old relay (no host list) comes forward
+  /// instead: a second one would show that relay's one Mac again, with the same notification ids.
   func openRemoteMac(saved: String?) {
-    let value = RemoteClientWindowValue.toOpen(hasOpenWindows: hasOpenWindows, saved: saved)
-    if let hostID = value.hostID, focus(hostID) { return }
-    open(value)
+    if let single = entries.first(where: { $0.entry.handle.relayListsNoHosts })?.entry.handle {
+      remoteWindowsLogger.info("The relay lists no Macs: bringing its window forward instead of a new one")
+      single.bringForward()
+      return
+    }
+    open(RemoteClientWindowValue.toOpen(hasOpenWindows: hasOpenWindows, saved: saved))
   }
 
   /// A notification tap (ИВ3): the window of its Mac, brought forward, selects the tab; with no
@@ -121,10 +134,23 @@ final class RemoteClientWindowRegistry {
 
   private func open(_ value: RemoteClientWindowValue) {
     guard let openWindow else {
-      remoteWindowsLogger.warning("Cannot open a remote window: no window opener")
+      remoteWindowsLogger.info("No window opener yet: the remote window opens once there is one")
+      if !parked.contains(value) { parked.append(value) }
       return
     }
     openWindow(value)
+  }
+
+  /// Opens the windows asked for before the opener was set; a Mac whose window opened meanwhile
+  /// comes forward instead. Emptied first: the opener is set again on every menu use.
+  private func openParked() {
+    guard openWindow != nil, !parked.isEmpty else { return }
+    let values = parked
+    parked = []
+    for value in values {
+      if let hostID = value.hostID, focus(hostID) { continue }
+      open(value)
+    }
   }
 
   private func index(of window: UUID) -> Int? {
@@ -144,5 +170,45 @@ final class RemoteClientWindowRegistry {
       entries[index].entry.told = others
       entries[index].entry.handle.otherWindowsChanged(others)
     }
+  }
+}
+
+/// The reducer's door to the other remote windows (`RemoteClientWindowRegistry`), so tests need no
+/// window. Each window's store gets its own, bound to that window.
+nonisolated struct RemoteClientWindowsClient: Sendable {
+  /// Takes the Mac for this window; false when another remote window shows it.
+  var claim: @MainActor @Sendable (_ hostID: String) -> Bool
+  /// Brings forward the window that shows the Mac.
+  var focus: @MainActor @Sendable (_ hostID: String) -> Void
+}
+
+extension RemoteClientWindowsClient {
+  @MainActor
+  static func live(_ registry: RemoteClientWindowRegistry, window: UUID) -> RemoteClientWindowsClient {
+    RemoteClientWindowsClient(
+      claim: { registry.claim($0, for: window) },
+      focus: { registry.focus($0) }
+    )
+  }
+}
+
+nonisolated extension RemoteClientWindowsClient: DependencyKey {
+  /// Every window's store replaces this with `.live(registry, window:)`; reaching it means that
+  /// wiring is missing, and this window would claim every Mac. Said loudly, then every Mac is free.
+  static let liveValue = RemoteClientWindowsClient(
+    claim: { _ in
+      remoteWindowsLogger.error("Remote windows client used without a window: every Mac looks free")
+      return true
+    },
+    focus: { _ in }
+  )
+  /// The only remote window: every Mac is free.
+  static let testValue = RemoteClientWindowsClient(claim: { _ in true }, focus: { _ in })
+}
+
+nonisolated extension DependencyValues {
+  var remoteClientWindows: RemoteClientWindowsClient {
+    get { self[RemoteClientWindowsClient.self] }
+    set { self[RemoteClientWindowsClient.self] = newValue }
   }
 }

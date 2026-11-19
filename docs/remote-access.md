@@ -220,8 +220,9 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
 ## Use another Mac from Supacode
 
 Besides the phone, Supacode itself can show another Mac's Supacode in a window: its sidebar, tabs and
-splits, each pane a real terminal. Each Mac gets its own window, so several Macs can be open at once. Design: `docs/plans/2026-11-17-remote-client-design.md`; the code
-is described in `docs/fork.md` → "Remote Client Window".
+splits, each pane a real terminal. Each Mac gets its own window, so several Macs can be open at
+once. Design: `docs/plans/2026-11-17-remote-client-design.md`; the code is described in
+`docs/fork.md` → "Remote Client Window".
 
 Both Macs need the same relay and key pair, as for the phone. The Mac you open (the "host") must
 run a Supacode with remote access on, from `/Applications`, and a build new enough for this window;
@@ -251,7 +252,10 @@ key file; it need not host anything.
    A Mac is never open in two windows: opening it again (from the menu, the picker or a
    notification) brings its window forward. Each window has its own connection, so four windows
    are four connections to the relay; closing a window disconnects only its Mac, and quitting
-   Supacode disconnects them all.
+   Supacode disconnects them all. The relay allows 20 connection attempts per IP per minute (see
+   "Protection" above), so about four windows stay within it even when every window reconnects at
+   once after a network drop. An old relay that lists no Macs has only one: while a window shows
+   it, "Open Remote Mac…" brings that window forward instead of opening a second one.
 4. Work as on the Mac itself: the sidebar, tabs and splits are the host's, and what you do in the
    window (a new tab, a split, a close, a new worktree) is done on the host, without a confirmation
    there. Each terminal is the host's real terminal, sized to its pane here.
@@ -259,8 +263,8 @@ key file; it need not host anything.
 Next to the Mac's name in the title is the path in use ("Office Mac · LAN"): **LAN** when both Macs
 are on the same network (see "LAN shortcut": the relay tells the host, the host offers its address
 and the window pins the certificate), otherwise **Relay**. While there is no live link, the line
-under the name is the banner's notice instead (see "What the banner means"). When the direct path fails, the window uses the
-relay again and goes back to LAN when it can.
+under the name is the banner's notice instead (see "What the banner means"). When the direct path
+fails, the window uses the relay again and goes back to LAN when it can.
 
 While a Remote Mac window is key, the menus act on the Mac it shows: New Terminal (⌘T), Close (⌘W),
 the splits and zoom, Select Tab (⌘1 to ⌘9, previous, next), and the Worktrees menu (new, refresh,

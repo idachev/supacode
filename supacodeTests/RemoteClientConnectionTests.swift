@@ -401,6 +401,23 @@ struct RemoteClientConnectionTests {
     #expect(relay.types == ["hello", "list", "watch"])
   }
 
+  /// F3: whether the relay lists its Macs is known only from its frames; an old relay's one Mac is
+  /// what every unbound window would show, so the windows ask before opening another.
+  @Test func theRelaySaysWhetherItListsItsMacs() async {
+    let rig = rig(hostID: "h1")
+    #expect(!rig.connection.relayListsNoHosts)
+    let relay = rig.relay
+    relay.open()
+    relay.receive(#"{"t":"relay","hostOnline":true}"#)
+    #expect(await settle { rig.connection.relayListsNoHosts })
+    relay.receive(Self.relayFrame(online: true))
+    #expect(await settle { !rig.connection.relayListsNoHosts })
+    relay.receive(#"{"t":"relay","hostOnline":true}"#)
+    #expect(await settle { rig.connection.relayListsNoHosts })
+    rig.connection.stop()
+    #expect(!rig.connection.relayListsNoHosts)
+  }
+
   /// The relay's host going offline ends the waits on it; its return brings hello, list and the attaches again.
   @Test func theHostComingBackReattaches() async {
     let rig = rig()

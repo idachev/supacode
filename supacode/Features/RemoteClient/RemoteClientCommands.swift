@@ -17,7 +17,7 @@ struct RemoteClientCommands: Commands {
       Button("Open Remote Mac…", systemImage: "desktopcomputer") {
         @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
         let windows = RemoteClientWindowRegistry.shared
-        windows.openWindow = { [openWindow] in openWindow(value: $0) }
+        windows.openWindow = { [openWindow] in openWindow(id: WindowID.remoteClient, value: $0) }
         windows.openRemoteMac(saved: saved)
       }
       .keyboardShortcut(Self.shortcut)
@@ -37,7 +37,9 @@ struct RemoteClientWindowOpenerInstaller: View {
       .frame(width: 0, height: 0)
       .accessibilityHidden(true)
       .onAppear {
-        RemoteClientWindowRegistry.shared.openWindow = { [openWindow] in openWindow(value: $0) }
+        RemoteClientWindowRegistry.shared.openWindow = { [openWindow] in
+          openWindow(id: WindowID.remoteClient, value: $0)
+        }
       }
   }
 }

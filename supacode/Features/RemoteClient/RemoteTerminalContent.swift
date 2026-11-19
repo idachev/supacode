@@ -256,7 +256,7 @@ final class RemoteTerminalContent: TabContent {
   /// wrapper and no shell integration. A second call while the surface lives does nothing.
   func startSession(at geometry: ContentGeometry) {
     guard surfaceView == nil, !isTornDown else { return }
-    guard let command = Self.pipeCommand(pipeKey: ports.pipeKey(remoteContentID)) else {
+    guard let command = Self.pipeCommand(contentID: remoteContentID, pipeKey: ports.pipeKey) else {
       remoteTerminalLogger.warning("Remote tab not started: no pipe command")
       sessionFailedToStart = true
       return
@@ -431,12 +431,17 @@ final class RemoteTerminalContent: TabContent {
   }
 
   /// `'<app>/Contents/Resources/bin/supacode' remote-pipe '<pipe key>'`, the CLI the app puts on
-  /// `PATH` for its terminals. Nil without a resource directory, or for a key that is not one plain
-  /// word (its content id comes from the other Mac and lands in a shell command line).
-  nonisolated static func pipeCommand(pipeKey: String, resourceURL: URL? = Bundle.main.resourceURL) -> String? {
-    guard isPlainWord(pipeKey), let resourceURL else { return nil }
+  /// `PATH` for its terminals. Nil without a resource directory, or for a content id that is not
+  /// one plain word (it comes from the other Mac and lands in a shell command line). The id is
+  /// checked before `pipeKey` prefixes it: `s1.` or `s1.-h` would pass as plain words.
+  static func pipeCommand(
+    contentID: String, pipeKey: @MainActor (String) -> String, resourceURL: URL? = Bundle.main.resourceURL
+  ) -> String? {
+    guard isPlainWord(contentID), let resourceURL else { return nil }
+    let key = pipeKey(contentID)
+    guard isPlainWord(key) else { return nil }
     let cli = resourceURL.appending(path: "bin/supacode", directoryHint: .notDirectory).path(percentEncoded: false)
-    return "\(SSHCommand.loginShellQuote(cli)) remote-pipe \(SSHCommand.loginShellQuote(pipeKey))"
+    return "\(SSHCommand.loginShellQuote(cli)) remote-pipe \(SSHCommand.loginShellQuote(key))"
   }
 
   /// Letters, digits, `-`, `_` and `.`, not starting with `-` (an option to the CLI's parser).

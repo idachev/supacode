@@ -181,22 +181,31 @@ struct RemoteClientTerminalTests {
     #expect(closed == [])
   }
 
+  /// The session's pipe key: the content id under its prefix (`RemotePipeRouter`).
+  private static func sessionKey(_ contentID: String) -> String {
+    RemotePipeRouter.pipeKey(prefix: "s1", contentID: contentID)
+  }
+
   @Test func thePipeCommandQuotesTheCLIAndTheID() {
     let command = RemoteTerminalContent.pipeCommand(
-      pipeKey: "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+      contentID: "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+      pipeKey: Self.sessionKey,
       resourceURL: URL(filePath: "/Apps/My Supacode.app/Contents/Resources", directoryHint: .isDirectory)
     )
     #expect(
       command
-        == "'/Apps/My Supacode.app/Contents/Resources/bin/supacode' remote-pipe '6F9619FF-8B86-D011-B42D-00C04FC964FF'")
+        == "'/Apps/My Supacode.app/Contents/Resources/bin/supacode' remote-pipe "
+        + "'s1.6F9619FF-8B86-D011-B42D-00C04FC964FF'")
   }
 
+  /// F2: the content id is checked before the prefix makes any id look like a plain word (`s1.` for
+  /// an empty one, `s1.-h` for an option).
   @Test func anIDThatIsNotAPlainWordGetsNoCommand() {
     let resources = URL(filePath: "/Apps/Supacode.app/Contents/Resources", directoryHint: .isDirectory)
     for id in ["", "-h", "--help", "a b", "a;rm", "$(x)", "a'b", "é"] {
-      #expect(RemoteTerminalContent.pipeCommand(pipeKey: id, resourceURL: resources) == nil)
+      #expect(RemoteTerminalContent.pipeCommand(contentID: id, pipeKey: Self.sessionKey, resourceURL: resources) == nil)
     }
-    #expect(RemoteTerminalContent.pipeCommand(pipeKey: "abc", resourceURL: nil) == nil)
+    #expect(RemoteTerminalContent.pipeCommand(contentID: "abc", pipeKey: Self.sessionKey, resourceURL: nil) == nil)
   }
 
   @Test func theSnapshotIsNeverPersisted() {
