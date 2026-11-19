@@ -50,6 +50,9 @@ final class RemoteClientSession {
   @ObservationIgnored private let attachedSet: RemoteAttachedSetDriver
   /// The window's visible contents, as the last `setVisible` gave them.
   @ObservationIgnored private var visible: [String] = []
+  /// Called with a remote content id when its surface takes the keyboard (the user clicked into
+  /// it), so the window can focus that pane.
+  @ObservationIgnored var onSurfaceFocused: ((String) -> Void)?
   @ObservationIgnored private var subscriber: AsyncStream<Event>.Continuation?
   /// What the subscriber was last told, so only a real change becomes an event.
   @ObservationIgnored private var published = Published()
@@ -209,7 +212,12 @@ final class RemoteClientSession {
     // Kept before the surface starts: its pipe may open before `provision` returns.
     contents[remoteContentID] = content
     guard runtime.provision(content, at: runtime.spawnGeometry(near: nil)) else { return }
-    if let surface = content.renderer as? GhosttySurfaceView { Self.wire(surface) }
+    guard let surface = content.renderer as? GhosttySurfaceView else { return }
+    Self.wire(surface)
+    surface.onFocusChange = { [weak self] focused in
+      guard focused else { return }
+      self?.onSurfaceFocused?(remoteContentID)
+    }
   }
 
   /// Tears down one content (it detaches and its pipe closes).

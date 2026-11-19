@@ -19,3 +19,23 @@ struct RemoteClientCommands: Commands {
     }
   }
 }
+
+/// Select Tab 1–9 (1-based, clamped like Ghostty's `goto_tab`), Select Previous / Next Tab.
+nonisolated enum RemoteTabSelection: Hashable, Sendable {
+  case index(Int)
+  case previous
+  case next
+}
+
+private struct RemoteTabSelectionActionKey: FocusedValueKey {
+  typealias Value = FocusedAction<RemoteTabSelection>
+}
+
+extension FocusedValues {
+  /// The remote window's Select Tab items. The app's Select Tab menu sends to the main window's
+  /// store; while the remote window is key it publishes this and the menu calls it instead.
+  var remoteTabSelectionAction: FocusedAction<RemoteTabSelection>? {
+    get { self[RemoteTabSelectionActionKey.self] }
+    set { self[RemoteTabSelectionActionKey.self] = newValue }
+  }
+}

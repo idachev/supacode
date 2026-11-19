@@ -1,71 +1,30 @@
 import AppKit
 import ComposableArchitecture
+import Sharing
 import SupacodeSettingsShared
 import SwiftUI
 
-/// The store and the session behind the "Remote Mac" window. One per app: the `Window` scene's
-/// views go away when it closes, but the session must outlive that to close itself
-/// (`windowClosed`), and the next opening reuses both (КЛ6: connected only while open).
-@MainActor
-final class RemoteClientWindowModel {
-  private static var shared: RemoteClientWindowModel?
-
-  let session: RemoteClientSession
-  let store: StoreOf<RemoteClientFeature>
-
-  private init(ghostty: GhosttyRuntime) {
-    let session = RemoteClientSession(ghostty: ghostty)
-    self.session = session
-    store = Store(initialState: RemoteClientFeature.State()) {
-      RemoteClientFeature()
-    } withDependencies: {
-      $0.remoteClientSession = .live(session)
-    }
-  }
-
-  nonisolated deinit {}
-
-  static func shared(ghostty: GhosttyRuntime) -> RemoteClientWindowModel {
-    if let shared { return shared }
-    let model = RemoteClientWindowModel(ghostty: ghostty)
-    shared = model
-    return model
-  }
-}
-
-/// The `Window` scene's root: connects when the window appears, disconnects when it closes.
-struct RemoteClientWindowRoot: View {
-  let ghostty: GhosttyRuntime
-  @State private var model: RemoteClientWindowModel?
-
-  var body: some View {
-    Group {
-      if let model {
-        RemoteClientWindowView(store: model.store, session: model.session)
-      } else {
-        Color.clear
-      }
-    }
-    .frame(minWidth: 480, minHeight: 320)
-    .onAppear {
-      let model = RemoteClientWindowModel.shared(ghostty: ghostty)
-      self.model = model
-      model.store.send(.windowAppeared)
-    }
-    .onDisappear {
-      RemoteClientWindowModel.shared(ghostty: ghostty).store.send(.windowClosed)
-    }
-  }
-}
-
-/// The remote window (ПЗ1, ПЗ2): the Mac's name and path as the title, the worktrees of its last
-/// `list` in the sidebar and the selected worktree's first tab as a live terminal.
+/// The remote window (ПЗ1, ПЗ2): the Mac's name and path as the title, the Mac's sidebar and the
+/// selected worktree's tabs and splits.
 struct RemoteClientWindowView: View {
   @Bindable var store: StoreOf<RemoteClientFeature>
   let session: RemoteClientSession
+  let ghostty: GhosttyRuntime
 
   var body: some View {
     content
+      // Published whatever the window shows, always enabled: otherwise ⌘1…⌘9 and previous / next
+      // would reach the main window's tabs while this window is key.
+      .focusedSceneAction(\.remoteTabSelectionAction, enabled: true) { selection in
+        switch store.withState(\.projection)?.target(of: selection) {
+        case .tab(let paneID, let tabID): store.send(.tabSelected(paneID: paneID, tabID: tabID))
+        case .group(let groupID): store.send(.groupSelected(groupID))
+        case nil: break
+        }
+      }
+      // On the window, not the split view: a request that fails as the connection fails (a refused
+      // key) shows its alert over the failure screen, not stale after a reconnect.
+      .alert($store.scope(state: \.alert, action: \.alert))
       .toolbar(removing: .title)
       .navigationTitle(store.macName)
       .toolbar {
@@ -113,7 +72,7 @@ struct RemoteClientWindowView: View {
         }
       default:
         if store.list != nil {
-          RemoteClientSplitView(store: store, session: session)
+          RemoteClientSplitView(store: store, session: session, ghostty: ghostty)
         } else {
           RemoteClientWaitingView(store: store)
         }
@@ -132,8 +91,11 @@ private struct RemoteClientTitleButton: View {
     // One line: a toolbar item has no room for two.
     Button(action: action) {
       HStack(spacing: 6) {
+        // A long name truncates instead of pushing the toolbar.
         Text(name)
           .font(.headline)
+          .truncationMode(.tail)
+          .frame(maxWidth: 280, alignment: .leading)
         if !detail.isEmpty {
           Text("·")
             .foregroundStyle(.secondary)
@@ -205,106 +167,137 @@ private struct RemoteClientWaitingView: View {
   }
 }
 
-/// The worktrees of the Mac's `list` and the selected one's focused tab.
+/// The Mac's sidebar and the selected worktree's layout, with the window's menu actions, the
+/// request alerts and the New Worktree prompt.
 private struct RemoteClientSplitView: View {
-  let store: StoreOf<RemoteClientFeature>
+  @Bindable var store: StoreOf<RemoteClientFeature>
   let session: RemoteClientSession
+  let ghostty: GhosttyRuntime
+
+  @Shared(.settingsFile) private var settingsFile
+  @FocusState private var isFilterFocused: Bool
 
   var body: some View {
+    let filterShortcut = AppShortcuts.filterSidebar.effective(from: settingsFile.global.shortcutOverrides)
     NavigationSplitView {
-      List(
-        selection: Binding(
-          get: { store.selectedWorktreeID },
-          set: { id in if let id { store.send(.worktreeSelected(id)) } }
-        )
-      ) {
-        ForEach(store.worktrees) { worktree in
-          Text(worktree.name.isEmpty ? worktree.branch : worktree.name)
-            .tag(worktree.id)
-        }
-      }
-      .navigationSplitViewColumnWidth(min: 180, ideal: 220)
+      RemoteSidebarView(
+        store: store, isFilterFocused: $isFilterFocused, filterShortcut: filterShortcut,
+        focusTerminal: focusTerminal
+      )
+      .navigationSplitViewColumnWidth(min: 220, ideal: 260)
     } detail: {
-      if let tab = store.projection?.focusedTab {
-        RemoteTabDetailView(session: session, tab: tab, macName: store.macName)
-      } else {
-        ContentUnavailableView("No terminal", systemImage: "terminal")
+      RemoteLayoutView(store: store, session: session, ghostty: ghostty, macName: store.macName)
+    }
+    .modifier(RemoteClientMenuActions(store: store, focusFilter: { isFilterFocused = true }))
+    .sheet(
+      isPresented: Binding(
+        get: { store.newWorktree != nil },
+        set: { if !$0 { store.send(.newWorktreeCancelled) } }
+      )
+    ) {
+      RemoteNewWorktreeSheet(store: store)
+    }
+    .onAppear {
+      // A click into another pane's terminal focuses that pane, as on the Mac.
+      session.onSurfaceFocused = { [store] contentID in
+        guard let projection = store.withState(\.projection),
+          let paneID = projection.paneID(showing: contentID),
+          paneID != projection.focusedPaneID
+        else { return }
+        store.send(.paneFocused(paneID))
       }
     }
   }
+
+  /// Hands the keyboard to the focused pane's terminal.
+  private func focusTerminal() {
+    guard let contentID = store.projection?.focusedTab?.contentId,
+      let surface = session.attachedContent(contentID)?.renderer as? GhosttySurfaceView
+    else { return }
+    surface.requestFocus()
+  }
 }
 
-/// One remote tab: its live surface, or why there is none. The session makes and tears down the
-/// contents (the attached set, РЗ5); this view only hosts the one it made.
-private struct RemoteTabDetailView: View {
-  let session: RemoteClientSession
-  let tab: RemoteClientTab
-  let macName: String
+/// The terminal menu's actions while the remote window is key (ПЗ4): each sends the matching
+/// `RemoteClientFeature` action. Keys this window cannot serve stay unpublished, so the menu
+/// greys them out instead of acting on the main window.
+private struct RemoteClientMenuActions: ViewModifier {
+  let store: StoreOf<RemoteClientFeature>
+  let focusFilter: () -> Void
+
+  private struct Token: Hashable {
+    let worktreeID: String?
+    let paneID: String?
+    let tabID: String?
+  }
+
+  func body(content: Content) -> some View {
+    let projection = store.projection
+    let worktreeID = store.selectedWorktreeID
+    let paneID = projection?.focusedPaneID
+    let tab = projection?.focusedTab
+    let canEditPanes = store.selectedWorktree?.layout != nil
+    let isSplit =
+      projection.flatMap { projection in projection.groups.first { $0.id == projection.activeGroupID } }
+      .map { RemoteLayoutProjection.paneIDs(in: $0.tree).count > 1 } ?? false
+    let token = Token(worktreeID: worktreeID, paneID: paneID, tabID: tab?.id)
+    content
+      .focusedSceneAction(\.newTerminalAction, enabled: worktreeID != nil, token: token) {
+        store.send(.newTabTapped(paneID: paneID))
+      }
+      .focusedSceneAction(\.closeTabAction, enabled: tab != nil, token: token) {
+        guard let tab else { return }
+        store.send(.closeTabTapped(tabID: tab.id))
+      }
+      .focusedSceneAction(\.splitTerminalAction, enabled: canEditPanes && paneID != nil, token: token) { direction in
+        guard let paneID else { return }
+        store.send(.splitTapped(paneID: paneID, direction: direction.remoteSplitDirection))
+      }
+      .focusedSceneAction(\.toggleSplitZoomAction, enabled: isSplit && paneID != nil, token: token) {
+        guard let paneID else { return }
+        store.send(.zoomToggled(paneID: paneID))
+      }
+      .focusedSceneAction(\.filterSidebarAction, enabled: true, perform: focusFilter)
+  }
+}
+
+/// The branch-name prompt of New Worktree… (СЛ5).
+private struct RemoteNewWorktreeSheet: View {
+  let store: StoreOf<RemoteClientFeature>
 
   var body: some View {
-    if tab.contentId.isEmpty {
-      ContentUnavailableView("No terminal", systemImage: "terminal")
-    } else if let content = session.attachedContent(tab.contentId) {
-      if case .ended(let reason) = content.phase {
-        ContentUnavailableView(
-          "This terminal ended on \(macName)", systemImage: "terminal", description: Text(reason))
-      } else if content.sessionFailedToStart {
-        ContentUnavailableView("The terminal could not start", systemImage: "exclamationmark.triangle")
-      } else {
-        RemoteTerminalHostView(content: content)
+    let repositoryID = store.newWorktree?.repositoryID ?? ""
+    let repositoryName = store.list?.repos.first { $0.id == repositoryID }?.name ?? "the repository"
+    let name = store.newWorktree?.name ?? ""
+    let isBusy = store.busyRequests.contains(RemoteClientFeature.RequestKey.make("worktree.new", repositoryID))
+    let canCreate = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isBusy
+    VStack(alignment: .leading, spacing: 12) {
+      Text("New Worktree in \(repositoryName)")
+        .font(.headline)
+      Text("The Mac creates the worktree and its branch.")
+        .foregroundStyle(.secondary)
+      TextField(
+        "Branch name",
+        text: Binding(get: { name }, set: { store.send(.newWorktreeNameChanged($0)) }),
+        prompt: Text("Branch name")
+      )
+      .monospaced()
+      .onSubmit {
+        if canCreate { store.send(.newWorktreeConfirmed) }
       }
-    } else {
-      ProgressView()
+      HStack {
+        Spacer()
+        Button("Cancel") { store.send(.newWorktreeCancelled) }
+          .keyboardShortcut(.cancelAction)
+          .help("Close without creating a worktree (Esc)")
+        Button("Create") { store.send(.newWorktreeConfirmed) }
+          .keyboardShortcut(.defaultAction)
+          .disabled(!canCreate)
+          .help("Create the worktree on the Mac (Return)")
+      }
     }
-  }
-}
-
-/// Mounts a remote surface. The parent clips and is flipped, so the surface can later be given
-/// a fixed frame anchored top left (ТР8а) without touching `GhosttySurfaceView`.
-private struct RemoteTerminalHostView: NSViewRepresentable {
-  let content: RemoteTerminalContent
-
-  func makeNSView(context: Context) -> RemoteTerminalContainerView {
-    let container = RemoteTerminalContainerView()
-    container.mount(content.renderer as? GhosttySurfaceView)
-    return container
-  }
-
-  func updateNSView(_ container: RemoteTerminalContainerView, context: Context) {
-    container.mount(content.renderer as? GhosttySurfaceView)
-  }
-}
-
-final class RemoteTerminalContainerView: NSView {
-  override var isFlipped: Bool { true }
-
-  override init(frame frameRect: NSRect) {
-    super.init(frame: frameRect)
-    clipsToBounds = true
-  }
-
-  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-  nonisolated deinit {}
-
-  func mount(_ surface: GhosttySurfaceView?) {
-    guard let surface else {
-      subviews.forEach { $0.removeFromSuperview() }
-      return
-    }
-    // The surface's own scroll wrapper, as a local pane mounts it: it owns the surface's frame.
-    let hosted = surface.hostedView()
-    guard hosted.superview !== self else { return }
-    subviews.forEach { $0.removeFromSuperview() }
-    hosted.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(hosted)
-    NSLayoutConstraint.activate([
-      hosted.leadingAnchor.constraint(equalTo: leadingAnchor),
-      hosted.trailingAnchor.constraint(equalTo: trailingAnchor),
-      hosted.topAnchor.constraint(equalTo: topAnchor),
-      hosted.bottomAnchor.constraint(equalTo: bottomAnchor),
-    ])
-    surface.requestFocus()
+    .padding()
+    .frame(minWidth: 360)
   }
 }
 
@@ -369,7 +362,7 @@ extension RemoteClientFeature.State {
 }
 
 extension RemoteLayoutProjection {
-  /// The tab the window shows while it draws one terminal: the focused pane's selected tab.
+  /// The focused pane's selected tab: what Close Tab closes and the keyboard types into.
   var focusedTab: RemoteClientTab? {
     guard let pane = focusedPaneID.flatMap({ panes[$0] }) else { return nil }
     return pane.tabs.first { $0.id == pane.selectedTabID }
@@ -388,6 +381,17 @@ extension RemoteClientStatus {
     case .unsupportedHost: "Older Supacode"
     case .failed: "Not connected"
     case .idle: ""
+    }
+  }
+}
+
+extension TerminalSplitMenuDirection {
+  /// The protocol's `pane.split` is two-way: left and right split side by side, up and down
+  /// one above the other; the Mac places the new pane.
+  fileprivate var remoteSplitDirection: SplitDirection {
+    switch self {
+    case .right, .left: .horizontal
+    case .down, .up: .vertical
     }
   }
 }

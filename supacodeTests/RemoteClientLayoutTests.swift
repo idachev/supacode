@@ -301,6 +301,67 @@ struct RemoteClientLayoutTests {
     #expect(other.visibleContentIDs == ["c-t4"])
   }
 
+  // MARK: - Select Tab, focus by content
+
+  @Test func selectTabPicksATabOfTheFocusedPane() {
+    var selection = RemoteLocalSelection(focusedPaneID: ["main": "P1"])
+    // P1 holds [t1, t2], t2 selected.
+    let projection = RemoteLayoutProjection.project(Self.twoPaneWorktree(), selection: &selection)
+
+    #expect(projection.target(of: .index(1)) == .tab(paneID: "P1", tabID: "t1"))
+    // Clamped to the strip, as Ghostty's goto_tab.
+    #expect(projection.target(of: .index(9)) == .tab(paneID: "P1", tabID: "t2"))
+    #expect(projection.target(of: .index(0)) == .tab(paneID: "P1", tabID: "t1"))
+    // Previous and next wrap.
+    #expect(projection.target(of: .next) == .tab(paneID: "P1", tabID: "t1"))
+    #expect(projection.target(of: .previous) == .tab(paneID: "P1", tabID: "t1"))
+
+    // One tab: Select Tab 1 still picks it, previous and next have nothing to do.
+    var other = RemoteLocalSelection()
+    let single = RemoteLayoutProjection.project(Self.twoPaneWorktree(), selection: &other)
+    #expect(single.target(of: .index(3)) == .tab(paneID: "P2", tabID: "t3"))
+    #expect(single.target(of: .next) == nil)
+  }
+
+  @Test func selectTabPicksAGroupInSplitPerTab() {
+    let worktree = Self.worktree(
+      layout: RemoteClientLayout(
+        mode: "splitPerTab", activeGroupId: "G2",
+        groups: [
+          Self.group("G1", .pane("P1")),
+          Self.group("G2", .pane("P2")),
+          Self.group("G3", .pane("P3")),
+        ],
+        panes: [Self.pane("P1", ["t1"]), Self.pane("P2", ["t2"]), Self.pane("P3", ["t3"])]),
+      tabs: [Self.tab("t1"), Self.tab("t2"), Self.tab("t3")])
+    var selection = RemoteLocalSelection()
+    let projection = RemoteLayoutProjection.project(worktree, selection: &selection)
+
+    #expect(projection.target(of: .index(1)) == .group("G1"))
+    #expect(projection.target(of: .index(9)) == .group("G3"))
+    #expect(projection.target(of: .next) == .group("G3"))
+    #expect(projection.target(of: .previous) == .group("G1"))
+
+    var empty = RemoteLocalSelection()
+    let nothing = RemoteLayoutProjection.project(Self.worktree(layout: nil, tabs: []), selection: &empty)
+    #expect(nothing.target(of: .index(1)) == nil)
+  }
+
+  @Test func aClickedContentNamesItsShownPane() {
+    var selection = RemoteLocalSelection()
+    let projection = RemoteLayoutProjection.project(Self.twoPaneWorktree(), selection: &selection)
+    #expect(projection.paneID(showing: "c-t2") == "P1")
+    #expect(projection.paneID(showing: "c-t3") == "P2")
+    // Not the selected tab of its pane: not shown, so not clicked.
+    #expect(projection.paneID(showing: "c-t1") == nil)
+
+    // A zoomed group shows only its zoomed pane.
+    var zoomed = RemoteLocalSelection(zoomedPaneID: ["main": "P2"])
+    let zoomedProjection = RemoteLayoutProjection.project(Self.twoPaneWorktree(), selection: &zoomed)
+    #expect(zoomedProjection.paneID(showing: "c-t2") == nil)
+    #expect(zoomedProjection.paneID(showing: "c-t3") == "P2")
+  }
+
   // MARK: - Attached set
 
   @Test func newVisibleContentsAttachAndHiddenOnesLingerThirtySeconds() {

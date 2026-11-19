@@ -65,6 +65,7 @@ struct RemoteClientSidebarTests {
     #expect(Self.rowIDs(sections) == [["b2"], ["a2"], ["a1", "a3", "b1"], ["c1"]])
     let row = sections[1].rows[0]
     #expect(row.repositoryID == "A")
+    #expect(row.repositoryName == "A")
     #expect(row.name == "a2")
     #expect(row.branch == "b-a2")
     #expect(row.status == "unpinned")
@@ -117,6 +118,23 @@ struct RemoteClientSidebarTests {
     var withEmpty = list
     withEmpty.repos[2].rowIds = []
     #expect(Self.rowIDs(Model.sections(withEmpty, filter: "")) == [["x1", "x2"], ["y1", "y2", "y3", "y4", "y5"], []])
+  }
+
+  @Test func theFilterForgivesATypoLikeTheLocalSidebar() {
+    let list = RemoteClientList(
+      repos: [
+        Self.repo("R1", name: "Supacode", worktrees: [Self.worktree("x1", branch: "feature/login")]),
+        Self.repo("R2", name: "other", worktrees: [Self.worktree("y1", branch: "main")]),
+      ],
+      sections: [
+        RemoteClientSection(kind: "repository", repositoryId: "R1"),
+        RemoteClientSection(kind: "repository", repositoryId: "R2"),
+      ])
+    // Six letters allow two edits (`SidebarFilter`): a swap and a missing letter still match.
+    #expect(Self.rowIDs(Model.sections(list, filter: "suapcde")) == [["x1"]])
+    #expect(Self.rowIDs(Model.sections(list, filter: "featrue")) == [["x1"]])
+    // Three letters must match exactly.
+    #expect(Model.sections(list, filter: "lgn").isEmpty)
   }
 
   @Test func anUnknownSectionKindIsSkipped() {

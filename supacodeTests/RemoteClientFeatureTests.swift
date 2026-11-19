@@ -861,6 +861,12 @@ struct RemoteClientFeatureTests {
     #expect(session.sent.value.isEmpty)
   }
 
+  @Test func theNewTabKeyNamesWorktreeAndPane() {
+    // The views read busy buttons through it: it must be the key the reducer inserts.
+    #expect(RemoteClientFeature.RequestKey.newTab(worktreeID: "w1", paneID: "P1") == "tab.new:w1|P1")
+    #expect(RemoteClientFeature.RequestKey.newTab(worktreeID: "w1", paneID: nil) == "tab.new:w1|")
+  }
+
   @Test func aNewTabInASecondPaneIsNotDroppedWhileTheFirstRuns() async {
     let session = FakeSession()
     // One gate per pane: a stream has one reader.

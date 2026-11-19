@@ -117,11 +117,14 @@ struct TerminalCommands: Commands {
 struct TerminalTabSelectionCommands: Commands {
   @Bindable var store: StoreOf<AppFeature>
   @Shared(.settingsFile) private var settingsFile
+  /// Published by the "Remote Mac" window while it is key: the items act on it instead.
+  @FocusedValue(\.remoteTabSelectionAction) private var remoteTabSelection
 
   var body: some Commands {
     CommandGroup(after: .newItem) {
       Menu("Select Tab") {
-        TerminalTabSelectionItems(store: store, overrides: settingsFile.global.shortcutOverrides)
+        TerminalTabSelectionItems(
+          store: store, overrides: settingsFile.global.shortcutOverrides, remoteTabSelection: remoteTabSelection)
       }
     }
   }
@@ -130,12 +133,13 @@ struct TerminalTabSelectionCommands: Commands {
 private struct TerminalTabSelectionItems: View {
   let store: StoreOf<AppFeature>
   let overrides: [AppShortcutID: AppShortcutOverride]
+  let remoteTabSelection: FocusedAction<RemoteTabSelection>?
 
   var body: some View {
     ForEach(0..<AppShortcuts.tabSelection.count, id: \.self) { index in
       let shortcut = AppShortcuts.tabSelection[index].effective(from: overrides)
       Button("Select Tab \(index + 1)") {
-        store.send(.selectTerminalTabAtIndex(index + 1))
+        select(.index(index + 1)) { store.send(.selectTerminalTabAtIndex(index + 1)) }
       }
       .appKeyboardShortcut(shortcut)
       .help(AppShortcut.helpText("Select Tab \(index + 1)", shortcut: shortcut))
@@ -144,12 +148,20 @@ private struct TerminalTabSelectionItems: View {
     RelativeTabSelectionButton(
       title: "Select Previous Tab", shortcut: AppShortcuts.selectPreviousTab, overrides: overrides
     ) {
-      store.send(.selectPreviousTerminalTab)
+      select(.previous) { store.send(.selectPreviousTerminalTab) }
     }
     RelativeTabSelectionButton(
       title: "Select Next Tab", shortcut: AppShortcuts.selectNextTab, overrides: overrides
     ) {
-      store.send(.selectNextTerminalTab)
+      select(.next) { store.send(.selectNextTerminalTab) }
+    }
+  }
+
+  private func select(_ selection: RemoteTabSelection, local: () -> Void) {
+    if let remoteTabSelection, remoteTabSelection.isEnabled {
+      remoteTabSelection(selection)
+    } else {
+      local()
     }
   }
 }

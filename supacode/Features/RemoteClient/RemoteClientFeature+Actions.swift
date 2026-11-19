@@ -24,6 +24,12 @@ extension RemoteClientFeature {
       subject.map { "\(type):\($0)" } ?? type
     }
 
+    /// `tab.new` is keyed by worktree and pane: a second pane's New Tab is not held back by the
+    /// first's. `paneID` is the pane sent, nil for a worktree without `layout`.
+    static func newTab(worktreeID: String, paneID: String?) -> String {
+      make("tab.new", "\(worktreeID)|\(paneID ?? "")")
+    }
+
     /// The message type of a key. Split at the first `:` only: ids may hold more (paths, ssh hosts).
     static func type(of key: String) -> String {
       key.firstIndex(of: ":").map { String(key[..<$0]) } ?? key
@@ -233,9 +239,8 @@ extension RemoteClientFeature {
     if let gridPane = paneID ?? state.projection?.focusedPaneID, let grid = session.fittingGrid(gridPane) {
       ints = ["cols": grid.columns, "rows": grid.rows]
     }
-    // Keyed by worktree and pane: a second pane's New Tab is not held back by the first's.
-    let subject = "\(worktree.id)|\(sentPane ?? "")"
-    return request("tab.new", subject: subject, fields, ints: ints, timeout: Timeout.newTerminal, state: &state)
+    let key = RequestKey.newTab(worktreeID: worktree.id, paneID: sentPane)
+    return request(key: key, "tab.new", fields, ints: ints, timeout: Timeout.newTerminal, state: &state)
   }
 
   private func closeTab(_ tabID: String, state: inout State) -> Effect<Action> {
@@ -274,7 +279,13 @@ extension RemoteClientFeature {
     _ type: String, subject: String?, _ fields: [String: String], ints: [String: Int] = [:],
     timeout: Duration, state: inout State
   ) -> Effect<Action> {
-    let key = RequestKey.make(type, subject)
+    request(key: RequestKey.make(type, subject), type, fields, ints: ints, timeout: timeout, state: &state)
+  }
+
+  private func request(
+    key: String, _ type: String, _ fields: [String: String], ints: [String: Int] = [:],
+    timeout: Duration, state: inout State
+  ) -> Effect<Action> {
     guard state.busyRequests.insert(key).inserted else { return .none }
     let session = session
     return .run { send in
@@ -426,5 +437,49 @@ extension RemoteLayoutProjection {
   /// The group whose tree holds the pane.
   func groupID(containing paneID: String) -> String? {
     groups.first { Self.paneIDs(in: $0.tree).contains(paneID) }?.id
+  }
+
+  /// The shown pane of the active group whose selected tab is this remote content: the pane the
+  /// user clicked into when that content's surface took the keyboard.
+  func paneID(showing contentID: String) -> String? {
+    guard let group = groups.first(where: { $0.id == activeGroupID }) else { return nil }
+    let shown = group.zoomedPaneID.map { [$0] } ?? Self.paneIDs(in: group.tree)
+    return shown.first { paneID in
+      guard let pane = panes[paneID] else { return false }
+      return pane.tabs.first { $0.id == pane.selectedTabID }?.contentId == contentID
+    }
+  }
+
+  /// What Select Tab N / Previous / Next picks.
+  enum SelectionTarget: Equatable, Sendable {
+    case tab(paneID: String, tabID: String)
+    case group(String)
+  }
+
+  /// The pick of Select Tab N / Previous / Next, as the local window does it: in `splitPerTab` a
+  /// group of the strip, else a tab of the focused pane. N is 1-based and clamped to the strip;
+  /// previous and next wrap and need two or more. Nil when there is nothing to pick.
+  func target(of selection: RemoteTabSelection) -> SelectionTarget? {
+    if mode == "splitPerTab" {
+      let ids = groups.map(\.id)
+      let current = activeGroupID.flatMap { ids.firstIndex(of: $0) }
+      return Self.pick(selection, count: ids.count, current: current).map { .group(ids[$0]) }
+    }
+    guard let paneID = focusedPaneID, let pane = panes[paneID] else { return nil }
+    let current = pane.tabs.firstIndex { $0.id == pane.selectedTabID }
+    return Self.pick(selection, count: pane.tabs.count, current: current).map {
+      .tab(paneID: paneID, tabID: pane.tabs[$0].id)
+    }
+  }
+
+  private static func pick(_ selection: RemoteTabSelection, count: Int, current: Int?) -> Int? {
+    guard count > 0 else { return nil }
+    switch selection {
+    case .index(let number):
+      return min(max(number, 1), count) - 1
+    case .previous, .next:
+      guard count > 1, let current else { return nil }
+      return selection == .next ? (current + 1) % count : (current - 1 + count) % count
+    }
   }
 }

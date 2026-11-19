@@ -9,6 +9,8 @@ nonisolated enum RemoteSidebarModel {
   struct Row: Equatable, Identifiable, Sendable {
     let id: String
     let repositoryID: String
+    /// The repository's name, for the `repository · worktree` line of Active and Pinned rows.
+    let repositoryName: String
     let name: String
     let branch: String
     let status: String
@@ -60,7 +62,8 @@ nonisolated enum RemoteSidebarModel {
   }
 
   /// `list.sections` in order, rows by `rowIds`, unresolvable ids skipped; `filter` keeps rows whose
-  /// repository name, worktree name, branch, title or a tab title contains it (case-insensitive).
+  /// repository name, worktree name, branch, title or a tab title it matches, by the local sidebar's
+  /// `SidebarFilter` rules (substring, or a few typos for a longer query; same as Android and web).
   /// While filtering, a repository, group or highlight left with no row is dropped; unfiltered, an
   /// empty repository stays (its header offers New Worktree). Load failures follow the sections.
   /// A list with no `sections` (an older host) shows every repository with all its worktrees.
@@ -107,10 +110,10 @@ nonisolated enum RemoteSidebarModel {
   private struct Index {
     let worktrees: [String: (worktree: RemoteClientWorktree, repository: RemoteClientRepository)]
     let repositories: [String: RemoteClientRepository]
-    /// Trimmed and lowercased; empty means no filter.
-    let needle: String
+    /// Nil means no filter.
+    let filter: SidebarFilter?
 
-    var isFiltering: Bool { !needle.isEmpty }
+    var isFiltering: Bool { filter != nil }
 
     init(_ list: RemoteClientList, filter: String) {
       var worktrees: [String: (RemoteClientWorktree, RemoteClientRepository)] = [:]
@@ -123,7 +126,7 @@ nonisolated enum RemoteSidebarModel {
       }
       self.worktrees = worktrees
       self.repositories = repositories
-      needle = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      self.filter = SidebarFilter(query: filter)
     }
 
     /// The row of a worktree id that resolves and passes the filter.
@@ -134,6 +137,7 @@ nonisolated enum RemoteSidebarModel {
       return Row(
         id: worktree.id,
         repositoryID: repository.id,
+        repositoryName: repository.name,
         name: worktree.name,
         branch: worktree.branch,
         status: worktree.status,
@@ -157,9 +161,9 @@ nonisolated enum RemoteSidebarModel {
     }
 
     private func matches(_ worktree: RemoteClientWorktree, in repository: RemoteClientRepository) -> Bool {
-      guard isFiltering else { return true }
-      let fields = [repository.name, worktree.name, worktree.branch, worktree.title ?? ""] + worktree.tabs.map(\.title)
-      return fields.contains { $0.lowercased().contains(needle) }
+      guard let filter else { return true }
+      let fields = [repository.name, worktree.name, worktree.branch, worktree.title] + worktree.tabs.map(\.title)
+      return fields.contains { filter.matches($0) }
     }
   }
 }

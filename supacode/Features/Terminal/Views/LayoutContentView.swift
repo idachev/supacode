@@ -787,7 +787,7 @@ private struct PaneSpanDropBar: View {
 
 /// Hosts a content's renderer view, resolved from the runtime and swapped when
 /// the content hibernates or wakes.
-private struct ContentHostView: NSViewRepresentable {
+struct ContentHostView: NSViewRepresentable {
   let contentID: ContentID
   let runtime: ContentRuntime
   /// The runtime is not observable; the reducer bumps this on hibernate and

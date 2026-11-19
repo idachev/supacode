@@ -266,7 +266,7 @@ enum SidebarPullRequestIcon: Equatable {
   }
 }
 
-private struct TitleView: View, Equatable {
+struct TitleView: View, Equatable {
   let name: String
   let subtitle: ResolvedRowDisplay.Subtitle
   let accent: WorktreeAccent
@@ -387,7 +387,7 @@ enum IconRowState: Equatable {
   }
 }
 
-private struct IconContent: View, Equatable {
+struct IconContent: View, Equatable {
   let isFolder: Bool
   let isRemote: Bool
   let isMissing: Bool
