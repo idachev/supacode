@@ -782,6 +782,7 @@ struct SupacodeApp: App {
     Window("Remote Mac", id: WindowID.remoteClient) {
       RemoteClientWindowRoot(ghostty: ghostty)
         .appChromeTextSize(store.settings.chromeTextSize)
+        .appChromeBaseFont(store.settings.chromeTextSize)
     }
     .handlesExternalEvents(matching: [])
     .defaultSize(width: 1000, height: 680)

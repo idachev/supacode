@@ -74,17 +74,7 @@ struct RemoteClientFeature {
           )
         }
         state.hasKeyFile = true
-        let hostID = state.selectedHostID
-        let session = session
-        // Subscribe before opening, so the first status of the new connection is not missed.
-        return .run { send in
-          let events = await session.events()
-          await session.open(hostID)
-          for await event in events {
-            await send(event.action)
-          }
-        }
-        .cancellable(id: CancelID.events, cancelInFlight: true)
+        return connect(state.selectedHostID)
 
       case .windowClosed:
         state.status = .idle
@@ -94,6 +84,7 @@ struct RemoteClientFeature {
         state.selectedWorktreeID = nil
         state.isHostPickerPresented = false
         let session = session
+        // The cancel also stops a reopen that has not connected yet (`connect`).
         return .merge(
           .cancel(id: CancelID.events),
           .run { _ in await session.close() }
@@ -154,8 +145,29 @@ struct RemoteClientFeature {
     state.list = nil
     state.selectedWorktreeID = nil
     state.isHostPickerPresented = false
+    return connect(hostID)
+  }
+
+  /// Subscribes to the session's reports, opens the connection and forwards the reports, as one
+  /// effect: closing the window, or a newer opening, cancels it. Subscribing and opening happen in
+  /// one main-actor step that checks for that cancel first, so a cancelled reopen never connects
+  /// after the window closed (КЛ6); reports the old effect had not sent yet are dropped with it.
+  private func connect(_ hostID: String?) -> Effect<Action> {
     let session = session
-    return .run { _ in await session.open(hostID) }
+    return .run { send in
+      let events = await MainActor.run { () -> AsyncStream<RemoteClientSessionClient.Event>? in
+        guard !Task.isCancelled else { return nil }
+        // Subscribe before opening, so the first status of the new connection is not missed.
+        let events = session.events()
+        session.open(hostID)
+        return events
+      }
+      guard let events else { return }
+      for await event in events {
+        await send(event.action)
+      }
+    }
+    .cancellable(id: CancelID.events, cancelInFlight: true)
   }
 }
 
@@ -194,7 +206,7 @@ extension RemoteClientSessionClient {
   @MainActor
   static func live(_ session: RemoteClientSession) -> RemoteClientSessionClient {
     RemoteClientSessionClient(
-      hasKeyFile: { RemoteClientKey.load() != nil },
+      hasKeyFile: { session.hasKeyFile },
       open: { session.open(hostID: $0) },
       close: { session.close() },
       events: { session.events() },

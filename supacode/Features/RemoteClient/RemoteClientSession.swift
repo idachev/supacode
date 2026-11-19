@@ -90,6 +90,14 @@ final class RemoteClientSession {
 
   // MARK: - Lifetime
 
+  /// The window's message when the pipe server cannot listen.
+  nonisolated static let pipeServerFailure = "This Mac cannot start remote terminals (the pipe socket did not open)"
+
+  /// Whether the key file exists and parses (КЛ1), read through the same loader `open` uses.
+  var hasKeyFile: Bool {
+    loadKey() != nil
+  }
+
   /// Builds the connection from the key file and starts it, bound to `hostID` or unbound (nil).
   /// A live connection is replaced: its contents are torn down and it is stopped first.
   func open(hostID: String?) {
@@ -97,8 +105,6 @@ final class RemoteClientSession {
     connection?.stop()
     connection = nil
     epoch += 1
-    // A new connection counts its lists from zero.
-    published.listRevision = 0
     guard let key = loadKey() else {
       sessionLogger.warning("Remote client not started: no usable key file")
       return
@@ -106,7 +112,10 @@ final class RemoteClientSession {
     do {
       try pipes.start()
     } catch {
-      sessionLogger.warning("Remote pipe server did not start; remote tabs cannot show output")
+      // No pipe, no terminal: a connection would show worktrees whose tabs can never draw.
+      sessionLogger.warning("Remote pipe server did not start; not connecting")
+      publish(Published(status: .failed(Self.pipeServerFailure)), list: nil)
+      return
     }
     let connection = RemoteClientConnection(key: key, ownHostID: ownHostID, sockets: sockets, clock: clock)
     self.connection = connection
@@ -221,7 +230,9 @@ final class RemoteClientSession {
   }
 
   /// Reads the connection's reported state under observation tracking and re-arms on every
-  /// change, while that connection is still the session's.
+  /// change, while that connection is still the session's. `open` calls it right after `start`,
+  /// before any frame can arrive, so the first report of a new connection records its list count
+  /// (zero) and its first list always counts as new.
   private func observe(_ connection: RemoteClientConnection) {
     guard self.connection === connection else { return }
     let (current, list) = withObservationTracking {
