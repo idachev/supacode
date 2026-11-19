@@ -60,6 +60,8 @@ final class RemoteClientConnection {
   static let helloText = #"{"t":"hello","v":1}"#
   static let pingText = "ping"
   static let pongText = "pong"
+  /// The relay's own error for a message sent while the bound host is offline.
+  static let relayHostOffline = "host offline"
 
   private(set) var status: RemoteClientStatus = .idle
   private(set) var hosts: [RemoteClientHostInfo]?
@@ -555,7 +557,7 @@ extension RemoteClientConnection {
     case .reply(_, let id, let fields):
       if let id { finishRequest(id, .success(fields)) }
     case .error(let id, let message, let code, _):
-      errorReceived(id: id, message: message, code: code)
+      errorReceived(id: id, message: message, code: code, on: path)
     case .attached(let id, let contentID, let cols, let rows):
       stream(contentID, .attached(id: id), .attached(cols: cols, rows: rows), from: path)
     case .out(let contentID, let bytes):
@@ -608,12 +610,18 @@ extension RemoteClientConnection {
     refreshStatus()
   }
 
-  private func errorReceived(id: Int?, message: String, code: String?) {
+  private func errorReceived(id: Int?, message: String, code: String?, on path: RemoteClientPath) {
     guard let id else { return }
     if pending[id] != nil {
       finishRequest(id, .failure(RemoteClientRequestError(kind: .host, message: message, code: code)))
     } else if let contentID = terminals.first(where: { $0.value.attachIDs.contains(id) })?.key {
-      attachRefused(contentID, message: message)
+      if path == .relay, code == nil, message == Self.relayHostOffline {
+        // The relay's own answer, not the host's: the path is down, not the terminal. The
+        // `hostOnline` false frame closes the relay in the gate, and the next online edge re-attaches it.
+        terminals[contentID]?.attachIDs.remove(id)
+      } else {
+        attachRefused(contentID, message: message)
+      }
     }
   }
 

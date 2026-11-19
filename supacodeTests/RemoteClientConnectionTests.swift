@@ -767,6 +767,79 @@ struct RemoteClientConnectionTests {
     #expect(await cross(rig, .milliseconds(2500), thenUntil: { rig.sockets.relays.count == 2 }))
   }
 
+  // MARK: Rulings after review
+
+  /// КН1: the relay's own `host offline` answer to an attach keeps the terminal; the host's
+  /// return re-attaches every open terminal and its stream still delivers.
+  @Test func aRelayHostOfflineErrorKeepsTheTerminals() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let logs = ["c1", "c2"].map { RemoteTerminalEventLog(rig.connection.attach(contentID: $0, scrollback: 500)) }
+    for content in ["c1", "c2"] {
+      let id = Self.lastID(relay, "attach", contentID: content)
+      relay.receive(Self.json(["t": "error", "id": id, "message": "host offline"]))
+    }
+    relay.receive(Self.relayFrame(online: false))
+    #expect(await settle { rig.connection.status == .hostOffline })
+    relay.receive(Self.relayFrame(online: true))
+    #expect(await settle { relay.types.last == "hello" })
+    let mark = relay.types.count
+    relay.receive(Self.helloFrame())
+    #expect(await settle { rig.connection.status == .online(.relay) })
+    #expect(Array(relay.types.dropFirst(mark)) == ["list", "watch", "attach", "attach"])
+    for (content, log) in zip(["c1", "c2"], logs) {
+      #expect(Self.lastText(relay, "attach", contentID: content).contains(#""keep":true"#))
+      relay.receive(Self.attached(content, id: Self.lastID(relay, "attach", contentID: content)))
+      relay.receive(Self.out(content, "back"))
+      #expect(await settle { log.events == [.attached(cols: 120, rows: 40), .out(Array("back".utf8))] })
+      #expect(!log.ended)
+    }
+  }
+
+  /// НТ1: a LAN socket silent for 75 s is closed and the relay takes the traffic back.
+  @Test func aSilentLanIsClosedAndTheRelayTakesOver() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let lan = await lanUp(rig, relay: relay)
+    #expect(await cross(rig, .milliseconds(29500), thenUntil: { lan.pings == 1 }))
+    relay.receive("pong")
+    #expect(await cross(rig, .milliseconds(29500), thenUntil: { lan.pings == 2 }))
+    relay.receive("pong")
+    #expect(!lan.isClosed)
+    #expect(await cross(rig, .milliseconds(29500), thenUntil: { lan.isClosed }))
+    #expect(lan.pings == 2)
+    #expect(await settle { rig.connection.status == .online(.relay) })
+    #expect(!relay.isClosed)
+  }
+
+  /// НТ2: a LAN path that opens resets the LAN retry delay to 10 s.
+  @Test func aLanPathOpeningResetsTheLanBackoff() async {
+    let rig = rig()
+    let relay = await online(rig, hello: Self.helloFrame(lan: Self.lanAddrs))
+    let hellos = { relay.types.count(where: { $0 == "hello" }) }
+    rig.lan.drop(reason: "connection failed")
+    #expect(await cross(rig, .milliseconds(9500), thenUntil: { hellos() == 2 }))
+    let lan = await lanUp(rig, relay: relay)
+    lan.drop(reason: "connection lost")
+    #expect(await settle { rig.connection.status == .online(.relay) })
+    // Without the reset the next ask would come after 20 s.
+    #expect(await cross(rig, .milliseconds(9500), thenUntil: { hellos() == 3 }))
+  }
+
+  /// НТ3: a request waiting on the LAN ends with `connectionLost` when the LAN socket closes.
+  @Test func aLanClosingEndsItsWaits() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let lan = await lanUp(rig, relay: relay)
+    let outcome = launch(rig.connection, "worktree.delete")
+    #expect(await settle { lan.types.last == "worktree.delete" })
+    lan.drop(reason: "connection lost")
+    #expect(await settle { outcome.result != nil })
+    #expect(outcome.errorKind == .connectionLost)
+    #expect(rig.connection.status == .online(.relay))
+    #expect(!relay.types.contains("worktree.delete"))
+  }
+
   // MARK: Lifetime
 
   @Test func stopClosesBothSocketsAndEndsTheStreams() async {
