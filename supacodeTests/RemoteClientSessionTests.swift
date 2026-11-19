@@ -31,6 +31,7 @@ struct RemoteClientSessionTests {
     let session: RemoteClientSession
     let sockets: FakeClientSockets
     let directory: URL
+    let clock: TestClock<Duration>
 
     func cleanUp() {
       session.close()
@@ -42,15 +43,16 @@ struct RemoteClientSessionTests {
   private func rig(pipeDirectory: URL? = nil) -> Rig {
     let sockets = FakeClientSockets()
     let directory = pipeDirectory ?? URL(filePath: "/tmp/sc-test-\(UUID().uuidString.prefix(8))")
+    let clock = TestClock<Duration>()
     let session = RemoteClientSession(
       ghostty: GhosttyRuntime(),
       sockets: sockets.factory,
-      clock: TestClock<Duration>(),
+      clock: clock,
       pipeDirectory: directory,
       ownHostID: "me",
       loadKey: { RemoteClientConnectionTests.key }
     )
-    return Rig(session: session, sockets: sockets, directory: directory)
+    return Rig(session: session, sockets: sockets, directory: directory, clock: clock)
   }
 
   private func settle(_ condition: () -> Bool) async -> Bool {
@@ -172,5 +174,108 @@ struct RemoteClientSessionTests {
     #expect(!without.hasKeyFile)
     without.open(hostID: nil)
     #expect(without.connection == nil)
+  }
+  // MARK: - Attached set on the clock (РЗ5)
+
+  /// What the driver asked for, in order: "+id" attach, "-id" detach.
+  @MainActor
+  final class AttachLog {
+    private(set) var entries: [String] = []
+    func append(_ entry: String) { entries.append(entry) }
+    nonisolated deinit {}
+  }
+
+  private func driver(_ clock: TestClock<Duration>) -> (RemoteAttachedSetDriver, AttachLog) {
+    let driver = RemoteAttachedSetDriver(clock: clock)
+    let log = AttachLog()
+    driver.onAttach = { log.append("+\($0)") }
+    driver.onDetach = { log.append("-\($0)") }
+    return (driver, log)
+  }
+
+  @Test func theAttachedSetDetachesBeforeItAttaches() {
+    let (driver, log) = driver(TestClock<Duration>())
+    let first = (0..<16).map { "a\($0)" }
+    let second = (0..<16).map { "b\($0)" }
+    driver.setVisible(first)
+    #expect(log.entries == first.map { "+\($0)" })
+    // Sixteen new ones push the sixteen hidden ones out; they leave the wire first.
+    driver.setVisible(second)
+    let step = Array(log.entries.dropFirst(16))
+    #expect(step == first.sorted().map { "-\($0)" } + second.map { "+\($0)" })
+  }
+
+  @Test func aHiddenContentIsDetachedThirtySecondsLaterOnTheClock() async {
+    let clock = TestClock<Duration>()
+    let (driver, log) = driver(clock)
+    driver.setVisible(["x"])
+    driver.setVisible([])
+    await RemoteRouterTestSupport.step(clock, by: .seconds(29))
+    #expect(log.entries == ["+x"])
+    #expect(await RemoteRouterTestSupport.step(clock, until: { log.entries == ["+x", "-x"] }, within: .seconds(2)))
+    withExtendedLifetime(driver) {}
+  }
+
+  @Test func aQuickSwitchBackKeepsItAttachedAndNothingRunsAfterReset() async {
+    let clock = TestClock<Duration>()
+    let (driver, log) = driver(clock)
+    driver.setVisible(["x"])
+    driver.setVisible(["y"])
+    await RemoteRouterTestSupport.step(clock, by: .seconds(20))
+    // Shown again within 30 s: no re-attach, and its expiry is called off.
+    driver.setVisible(["x"])
+    await RemoteRouterTestSupport.step(clock, by: .seconds(40))
+    #expect(log.entries == ["+x", "+y", "-y"])
+    driver.setVisible([])
+    await RemoteRouterTestSupport.step(clock, by: .seconds(10))
+    // The connection went: the driver forgets everything and its timer never fires.
+    driver.reset()
+    await RemoteRouterTestSupport.step(clock, by: .seconds(40))
+    #expect(log.entries == ["+x", "+y", "-y"])
+    // After the reset a visible content is new again.
+    driver.setVisible(["x"])
+    #expect(log.entries == ["+x", "+y", "-y", "+x"])
+    withExtendedLifetime(driver) {}
+  }
+
+  @Test func setVisibleWithoutAConnectionDoesNothing() {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    rig.session.setVisible(["c1"])
+    #expect(rig.session.attachedContent("c1") == nil)
+    #expect(rig.session.fittingGrid("P1") == nil)
+  }
+  /// The session's own wiring of the attached set: a content is made once, torn down when its
+  /// linger ends, and forgotten by a new `open` and by `close`. A content whose surface does not start
+  /// in the test host is kept too, so these hold either way.
+  @Test func visibleContentsAreMadeOnceAndGoWithTheirLingerOrTheConnection() async throws {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    rig.session.open(hostID: "h1")
+    rig.session.setVisible(["c1"])
+    let first = try #require(rig.session.attachedContent("c1"))
+    rig.session.setVisible(["c1"])
+    #expect(rig.session.attachedContent("c1") === first)
+
+    rig.session.setVisible([])
+    #expect(rig.session.attachedContent("c1") === first)
+    #expect(
+      await RemoteRouterTestSupport.step(
+        rig.clock, until: { rig.session.attachedContent("c1") == nil }, within: .seconds(32)))
+
+    rig.session.setVisible(["c1"])
+    let second = try #require(rig.session.attachedContent("c1"))
+    #expect(second !== first)
+    // A new connection tears every content down; the set made afresh.
+    rig.session.open(hostID: "h1")
+    #expect(rig.session.attachedContent("c1") == nil)
+    rig.session.setVisible(["c1"])
+    let third = try #require(rig.session.attachedContent("c1"))
+    #expect(third !== second)
+
+    rig.session.close()
+    #expect(rig.session.attachedContent("c1") == nil)
+    rig.session.setVisible(["c1"])
+    #expect(rig.session.attachedContent("c1") == nil)
   }
 }

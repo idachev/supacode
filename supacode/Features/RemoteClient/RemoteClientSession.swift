@@ -43,8 +43,13 @@ final class RemoteClientSession {
   @ObservationIgnored private let sockets: RemoteClientSocketFactory
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored private let loadKey: () -> RemoteClientKey?
-  /// Remote content id → its one content. Read and written from view tasks, so never observed.
-  @ObservationIgnored private var contents: [String: RemoteTerminalContent] = [:]
+  /// Remote content id → its one content. Observed: the attached set makes and tears down
+  /// contents from the reducer's effects, after the state the view reads changed.
+  private var contents: [String: RemoteTerminalContent] = [:]
+  /// Which contents stay attached (РЗ5); it makes and tears down `contents`.
+  @ObservationIgnored private let attachedSet: RemoteAttachedSetDriver
+  /// The window's visible contents, as the last `setVisible` gave them.
+  @ObservationIgnored private var visible: [String] = []
   @ObservationIgnored private var subscriber: AsyncStream<Event>.Continuation?
   /// What the subscriber was last told, so only a real change becomes an event.
   @ObservationIgnored private var published = Published()
@@ -71,6 +76,9 @@ final class RemoteClientSession {
     self.loadKey = loadKey
     pipes = RemotePipeServer(directory: pipeDirectory)
     runtime = ContentRuntime()
+    attachedSet = RemoteAttachedSetDriver(clock: clock)
+    attachedSet.onAttach = { [weak self] in self?.makeContent($0) }
+    attachedSet.onDetach = { [weak self] in self?.release($0) }
     // The server has one callback of each kind for every pipe: route by content id. A report for
     // a content that is gone (torn down, or the pipe server stopping) finds nothing.
     pipes.onOpened = { [weak self] contentID in
@@ -101,6 +109,7 @@ final class RemoteClientSession {
   /// Builds the connection from the key file and starts it, bound to `hostID` or unbound (nil).
   /// A live connection is replaced: its contents are torn down and it is stopped first.
   func open(hostID: String?) {
+    resetAttachedSet()
     tearDownContents()
     connection?.stop()
     connection = nil
@@ -126,6 +135,7 @@ final class RemoteClientSession {
 
   /// Tears down every content, then stops the connection, then the pipe server.
   func close() {
+    resetAttachedSet()
     tearDownContents()
     connection?.stop()
     connection = nil
@@ -138,11 +148,56 @@ final class RemoteClientSession {
 
   // MARK: - Contents
 
-  /// The content for this remote terminal, made and started once and then cached. A content
-  /// whose surface did not start, or made with no connection, is returned but not kept, so the
-  /// next call tries again.
-  func content(for remoteContentID: String, title: String) -> RemoteTerminalContent {
-    if let existing = contents[remoteContentID] { return existing }
+  /// The contents the window shows now (РЗ5): each is made once, and torn down 30 s after it stops
+  /// being visible, or sooner beyond 16. Does nothing without a connection (no key file, or after
+  /// `close()`).
+  func setVisible(_ remoteContentIDs: [String]) {
+    guard connection != nil else { return }
+    visible = remoteContentIDs
+    attachedSet.setVisible(remoteContentIDs)
+  }
+
+  /// The content the attached set made for this remote terminal; nil until `setVisible` made it,
+  /// and after it was torn down. The view only hosts what this returns.
+  func attachedContent(_ remoteContentID: String) -> RemoteTerminalContent? {
+    contents[remoteContentID]
+  }
+
+  /// The grid that fits `paneID` at this Mac's font: the last measured pane grid of the content
+  /// of that pane's visible tab. The pane is looked up in the last `list`'s layouts; of its tabs the
+  /// one in the visible set is the one the window shows (the local selection is the reducer's).
+  /// Nil for a pane not in any layout (a worktree without `layout`), a pane not visible, or a
+  /// content not measured yet (its surface not in a window).
+  func fittingGrid(_ paneID: String) -> RemoteAutoResize.Grid? {
+    guard let worktrees = connection?.list?.repos.flatMap(\.worktrees) else { return nil }
+    let visible = Set(visible)
+    for worktree in worktrees {
+      guard let pane = worktree.layout?.panes.first(where: { $0.id == paneID }) else { continue }
+      let contentIDs = worktree.tabs.filter { pane.tabIds.contains($0.id) }.map(\.contentId)
+      guard let shown = contentIDs.first(where: visible.contains) else { return nil }
+      return contents[shown]?.measuredGrid
+    }
+    return nil
+  }
+
+  /// A request on the current connection (`RemoteClientConnection.request`).
+  func request(
+    _ type: String, _ fields: [String: String], ints: [String: Int], timeout: Duration
+  ) async throws -> [String: String] {
+    guard let connection else {
+      throw RemoteClientRequestError(kind: .notConnected, message: "Not connected to the Mac", code: nil)
+    }
+    return try await connection.request(type, fields, ints: ints, timeout: timeout)
+  }
+
+  /// Makes and starts the content of a remote terminal the attached set took in. A content whose
+  /// surface did not start is kept too, so the window shows why; the set makes it again after it
+  /// detached it.
+  private func makeContent(_ remoteContentID: String) {
+    guard let connection, contents[remoteContentID] == nil else { return }
+    let title =
+      connection.list?.repos.lazy.flatMap(\.worktrees).flatMap(\.tabs)
+      .first { $0.contentId == remoteContentID }?.title ?? ""
     let content = RemoteTerminalContent(
       remoteContentID: remoteContentID,
       title: title,
@@ -150,31 +205,23 @@ final class RemoteClientSession {
       runtime: ghostty,
       clock: clock
     )
-    // Not started without a connection (no key file, or after `close()`): nothing could reach it.
-    guard connection != nil else { return content }
-    // Cached before the surface starts: its pipe may open before `provision` returns.
+    // Kept before the surface starts: its pipe may open before `provision` returns.
     contents[remoteContentID] = content
-    guard runtime.provision(content, at: runtime.spawnGeometry(near: nil)) else {
-      contents[remoteContentID] = nil
-      return content
-    }
+    guard runtime.provision(content, at: runtime.spawnGeometry(near: nil)) else { return }
     if let surface = content.renderer as? GhosttySurfaceView { Self.wire(surface) }
-    return content
   }
 
   /// Tears down one content (it detaches and its pipe closes).
-  func release(_ remoteContentID: String) {
+  private func release(_ remoteContentID: String) {
     guard let content = contents.removeValue(forKey: remoteContentID) else { return }
     runtime.remove(content.id, tombstone: false)
     content.tearDown()
   }
 
-  /// Tears down every content but `remoteContentID` (nil: all of them), so a terminal the window no
-  /// longer shows lets go of the Mac and its held size (ТР8б).
-  func releaseAll(except remoteContentID: String?) {
-    for id in Array(contents.keys) where id != remoteContentID {
-      release(id)
-    }
+  /// Every content goes with the connection: the set forgets them without detaching one by one.
+  private func resetAttachedSet() {
+    attachedSet.reset()
+    visible = []
   }
 
   private func tearDownContents() {

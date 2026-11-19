@@ -205,7 +205,7 @@ private struct RemoteClientWaitingView: View {
   }
 }
 
-/// The worktrees of the Mac's `list` and the selected one's first tab.
+/// The worktrees of the Mac's `list` and the selected one's focused tab.
 private struct RemoteClientSplitView: View {
   let store: StoreOf<RemoteClientFeature>
   let session: RemoteClientSession
@@ -225,56 +225,36 @@ private struct RemoteClientSplitView: View {
       }
       .navigationSplitViewColumnWidth(min: 180, ideal: 220)
     } detail: {
-      if let worktree = store.selectedWorktree, let tab = worktree.tabs.first {
+      if let tab = store.projection?.focusedTab {
         RemoteTabDetailView(session: session, tab: tab, macName: store.macName)
       } else {
         ContentUnavailableView("No terminal", systemImage: "terminal")
-          // No tab shown: nothing stays attached.
-          .task(id: session.epoch) { session.releaseAll(except: nil) }
       }
     }
   }
 }
 
-/// One remote tab: its live surface, or why there is none.
+/// One remote tab: its live surface, or why there is none. The session makes and tears down the
+/// contents (the attached set, РЗ5); this view only hosts the one it made.
 private struct RemoteTabDetailView: View {
   let session: RemoteClientSession
   let tab: RemoteClientTab
   let macName: String
-  @State private var content: RemoteTerminalContent?
-
-  private struct Key: Hashable {
-    let contentID: String
-    let epoch: Int
-  }
 
   var body: some View {
-    Group {
-      if tab.contentId.isEmpty {
-        ContentUnavailableView("No terminal", systemImage: "terminal")
-      } else if let content, content.remoteContentID == tab.contentId {
-        if case .ended(let reason) = content.phase {
-          ContentUnavailableView(
-            "This terminal ended on \(macName)", systemImage: "terminal", description: Text(reason))
-        } else if content.sessionFailedToStart {
-          ContentUnavailableView("The terminal could not start", systemImage: "exclamationmark.triangle")
-        } else {
-          RemoteTerminalHostView(content: content)
-        }
+    if tab.contentId.isEmpty {
+      ContentUnavailableView("No terminal", systemImage: "terminal")
+    } else if let content = session.attachedContent(tab.contentId) {
+      if case .ended(let reason) = content.phase {
+        ContentUnavailableView(
+          "This terminal ended on \(macName)", systemImage: "terminal", description: Text(reason))
+      } else if content.sessionFailedToStart {
+        ContentUnavailableView("The terminal could not start", systemImage: "exclamationmark.triangle")
       } else {
-        ProgressView()
+        RemoteTerminalHostView(content: content)
       }
-    }
-    // Made outside the body: making a content starts its surface. A new epoch (another Mac, a
-    // reconnect from the window) tore the old content down.
-    .task(id: Key(contentID: tab.contentId, epoch: session.epoch)) {
-      // One tab shown at a time in this window: every other one lets go of the Mac.
-      guard !tab.contentId.isEmpty else {
-        session.releaseAll(except: nil)
-        return
-      }
-      content = session.content(for: tab.contentId, title: tab.title)
-      session.releaseAll(except: tab.contentId)
+    } else {
+      ProgressView()
     }
   }
 }
@@ -385,6 +365,14 @@ extension RemoteClientFeature.State {
     if let hostName, !hostName.isEmpty { return hostName }
     if let name = hosts.first(where: { $0.id == selectedHostID })?.name, !name.isEmpty { return name }
     return "Remote Mac"
+  }
+}
+
+extension RemoteLayoutProjection {
+  /// The tab the window shows while it draws one terminal: the focused pane's selected tab.
+  var focusedTab: RemoteClientTab? {
+    guard let pane = focusedPaneID.flatMap({ panes[$0] }) else { return nil }
+    return pane.tabs.first { $0.id == pane.selectedTabID }
   }
 }
 

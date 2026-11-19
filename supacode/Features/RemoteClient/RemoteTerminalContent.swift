@@ -171,6 +171,9 @@ final class RemoteTerminalContent: TabContent {
   private(set) var phase: Phase = .starting
   private(set) var remoteGrid: RemoteAutoResize.Grid?
   private(set) var sessionFailedToStart = false
+  /// The grid that fits the local pane at this Mac's font, as the surface last measured it; nil
+  /// before its first layout pass in a window. A new tab in this pane starts at it (`tab.new`).
+  @ObservationIgnored private(set) var measuredGrid: RemoteAutoResize.Grid?
   private var surfaceView: GhosttySurfaceView?
 
   @ObservationIgnored private let ports: Ports
@@ -304,6 +307,7 @@ final class RemoteTerminalContent: TabContent {
 
   /// The surface measured the grid that fits its pane (`onPaneGridMeasured`).
   func paneMeasured(_ grid: RemoteAutoResize.Grid) {
+    measuredGrid = grid
     run(driver.paneMeasured(grid))
   }
 
