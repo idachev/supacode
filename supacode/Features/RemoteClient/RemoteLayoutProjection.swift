@@ -5,10 +5,13 @@ nonisolated struct RemoteLocalSelection: Equatable, Sendable {
   var activeGroupID: String?
   /// group id → pane id
   var focusedPaneID: [String: String] = [:]
-  /// group id → pane id
+  /// group id → pane id. A group in `seededGroupIDs` without an entry here is not zoomed locally.
   var zoomedPaneID: [String: String] = [:]
   /// pane id → tab id
   var selectedTabID: [String: String] = [:]
+  /// Groups already projected once: the host's zoom seeds a group only the first time, so a
+  /// local unzoom survives pushed lists. A group that is gone leaves the set.
+  var seededGroupIDs: Set<String> = []
 }
 
 /// One worktree's layout as the window draws it.
@@ -85,7 +88,9 @@ nonisolated struct RemoteLayoutProjection: Equatable, Sendable {
           id: group.id, tree: tree, paneOrder: order,
           focused: Self.firstChoice([selection.focusedPaneID[group.id], group.focusedPaneId], in: order)
             ?? order.first,
-          zoomed: Self.firstChoice([selection.zoomedPaneID[group.id], group.zoomedPaneId], in: order)))
+          zoomed: Self.firstChoice(
+            [selection.zoomedPaneID[group.id], selection.seededGroupIDs.contains(group.id) ? nil : group.zoomedPaneId],
+            in: order)))
     }
 
     let reachable = Set(rawGroups.flatMap(\.paneOrder))
@@ -116,7 +121,8 @@ nonisolated struct RemoteLayoutProjection: Equatable, Sendable {
       activeGroupID: activeGroupID,
       focusedPaneID: rawGroups.reduce(into: [:]) { $0[$1.id] = $1.focused },
       zoomedPaneID: rawGroups.reduce(into: [:]) { $0[$1.id] = $1.zoomed },
-      selectedTabID: keptSelectedTabs)
+      selectedTabID: keptSelectedTabs,
+      seededGroupIDs: Set(rawGroups.map(\.id)))
 
     return RemoteLayoutProjection(
       mode: layout.mode, groups: groups, activeGroupID: activeGroupID, panes: panes)

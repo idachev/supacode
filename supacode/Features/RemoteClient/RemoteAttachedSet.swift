@@ -1,7 +1,8 @@
 import Foundation
 
 /// Which remote terminals stay attached (РЗ5): the visible ones, plus the ones hidden for less
-/// than `linger`, at most `limit` in all.
+/// than `linger`, at most `limit` in all. The limit counts visible contents too, and a visible
+/// content is never detached, so more than `limit` visible contents stay attached.
 nonisolated struct RemoteAttachedSet: Sendable {
   static let linger: Duration = .seconds(30)
   static let limit = 16

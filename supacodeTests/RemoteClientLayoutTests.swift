@@ -127,6 +127,51 @@ struct RemoteClientLayoutTests {
     #expect(selection.zoomedPaneID == ["main": "P1"])
   }
 
+  @Test func aLocalUnzoomSurvivesPushedLists() {
+    var selection = RemoteLocalSelection()
+    let seeded = RemoteLayoutProjection.project(Self.twoPaneWorktree(zoomed: "P1"), selection: &selection)
+    #expect(seeded.groups.first?.zoomedPaneID == "P1")
+
+    // The laptop unzooms; the host is still zoomed in the next pushed list.
+    selection.zoomedPaneID["main"] = nil
+    let pushed = RemoteLayoutProjection.project(Self.twoPaneWorktree(zoomed: "P1"), selection: &selection)
+    #expect(pushed.groups.first?.zoomedPaneID == nil)
+    #expect(selection.zoomedPaneID.isEmpty)
+    #expect(pushed.visibleContentIDs == ["c-t2", "c-t3"])
+    let again = RemoteLayoutProjection.project(Self.twoPaneWorktree(zoomed: "P1"), selection: &selection)
+    #expect(again.groups.first?.zoomedPaneID == nil)
+  }
+
+  @Test func aGroupThatAppearsLaterIsSeededFromTheHost() {
+    func worktree(groups: [RemoteClientLayoutGroup]) -> RemoteClientWorktree {
+      Self.worktree(
+        layout: RemoteClientLayout(
+          mode: "splitPerTab", activeGroupId: "G1", groups: groups,
+          panes: [
+            Self.pane("P1", ["t1"], selected: "t1"),
+            Self.pane("P2", ["t2a", "t2b"], selected: "t2a"),
+          ]),
+        tabs: [Self.tab("t1"), Self.tab("t2a"), Self.tab("t2b")])
+    }
+    let first = Self.group("G1", .pane("P1"), focused: "P1")
+    let second = Self.group("G2", .pane("P2"), focused: "P2", zoomed: "P2")
+    var selection = RemoteLocalSelection()
+    _ = RemoteLayoutProjection.project(worktree(groups: [first]), selection: &selection)
+    #expect(selection.seededGroupIDs == ["G1"])
+
+    let projection = RemoteLayoutProjection.project(worktree(groups: [first, second]), selection: &selection)
+    #expect(projection.groups.last?.zoomedPaneID == "P2")
+    #expect(selection.zoomedPaneID == ["G2": "P2"])
+    #expect(selection.seededGroupIDs == ["G1", "G2"])
+
+    // A group that is gone leaves the record; when it returns it is seeded again.
+    _ = RemoteLayoutProjection.project(worktree(groups: [first]), selection: &selection)
+    #expect(selection.seededGroupIDs == ["G1"])
+    #expect(selection.zoomedPaneID.isEmpty)
+    let back = RemoteLayoutProjection.project(worktree(groups: [first, second]), selection: &selection)
+    #expect(back.groups.last?.zoomedPaneID == "P2")
+  }
+
   @Test func splitPerTabKeepsTheLocalActiveGroup() {
     let worktree = Self.worktree(
       layout: RemoteClientLayout(
