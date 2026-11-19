@@ -840,6 +840,54 @@ struct RemoteClientConnectionTests {
     #expect(!relay.types.contains("worktree.delete"))
   }
 
+  /// Review F1: the wanted grid waits for the terminal's own `attached`, then goes out once.
+  @Test func aWantedGridWaitsForItsOwnAttached() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let log = RemoteTerminalEventLog(rig.connection.attach(contentID: "c1", scrollback: 500))
+    rig.connection.setWantedGrid(contentID: "c1", columns: 100, rows: 30)
+    #expect(!relay.types.contains("resize"))
+    relay.receive(Self.attached("c1", id: Self.lastID(relay, "attach")))
+    #expect(await settle { log.events.count == 1 && relay.types.contains("resize") })
+    _ = await settle { false }
+    #expect(relay.types.count(where: { $0 == "resize" }) == 1)
+    #expect(Self.lastText(relay, "resize").contains(#""cols":100"#))
+  }
+
+  /// Review F1: after the LAN closed, the grid waits for the relay's re-attach `attached`.
+  @Test func aWantedGridAfterTheLanClosedWaitsForTheReattach() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let log = RemoteTerminalEventLog(rig.connection.attach(contentID: "c1", scrollback: 500))
+    let lan = await lanUp(rig, relay: relay)
+    lan.receive(Self.attached("c1", id: Self.lastID(lan, "attach")))
+    #expect(await settle { log.events.count == 1 && relay.types.last == "detach" })
+    lan.drop(reason: "connection lost")
+    #expect(await settle { rig.connection.status == .online(.relay) && relay.types.last == "attach" })
+    rig.connection.setWantedGrid(contentID: "c1", columns: 90, rows: 28)
+    #expect(!relay.types.contains("resize"))
+    relay.receive(Self.attached("c1", id: Self.lastID(relay, "attach")))
+    #expect(await settle { relay.types.contains("resize") })
+    _ = await settle { false }
+    #expect(relay.types.count(where: { $0 == "resize" }) == 1)
+    #expect(Self.lastText(relay, "resize").contains(#""cols":90"#))
+  }
+
+  /// Review F2: a `detach` after the host went offline sends nothing on the relay.
+  @Test func aDetachAfterTheHostWentOfflineSendsNothing() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let log = RemoteTerminalEventLog(rig.connection.attach(contentID: "c1", scrollback: 500))
+    relay.receive(Self.attached("c1", id: Self.lastID(relay, "attach")))
+    #expect(await settle { log.events.count == 1 })
+    relay.receive(Self.relayFrame(online: false))
+    #expect(await settle { rig.connection.status == .hostOffline })
+    let sent = relay.sent.count
+    rig.connection.detach(contentID: "c1")
+    #expect(await settle { log.ended })
+    #expect(relay.sent.count == sent)
+  }
+
   // MARK: Lifetime
 
   @Test func stopClosesBothSocketsAndEndsTheStreams() async {

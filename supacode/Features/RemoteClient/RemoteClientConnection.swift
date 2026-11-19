@@ -273,8 +273,9 @@ final class RemoteClientConnection {
     guard terminals[contentID] != nil else { return }
     let grid = Grid(columns: columns, rows: rows)
     terminals[contentID]?.wantedGrid = grid
-    guard let active = activePath, let terminal = terminals[contentID] else { return }
-    sendResize(contentID, grid, on: terminal.gate.current ?? active)
+    // Only on the path whose `attached` answered: before that the grid waits for it (protocol client rule).
+    guard activePath != nil, let path = terminals[contentID]?.gate.current else { return }
+    sendResize(contentID, grid, on: path)
   }
 
   private func sendAttach(_ contentID: String, on path: RemoteClientPath) {
@@ -352,7 +353,11 @@ final class RemoteClientConnection {
       // The next `hello` decides again: the host may come back updated.
       unsupported = false
     }
-    for contentID in terminals.keys { terminals[contentID]?.gate.closed(path) }
+    for contentID in terminals.keys {
+      terminals[contentID]?.gate.closed(path)
+      // The host forgot the attach there: a later `detach` must not go out on that path.
+      if terminals[contentID]?.lastAttachPath == path { terminals[contentID]?.lastAttachPath = nil }
+    }
     let lost = RemoteClientRequestError(kind: .connectionLost, message: "The connection to the Mac was lost", code: nil)
     for (id, request) in pending where request.path == path { finishRequest(id, .failure(lost)) }
   }
