@@ -693,6 +693,7 @@ struct SupacodeApp: App {
       }
       .openSettingsOnSelection(store: store)
       .openDeeplinkReferenceOnRequest(store: store)
+      .publishesOpenRemoteClientAction()
     }
     .handlesExternalEvents(matching: [])
     .environment(ghosttyShortcuts)
@@ -706,6 +707,7 @@ struct SupacodeApp: App {
         TerminalTabSelectionCommands(store: store)
       }
       WindowCommands()
+      RemoteClientCommands()
       CommandGroup(after: .textEditing) {
         Button("Go to Worktree") {
           guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
@@ -776,6 +778,13 @@ struct SupacodeApp: App {
     .handlesExternalEvents(matching: [])
     .windowToolbarStyle(.unified)
     .defaultSize(width: 720, height: 640)
+    .restorationBehavior(.disabled)
+    Window("Remote Mac", id: WindowID.remoteClient) {
+      RemoteClientWindowRoot(ghostty: ghostty)
+        .appChromeTextSize(store.settings.chromeTextSize)
+    }
+    .handlesExternalEvents(matching: [])
+    .defaultSize(width: 1000, height: 680)
     .restorationBehavior(.disabled)
     Window("CLI Reference", id: WindowID.cliReference) {
       CLIReferenceView()
