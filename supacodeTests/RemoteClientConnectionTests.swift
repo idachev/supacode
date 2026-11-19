@@ -370,6 +370,9 @@ struct RemoteClientConnectionTests {
     #expect(await settle { rig.connection.status == .unsupportedHost })
     #expect(relay.types == ["hello"])
     #expect(rig.sockets.lanCalls.isEmpty)
+    // The host leaving the relay is reported as offline, not as still unsupported.
+    relay.receive(Self.relayFrame(online: false))
+    #expect(await settle { rig.connection.status == .hostOffline })
   }
 
   @Test func anUnboundStartOnlyReadsTheHostList() async {

@@ -345,7 +345,11 @@ final class RemoteClientConnection {
   /// A path went away (its socket closed, or the relay's host went offline): the host forgot
   /// its attaches there and the waits that travelled on it end.
   private func pathDown(_ path: RemoteClientPath) {
-    if path == .relay { relayReady = false }
+    if path == .relay {
+      relayReady = false
+      // The next `hello` decides again: the host may come back updated.
+      unsupported = false
+    }
     for contentID in terminals.keys { terminals[contentID]?.gate.closed(path) }
     let lost = RemoteClientRequestError(kind: .connectionLost, message: "The connection to the Mac was lost", code: nil)
     for (id, request) in pending where request.path == path { finishRequest(id, .failure(lost)) }
