@@ -1,8 +1,11 @@
+import Sharing
 import SwiftUI
 
-/// File ▸ "Open Remote Mac…" (ПЗ1). Opening the window does not depend on which window is key, and
-/// the app can run with no window open at all, so the item reads `openWindow` itself and is always
-/// enabled (a focused scene action would leave it grey with no window).
+/// File ▸ "Open Remote Mac…" (ПЗ1, R29). Opening a window does not depend on which window is key,
+/// and the app can run with no window open at all, so the item reads `openWindow` itself and is
+/// always enabled (a focused scene action would leave it grey with no window). With no remote
+/// window open it opens the Mac picked last; with one open, a new window with the picker. A Mac
+/// already shown is brought forward, never opened twice.
 struct RemoteClientCommands: Commands {
   /// ⌃⌘O: no default app shortcut and no default Ghostty binding uses it.
   static let shortcut = KeyboardShortcut("o", modifiers: [.command, .control])
@@ -12,11 +15,30 @@ struct RemoteClientCommands: Commands {
   var body: some Commands {
     CommandGroup(after: .newItem) {
       Button("Open Remote Mac…", systemImage: "desktopcomputer") {
-        openWindow(id: WindowID.remoteClient)
+        @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+        let windows = RemoteClientWindowRegistry.shared
+        windows.openWindow = { [openWindow] in openWindow(value: $0) }
+        windows.openRemoteMac(saved: saved)
       }
       .keyboardShortcut(Self.shortcut)
       .help("Open a window onto another Mac's Supacode (⌃⌘O)")
     }
+  }
+}
+
+/// Hands SwiftUI's `openWindow` to the remote window registry from the main window's scene, so a
+/// notification tap can open a remote window when none is open. Never cleared: the action still
+/// opens windows after the main window closed.
+struct RemoteClientWindowOpenerInstaller: View {
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some View {
+    Color.clear
+      .frame(width: 0, height: 0)
+      .accessibilityHidden(true)
+      .onAppear {
+        RemoteClientWindowRegistry.shared.openWindow = { [openWindow] in openWindow(value: $0) }
+      }
   }
 }
 

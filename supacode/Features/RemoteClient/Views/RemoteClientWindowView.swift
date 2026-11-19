@@ -4,8 +4,9 @@ import Sharing
 import SupacodeSettingsShared
 import SwiftUI
 
-/// The remote window (ПЗ1, ПЗ2): the Mac's name and path as the title, the Mac's sidebar and the
-/// selected worktree's tabs and splits.
+/// One remote window (ПЗ1, ПЗ2): the Mac's name and path as the title, the Mac's sidebar and the
+/// selected worktree's tabs and splits. Its menu actions come from its own store, so they follow the
+/// key window.
 struct RemoteClientWindowView: View {
   @Bindable var store: StoreOf<RemoteClientFeature>
   let session: RemoteClientSession
@@ -63,6 +64,7 @@ struct RemoteClientWindowView: View {
       ) {
         RemoteHostPickerView(
           hosts: store.pickableHosts,
+          isEveryMacShownElsewhere: store.isEveryMacShownElsewhere,
           selectedHostID: store.selectedHostID,
           onPick: { store.send(.hostPicked($0)) },
           onCancel: { store.send(.hostPickerDismissed) }
@@ -346,9 +348,12 @@ private struct RemoteNewWorktreeSheet: View {
   }
 }
 
-/// The Mac picker: every Mac on the relay but this one, with an online dot.
+/// The Mac picker: every Mac on the relay but this one and those other remote windows show, with an
+/// online dot.
 private struct RemoteHostPickerView: View {
   let hosts: [RemoteClientHostInfo]
+  /// No row left because other remote windows show every other Mac.
+  let isEveryMacShownElsewhere: Bool
   let selectedHostID: String?
   let onPick: (String) -> Void
   let onCancel: () -> Void
@@ -358,7 +363,10 @@ private struct RemoteHostPickerView: View {
       Text("Choose a Mac")
         .font(.headline)
       if hosts.isEmpty {
-        Text("No other Mac shares its Supacode on this relay.")
+        Text(
+          isEveryMacShownElsewhere
+            ? "Every other Mac on this relay is already open in a window."
+            : "No other Mac shares its Supacode on this relay.")
           .foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       } else {
@@ -405,6 +413,11 @@ extension RemoteClientFeature.State {
     return nil
   }
 
+  /// The picker has no row only because other remote windows show every other Mac.
+  var isEveryMacShownElsewhere: Bool {
+    pickableHosts.isEmpty && !RemoteHostChoice.pickable(hosts, ownHostID: ownHostID).isEmpty
+  }
+
   /// The Mac's name, else a plain word.
   var macName: String {
     knownMacName ?? "Remote Mac"
@@ -437,7 +450,8 @@ extension RemoteClientStatus {
     if case .online = self { true } else { false }
   }
 
-  /// The title's second line: the path in use, else the connection's state.
+  /// The text next to the Mac's name in the title ("Office Mac · LAN"): the path in use, else the
+  /// connection's state. The line under the name is the notice (`connectionNotice`).
   var pathText: String {
     switch self {
     case .online(.lan): "LAN"

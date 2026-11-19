@@ -1,38 +1,77 @@
+import AppKit
 import ComposableArchitecture
+import Observation
 import SwiftUI
 
-/// The store and the session behind the "Remote Mac" window. One per app: the `Window` scene's
-/// views go away when it closes, but the session must outlive that to close itself
-/// (`windowClosed`), and the next opening reuses both (КЛ6: connected only while open).
+/// The store and the session behind one "Remote Mac" window. The window's views go away when it
+/// closes, but the session must outlive them to close itself (`windowClosed`, КЛ6) and to hand its
+/// last notification removals to the center: the registry keeps the model until then.
 @MainActor
-final class RemoteClientWindowModel {
-  private static var shared: RemoteClientWindowModel?
-
+final class RemoteClientWindowModel: RemoteClientWindowHandle {
+  /// The window's key in `RemoteClientWindowRegistry`.
+  let id: UUID
   let session: RemoteClientSession
   let store: StoreOf<RemoteClientFeature>
+  /// Set by the window's anchor, so a notification tap can bring it forward.
+  weak var window: NSWindow?
 
-  private init(ghostty: GhosttyRuntime) {
+  init(ghostty: GhosttyRuntime, hostID: String?, registry: RemoteClientWindowRegistry = .shared) {
+    let id = UUID()
     let session = RemoteClientSession(ghostty: ghostty)
+    self.id = id
     self.session = session
-    store = Store(initialState: RemoteClientFeature.State()) {
+    store = Store(initialState: RemoteClientFeature.State(selectedHostID: hostID)) {
       RemoteClientFeature()
     } withDependencies: {
       $0.remoteClientSession = .live(session)
+      $0.remoteClientWindows = .live(registry, window: id)
     }
   }
 
   nonisolated deinit {}
 
-  static func shared(ghostty: GhosttyRuntime) -> RemoteClientWindowModel {
-    if let shared { return shared }
-    let model = RemoteClientWindowModel(ghostty: ghostty)
-    shared = model
-    return model
+  func otherWindowsChanged(_ hostIDs: Set<String>) {
+    store.send(.otherWindowsChanged(hostIDs))
+  }
+
+  func notificationOpened(_ target: RemoteClientNotifier.Target) {
+    store.send(.notificationOpened(hostID: target.hostID, worktreeID: target.worktreeID, contentID: target.contentID))
+  }
+
+  func bringForward() {
+    if let window {
+      if window.isMiniaturized { window.deminiaturize(nil) }
+      window.makeKeyAndOrderFront(nil)
+    }
+    NSApplication.shared.activate()
+  }
+
+  /// Sends `windowClosed` before its first suspension, then waits for its effects (the session's
+  /// close) and for the notification queue to drain.
+  func close() async {
+    await store.send(.windowClosed).finish()
+    while store.withState(\.isDeliveringNotifications) {
+      await withCheckedContinuation { continuation in
+        withObservationTracking {
+          _ = store.isDeliveringNotifications
+        } onChange: {
+          continuation.resume()
+        }
+      }
+    }
+  }
+
+  /// The app quits: no effect would run any more, so the session stops here (R30).
+  func closeNow() {
+    session.close()
   }
 }
 
-/// The `Window` scene's root: connects when the window appears, disconnects when it closes.
+/// The root of one window of the "Remote Mac" `WindowGroup`: makes the window's model for the Mac
+/// it was opened for, joins the registry and connects when it appears, and leaves when it closes.
+/// The window's value follows the Mac it shows, so "the window of this Mac" stays findable.
 struct RemoteClientWindowRoot: View {
+  @Binding var value: RemoteClientWindowValue?
   let ghostty: GhosttyRuntime
   @State private var model: RemoteClientWindowModel?
 
@@ -40,28 +79,33 @@ struct RemoteClientWindowRoot: View {
     Group {
       if let model {
         RemoteClientWindowView(store: model.store, session: model.session, ghostty: ghostty)
+          .background {
+            // Key or not decides whether a waiting tab it shows posts a notification (ИВ2).
+            WindowFocusObserverView { activity in
+              model.store.send(.windowKeyChanged(activity.isKeyWindow))
+            }
+            RemoteClientWindowAnchor { window in
+              model.window = window
+            }
+          }
+          .onChange(of: model.store.selectedHostID, initial: true) { _, hostID in
+            let shown = RemoteClientWindowValue(hostID: hostID)
+            if value != shown { value = shown }
+          }
       } else {
         Color.clear
       }
     }
     .frame(minWidth: 480, minHeight: 320)
-    .background {
-      // Key or not decides whether a waiting tab it shows posts a notification (ИВ2).
-      // Through `shared`: the first report can come before `onAppear` sets `model`.
-      WindowFocusObserverView { [ghostty] activity in
-        RemoteClientWindowModel.shared(ghostty: ghostty).store.send(.windowKeyChanged(activity.isKeyWindow))
-      }
-      RemoteClientWindowAnchor()
-    }
     .onAppear {
-      let model = RemoteClientWindowModel.shared(ghostty: ghostty)
+      let model = self.model ?? RemoteClientWindowModel(ghostty: ghostty, hostID: value?.hostID)
       self.model = model
-      RemoteClientNotificationRouter.shared.store = model.store
+      RemoteClientWindowRegistry.shared.register(model.id, handle: model)
       model.store.send(.windowAppeared)
     }
     .onDisappear {
-      RemoteClientNotificationRouter.shared.store = nil
-      RemoteClientWindowModel.shared(ghostty: ghostty).store.send(.windowClosed)
+      guard let model else { return }
+      RemoteClientWindowRegistry.shared.windowClosed(model.id)
     }
   }
 }

@@ -63,6 +63,8 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
     // deinit timing.
     globalHotkeyMonitor?.tearDown()
     remoteAccessHost?.stop()
+    // Every remote window's connection and pipes stop now: no store effect runs during terminate.
+    RemoteClientWindowRegistry.shared.closeAll()
     // Drop the queued debounce timers; a flush already on the writer's serial
     // queue still completes, but the terminal write below runs on that same queue
     // and is therefore ordered strictly after it, never regressed by a late flush.
@@ -691,7 +693,10 @@ struct SupacodeApp: App {
           .environment(commandKeyObserver)
           .environment(openActionIcons)
           .appChromeTextSize(store.settings.chromeTextSize)
-          .background { GlobalHotkeyInstaller(monitor: globalHotkeyMonitor) }
+          .background {
+            GlobalHotkeyInstaller(monitor: globalHotkeyMonitor)
+            RemoteClientWindowOpenerInstaller()
+          }
       }
       .openSettingsOnSelection(store: store)
       .openDeeplinkReferenceOnRequest(store: store)
@@ -780,8 +785,9 @@ struct SupacodeApp: App {
     .windowToolbarStyle(.unified)
     .defaultSize(width: 720, height: 640)
     .restorationBehavior(.disabled)
-    Window("Remote Mac", id: WindowID.remoteClient) {
-      RemoteClientWindowRoot(ghostty: ghostty)
+    // One window per Mac, keyed by the Mac it shows (Task 16).
+    WindowGroup("Remote Mac", id: WindowID.remoteClient, for: RemoteClientWindowValue.self) { $value in
+      RemoteClientWindowRoot(value: $value, ghostty: ghostty)
         .appChromeTextSize(store.settings.chromeTextSize)
         .appChromeBaseFont(store.settings.chromeTextSize)
     }

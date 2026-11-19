@@ -6,16 +6,18 @@ import SupacodeSettingsShared
 
 nonisolated private let sessionLogger = SupaLogger("RemoteClient")
 
-/// The live objects behind the remote window: the connection to the selected Mac, the pipe server
-/// the remote tabs' surfaces talk to, and one `RemoteTerminalContent` per remote content id.
+/// The live objects behind one remote window: the connection to the Mac it shows, its share of the
+/// app's pipe server the remote tabs' surfaces talk to, and one `RemoteTerminalContent` per remote
+/// content id. Every remote window has its own session; two never share a connection or a content.
 ///
 /// Order is load-bearing:
-/// - the pipe server listens before any content starts its surface (the surface's `remote-pipe`
-///   connects at once);
+/// - the pipe server listens (and routes this session's prefix) before any content starts its
+///   surface (the surface's `remote-pipe` connects at once);
 /// - `open` and `close` tear every content down first (each sends its `detach` on the old
 ///   connection, which releases the held size on the Mac, ТР8б), then stop the connection
 ///   (a stopped connection ends every terminal stream, and its deinit does not), and `close`
-///   stops the pipe server last (its `onClosed` reports for torn-down contents find nothing).
+///   leaves the pipe server last (its `onClosed` reports for torn-down contents find nothing; the
+///   server stops with the last session).
 ///
 /// Nothing here enters the local window's state: the contents live in the session's own
 /// `ContentRuntime`, never `ContentRuntime.liveValue` (ПЗ3).
@@ -29,7 +31,10 @@ final class RemoteClientSession {
     URL(filePath: "/tmp/supacode-\(getuid())", directoryHint: .isDirectory)
   }
 
-  let pipes: RemotePipeServer
+  /// The app's pipe server, shared with the other remote windows' sessions.
+  let pipes: RemotePipeRouter
+  /// This session's prefix on `pipes`: its pipe keys are `<prefix>.<content id>`.
+  let pipePrefix: String
   /// Its own registry, never `ContentRuntime.liveValue`.
   let runtime: ContentRuntime
   /// This Mac's own host id: never pickable, never counted (МХ2).
@@ -70,7 +75,7 @@ final class RemoteClientSession {
     ghostty: GhosttyRuntime,
     sockets: RemoteClientSocketFactory = .live,
     clock: any Clock<Duration> = ContinuousClock(),
-    pipeDirectory: URL = RemoteClientSession.pipeDirectory,
+    pipes: RemotePipeRouter = .shared,
     ownHostID: String? = RemoteAccessConfig.currentHostID,
     loadKey: @escaping () -> RemoteClientKey? = { RemoteClientKey.load() }
   ) {
@@ -79,26 +84,16 @@ final class RemoteClientSession {
     self.clock = clock
     self.ownHostID = ownHostID
     self.loadKey = loadKey
-    pipes = RemotePipeServer(directory: pipeDirectory)
+    self.pipes = pipes
+    pipePrefix = pipes.makePrefix()
     runtime = ContentRuntime()
     attachedSet = RemoteAttachedSetDriver(clock: clock)
     attachedSet.onAttach = { [weak self] in self?.makeContent($0) }
     attachedSet.onDetach = { [weak self] in self?.release($0) }
-    // The server has one callback of each kind for every pipe: route by content id. A report for
-    // a content that is gone (torn down, or the pipe server stopping) finds nothing.
-    pipes.onOpened = { [weak self] contentID in
-      self?.contents[contentID]?.pipeOpened()
-    }
-    pipes.onInput = { [weak self] contentID, bytes in
-      self?.contents[contentID]?.pipeInput(bytes)
-    }
-    pipes.onClosed = { [weak self] contentID in
-      self?.contents[contentID]?.pipeClosed()
-    }
   }
 
-  /// The connection must be stopped before release (`close()`); the window's session lives as
-  /// long as the app.
+  /// The connection must be stopped before release (`close()`): the window model keeps the session
+  /// until its close has run.
   nonisolated deinit {}
 
   // MARK: - Lifetime
@@ -125,7 +120,7 @@ final class RemoteClientSession {
       return
     }
     do {
-      try pipes.start()
+      try pipes.start(prefix: pipePrefix, route: pipeRoute)
     } catch {
       // No pipe, no terminal: a connection would show worktrees whose tabs can never draw.
       sessionLogger.warning("Remote pipe server did not start; not connecting")
@@ -139,13 +134,14 @@ final class RemoteClientSession {
     observe(connection)
   }
 
-  /// Tears down every content, then stops the connection, then the pipe server.
+  /// Tears down every content, then stops the connection, then leaves the pipe server. Safe to call
+  /// again (the app's quit closes every session, and a window's own close may still follow).
   func close() {
     resetAttachedSet()
     tearDownContents()
     connection?.stop()
     connection = nil
-    pipes.stop()
+    pipes.stop(prefix: pipePrefix)
     epoch += 1
     // The reducer resets its copy when the window closes; the next connection reports afresh.
     published = Published()
@@ -250,10 +246,21 @@ final class RemoteClientSession {
     }
   }
 
+  /// This session's pipes on the shared server, by content id. A report for a content that is gone
+  /// (torn down, or the pipe server stopping) finds nothing.
+  private var pipeRoute: RemotePipeRouter.Route {
+    RemotePipeRouter.Route(
+      onOpened: { [weak self] contentID in self?.contents[contentID]?.pipeOpened() },
+      onInput: { [weak self] contentID, bytes in self?.contents[contentID]?.pipeInput(bytes) },
+      onClosed: { [weak self] contentID in self?.contents[contentID]?.pipeClosed() }
+    )
+  }
+
   /// The connection the content was made for. Held weakly: a replaced connection is stopped and
   /// its contents torn down, so a late call must not keep it alive.
   private func ports(for connection: RemoteClientConnection?) -> RemoteTerminalContent.Ports {
     let pipes = pipes
+    let prefix = pipePrefix
     return RemoteTerminalContent.Ports(
       attach: { [weak connection] contentID, scrollback in
         connection?.attach(contentID: contentID, scrollback: scrollback) ?? .finished
@@ -264,9 +271,10 @@ final class RemoteClientSession {
         connection?.setWantedGrid(contentID: $0, columns: $1.columns, rows: $1.rows)
       },
       socketPath: pipes.socketPath,
-      expectPipe: { pipes.expect(contentID: $0) },
-      forgetPipe: { pipes.forget(contentID: $0) },
-      writePipe: { pipes.write(contentID: $0, $1) }
+      expectPipe: { pipes.expect(prefix: prefix, contentID: $0) },
+      forgetPipe: { pipes.forget(prefix: prefix, contentID: $0) },
+      writePipe: { pipes.write(prefix: prefix, contentID: $0, $1) },
+      pipeKey: { RemotePipeRouter.pipeKey(prefix: prefix, contentID: $0) }
     )
   }
 

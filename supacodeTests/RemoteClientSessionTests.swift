@@ -39,16 +39,19 @@ struct RemoteClientSessionTests {
     }
   }
 
-  /// A session on fake sockets with its pipe socket in a fresh short directory (`sun_path`).
-  private func rig(pipeDirectory: URL? = nil) -> Rig {
+  /// A session on fake sockets with its pipe socket in a fresh short directory (`sun_path`), or on
+  /// the given pipe router, shared with another session as the app's windows share theirs.
+  private func rig(pipeDirectory: URL? = nil, pipes: RemotePipeRouter? = nil) -> Rig {
     let sockets = FakeClientSockets()
-    let directory = pipeDirectory ?? URL(filePath: "/tmp/sc-test-\(UUID().uuidString.prefix(8))")
+    let directory =
+      pipes.map { URL(filePath: $0.socketPath).deletingLastPathComponent() } ?? pipeDirectory
+      ?? URL(filePath: "/tmp/sc-test-\(UUID().uuidString.prefix(8))")
     let clock = TestClock<Duration>()
     let session = RemoteClientSession(
       ghostty: GhosttyRuntime(),
       sockets: sockets.factory,
       clock: clock,
-      pipeDirectory: directory,
+      pipes: pipes ?? RemotePipeRouter(directory: directory),
       ownHostID: "me",
       loadKey: { RemoteClientConnectionTests.key }
     )
@@ -170,7 +173,7 @@ struct RemoteClientSessionTests {
     #expect(with.session.hasKeyFile)
     let without = RemoteClientSession(
       ghostty: GhosttyRuntime(), sockets: FakeClientSockets().factory, clock: TestClock<Duration>(),
-      pipeDirectory: with.directory, ownHostID: "me", loadKey: { nil })
+      pipes: RemotePipeRouter(directory: with.directory), ownHostID: "me", loadKey: { nil })
     #expect(!without.hasKeyFile)
     without.open(hostID: nil)
     #expect(without.connection == nil)
@@ -344,5 +347,101 @@ struct RemoteClientSessionTests {
     let content = try #require(rig.session.attachedContent("c-t2"))
     content.paneMeasured(RemoteAutoResize.Grid(columns: 100, rows: 30))
     #expect(rig.session.fittingGrid("P1") == RemoteAutoResize.Grid(columns: 100, rows: 30))
+  }
+
+  // MARK: - One window per Mac (Task 16)
+
+  /// Two windows' sessions on one shared pipe server, each on its own fake relay.
+  private func twoRigs() -> (Rig, Rig) {
+    let directory = URL(filePath: "/tmp/sc-test-\(UUID().uuidString.prefix(8))")
+    let pipes = RemotePipeRouter(directory: directory)
+    return (rig(pipes: pipes), rig(pipes: pipes))
+  }
+
+  private static func listText(worktree: String) -> String {
+    #"{"t":"list","repos":[{"id":"r1","name":"supacode","worktrees":[{"id":""# + worktree + #""}]}]}"#
+  }
+
+  @Test func twoSessionsForTwoMacsHaveTheirOwnConnectionsAndLists() async throws {
+    let (office, home) = twoRigs()
+    defer {
+      office.cleanUp()
+      home.cleanUp()
+    }
+    let officeLog = EventLog(office.session.events())
+    let homeLog = EventLog(home.session.events())
+    office.session.open(hostID: "h1")
+    home.session.open(hostID: "h2")
+    #expect(office.sockets.relays.count == 1)
+    #expect(home.sockets.relays.count == 1)
+    #expect(office.session.connection !== home.session.connection)
+    await online(office)
+    await online(home)
+
+    office.sockets.relays[0].receive(Self.listText(worktree: "office-w"))
+    home.sockets.relays[0].receive(Self.listText(worktree: "home-w"))
+    #expect(
+      await settle { officeLog.events.contains(where: Self.isList) && homeLog.events.contains(where: Self.isList) })
+    let officeList = try #require(office.session.connection?.list)
+    let homeList = try #require(home.session.connection?.list)
+    #expect(officeList.repos.first?.worktrees.map(\.id) == ["office-w"])
+    #expect(homeList.repos.first?.worktrees.map(\.id) == ["home-w"])
+    #expect(officeLog.events.filter(Self.isList) == [.listChanged(officeList)])
+    #expect(homeLog.events.filter(Self.isList) == [.listChanged(homeList)])
+  }
+
+  /// Both Macs use content id `c1`: two contents on two pipes, and a pipe's events reach only the
+  /// content of its own Mac.
+  @Test func aContentIDBothMacsUseIsTwoContents() async throws {
+    let (office, home) = twoRigs()
+    defer {
+      office.cleanUp()
+      home.cleanUp()
+    }
+    office.session.open(hostID: "h1")
+    home.session.open(hostID: "h2")
+    await online(office)
+    await online(home)
+    office.session.setVisible(["c1"])
+    home.session.setVisible(["c1"])
+    let officeContent = try #require(office.session.attachedContent("c1"))
+    let homeContent = try #require(home.session.attachedContent("c1"))
+    #expect(officeContent !== homeContent)
+    #expect(office.session.pipePrefix != home.session.pipePrefix)
+    #expect(office.session.pipes === home.session.pipes)
+
+    // The surface of office's `c1` connects: office attaches on its own relay, home does nothing.
+    let officeKey = RemotePipeRouter.pipeKey(prefix: office.session.pipePrefix, contentID: "c1")
+    office.session.pipes.server.onOpened?(officeKey)
+    #expect(await settle { office.sockets.relays[0].types.contains("attach") })
+    #expect(!home.sockets.relays[0].types.contains("attach"))
+  }
+
+  @Test func closingOneSessionStopsOnlyItsOwn() throws {
+    let (office, home) = twoRigs()
+    defer {
+      office.cleanUp()
+      home.cleanUp()
+    }
+    office.session.open(hostID: "h1")
+    home.session.open(hostID: "h2")
+    home.session.setVisible(["c1"])
+    let homeContent = try #require(home.session.attachedContent("c1"))
+    let socketPath = home.session.pipes.socketPath
+    #expect(FileManager.default.fileExists(atPath: socketPath))
+
+    office.session.close()
+    #expect(office.sockets.relays[0].isClosed)
+    #expect(!home.sockets.relays[0].isClosed)
+    #expect(home.session.connection != nil)
+    #expect(home.session.attachedContent("c1") === homeContent)
+    // The other window still uses the shared pipe server.
+    #expect(FileManager.default.fileExists(atPath: socketPath))
+
+    home.session.close()
+    #expect(!FileManager.default.fileExists(atPath: socketPath))
+    // A second close (the app's quit after the window's own) changes nothing.
+    home.session.close()
+    #expect(home.session.connection == nil)
   }
 }

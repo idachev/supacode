@@ -16,10 +16,13 @@ nonisolated enum RemoteHostChoice {
     case askUser
   }
 
-  /// `hosts` nil: an old relay (single host) → `.none`. This Mac (`ownHostID`) never counts.
-  static func decide(saved: String?, hosts: [RemoteClientHostInfo]?, ownHostID: String?) -> Decision {
+  /// `hosts` nil: an old relay (single host) → `.none`. This Mac (`ownHostID`) never counts, nor
+  /// does a Mac another remote window shows (`excluding`).
+  static func decide(
+    saved: String?, hosts: [RemoteClientHostInfo]?, ownHostID: String?, excluding: Set<String> = []
+  ) -> Decision {
     guard let hosts else { return .none }
-    let others = pickable(hosts, ownHostID: ownHostID)
+    let others = pickable(hosts, ownHostID: ownHostID, excluding: excluding)
     if let saved {
       return others.contains { $0.id == saved } ? .none : .askUser
     }
@@ -28,8 +31,10 @@ nonisolated enum RemoteHostChoice {
     return .askUser
   }
 
-  /// The picker's rows: every host except this Mac.
-  static func pickable(_ hosts: [RemoteClientHostInfo], ownHostID: String?) -> [RemoteClientHostInfo] {
-    hosts.filter { $0.id != ownHostID }
+  /// The picker's rows: every host except this Mac and the Macs in `excluding`.
+  static func pickable(
+    _ hosts: [RemoteClientHostInfo], ownHostID: String?, excluding: Set<String> = []
+  ) -> [RemoteClientHostInfo] {
+    hosts.filter { $0.id != ownHostID && !excluding.contains($0.id) }
   }
 }

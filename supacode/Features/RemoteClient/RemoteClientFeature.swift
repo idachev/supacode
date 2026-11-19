@@ -4,18 +4,24 @@ import Foundation
 import Sharing
 import SupacodeSettingsShared
 
-/// The "Remote Mac" window (ПЗ1): which Mac it shows, the state of the connection to it and the
-/// last `list` it sent. The live objects (sockets, pipes, surfaces) stay in `RemoteClientSession`;
-/// the reducer reaches them only through `RemoteClientSessionClient`. Nothing here enters
-/// `RepositoriesFeature` or `TerminalsFeature` (ПЗ3).
+/// One "Remote Mac" window (ПЗ1): which Mac it shows, the state of the connection to it and the
+/// last `list` it sent. Every remote window has its own store, session and Mac. The live objects
+/// (sockets, pipes, surfaces) stay in `RemoteClientSession`; the reducer reaches them only through
+/// `RemoteClientSessionClient`. Nothing here enters `RepositoriesFeature` or `TerminalsFeature` (ПЗ3).
 @Reducer
 struct RemoteClientFeature {
-  /// App storage key of the selected Mac (МХ1): plain, not secret.
+  /// App storage key of the Mac picked last in any window (МХ1): plain, not secret.
   nonisolated static let selectedHostKey = "remoteClientSelectedHostID"
 
   @ObservableState
   struct State: Equatable {
-    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var selectedHostID: String?
+    /// The Mac this window shows: the window's own (its `RemoteClientWindowValue`).
+    var selectedHostID: String?
+    /// The Mac picked last in any window: what "Open Remote Mac…" opens when no remote window is
+    /// open (R29), so the one-Mac flow stays as it was.
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var savedHostID: String?
+    /// The Macs the other remote windows show: never offered here, never opened twice.
+    var otherWindowHostIDs: Set<String> = []
     var status: RemoteClientStatus = .idle
     var hasKeyFile = true
     var hostName: String?
@@ -56,9 +62,9 @@ struct RemoteClientFeature {
     var isDeliveringNotifications = false
     @Presents var alert: AlertState<Action.Alert>?
 
-    /// The picker's rows: every Mac the relay lists except this one.
+    /// The picker's rows: every Mac the relay lists except this one and those other windows show.
     var pickableHosts: [RemoteClientHostInfo] {
-      RemoteHostChoice.pickable(hosts, ownHostID: ownHostID)
+      RemoteHostChoice.pickable(hosts, ownHostID: ownHostID, excluding: otherWindowHostIDs)
     }
 
     /// Every worktree of the last `list`, repository by repository.
@@ -119,6 +125,8 @@ struct RemoteClientFeature {
     case worktreeCommand(RemoteWorktreeCommand)
     case requestFinished(key: String, Result<[String: String], RemoteClientRequestError>)
     case windowKeyChanged(Bool)
+    /// The Macs the other remote windows show changed.
+    case otherWindowsChanged(Set<String>)
     /// A tap on an "agent is waiting" notification (ИВ3): the window is already in front. A tap for
     /// a Mac other than the one shown is dropped.
     case notificationOpened(hostID: String, worktreeID: String, contentID: String)
@@ -143,6 +151,7 @@ struct RemoteClientFeature {
   }
 
   @Dependency(\.remoteClientSession) var session
+  @Dependency(\.remoteClientWindows) var windows
   @Dependency(\.systemNotificationClient) var systemNotifications
 
   var body: some Reducer<State, Action> {
@@ -157,18 +166,25 @@ struct RemoteClientFeature {
       switch action {
       case .windowAppeared:
         state.ownHostID = session.ownHostID()
+        var focusOther: Effect<Action> = .none
+        if let hostID = state.selectedHostID, !windows.claim(hostID) {
+          // Another window took this Mac meanwhile: it comes forward, this one shows the picker.
+          state.selectedHostID = nil
+          focusOther = focus(hostID)
+        }
         guard session.hasKeyFile() else {
           // A key removed since the last opening: nothing stays connected on it.
           state.hasKeyFile = false
           let session = session
           return .merge(
             .cancel(id: CancelID.events),
-            .run { _ in await session.close() }
+            .run { _ in await session.close() },
+            focusOther
           )
         }
         state.hasKeyFile = true
         state.hasBeenOnline = false
-        return connect(state.selectedHostID)
+        return .merge(connect(state.selectedHostID), focusOther)
 
       case .windowClosed:
         let removeNotifications = forgetNotifications(&state)
@@ -199,7 +215,9 @@ struct RemoteClientFeature {
 
       case .hostsChanged(let hosts):
         state.hosts = hosts ?? []
-        switch RemoteHostChoice.decide(saved: state.selectedHostID, hosts: hosts, ownHostID: state.ownHostID) {
+        let decision = RemoteHostChoice.decide(
+          saved: state.selectedHostID, hosts: hosts, ownHostID: state.ownHostID, excluding: state.otherWindowHostIDs)
+        switch decision {
         case .none:
           return .none
         case .askUser:
@@ -218,6 +236,10 @@ struct RemoteClientFeature {
 
       case .windowKeyChanged(let isKey):
         state.isKeyWindow = isKey
+        return .none
+
+      case .otherWindowsChanged(let hostIDs):
+        state.otherWindowHostIDs = hostIDs
         return .none
 
       case .notificationsDelivered(let count):
@@ -246,15 +268,28 @@ struct RemoteClientFeature {
     }
   }
 
-  /// Saves the Mac, forgets what the old one showed and reconnects bound to it (МХ3).
+  /// Takes the Mac for this window, saves it as the last pick, forgets what the old one showed and
+  /// reconnects bound to it (МХ3). A Mac another window shows is never opened twice: that window
+  /// comes forward instead and this one keeps its Mac.
   private func switchHost(to hostID: String, state: inout State) -> Effect<Action> {
+    guard windows.claim(hostID) else {
+      state.isHostPickerPresented = false
+      return focus(hostID)
+    }
     // First: the old Mac's notifications go under its own id.
     let removeNotifications = forgetNotifications(&state)
-    state.$selectedHostID.withLock { $0 = hostID }
+    state.selectedHostID = hostID
+    state.$savedHostID.withLock { $0 = hostID }
     state.isHostPickerPresented = false
     forgetMac(&state)
     return .merge(
       .cancel(id: CancelID.requests), .cancel(id: CancelID.visible), connect(hostID), removeNotifications)
+  }
+
+  /// Brings forward the remote window that shows the Mac.
+  private func focus(_ hostID: String) -> Effect<Action> {
+    let windows = windows
+    return .run { _ in await windows.focus(hostID) }
   }
 
   /// Queues a notification for each tab that started to wait, unless the key window shows it or
@@ -449,5 +484,45 @@ nonisolated extension DependencyValues {
   var remoteClientSession: RemoteClientSessionClient {
     get { self[RemoteClientSessionClient.self] }
     set { self[RemoteClientSessionClient.self] = newValue }
+  }
+}
+
+/// The reducer's door to the other remote windows (`RemoteClientWindowRegistry`), so tests need no
+/// window. Each window's store gets its own, bound to that window.
+nonisolated struct RemoteClientWindowsClient: Sendable {
+  /// Takes the Mac for this window; false when another remote window shows it.
+  var claim: @MainActor @Sendable (_ hostID: String) -> Bool
+  /// Brings forward the window that shows the Mac.
+  var focus: @MainActor @Sendable (_ hostID: String) -> Void
+}
+
+extension RemoteClientWindowsClient {
+  @MainActor
+  static func live(_ registry: RemoteClientWindowRegistry, window: UUID) -> RemoteClientWindowsClient {
+    RemoteClientWindowsClient(
+      claim: { registry.claim($0, for: window) },
+      focus: { registry.focus($0) }
+    )
+  }
+}
+
+nonisolated extension RemoteClientWindowsClient: DependencyKey {
+  /// The only remote window: every Mac is free. The window's store replaces it with `.live`.
+  static let liveValue = RemoteClientWindowsClient(claim: { _ in true }, focus: { _ in })
+  static let testValue = liveValue
+}
+
+nonisolated extension DependencyValues {
+  var remoteClientWindows: RemoteClientWindowsClient {
+    get { self[RemoteClientWindowsClient.self] }
+    set { self[RemoteClientWindowsClient.self] = newValue }
+  }
+}
+
+extension RemoteClientFeature.State {
+  /// A window opened for the Mac `selectedHostID`; nil: a new window that shows the picker.
+  init(selectedHostID: String?) {
+    self.init()
+    self.selectedHostID = selectedHostID
   }
 }

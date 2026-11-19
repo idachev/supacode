@@ -518,7 +518,7 @@ terminal:
 ## Remote Client Window
 
 File ▸ **Open Remote Mac…** (⌃⌘O) opens a "Remote Mac" window that shows another Mac's Supacode: its
-sidebar, tabs and splits, each pane a real Ghostty terminal. It is the reverse of "Remote Access From
+sidebar, tabs and splits, each pane a real Ghostty terminal. Each Mac gets its own window. It is the reverse of "Remote Access From
 The Android App": the same relay, protocol and keys, with this Mac as the client. Design:
 `docs/plans/2026-11-17-remote-client-design.md`; plan: `docs/plans/2026-11-17-remote-client-app.md`;
 how to use it: `docs/remote-access.md` → "Use another Mac from Supacode".
@@ -526,10 +526,18 @@ how to use it: `docs/remote-access.md` → "Use another Mac from Supacode".
 - **Fork-only code.** `supacode/Features/RemoteClient/` (the TCA feature `RemoteClientFeature`, the
   connection `RemoteClientConnection` and its sockets, the layout projection, the window views and
   the notifier) and `supacode-cli/Commands/RemotePipeCommand.swift`.
+- **One window per Mac.** The scene is a `WindowGroup` keyed by `RemoteClientWindowValue` (the
+  Mac's host id; nil: a new window with the picker). Each window owns its store, its
+  `RemoteClientSession` (connection, contents, `ContentRuntime`) and its awaiting tracker.
+  `RemoteClientWindowRegistry` knows every open window: a window claims its Mac there, so no Mac
+  is open twice; the menu, the picker and a notification tap bring that Mac's window forward
+  instead. Closing a window closes only its session; quitting closes every session
+  (`applicationWillTerminate` → `closeAll()`).
 - **A remote tab is a local surface.** Its Ghostty child process is the hidden command
-  `supacode remote-pipe <contentId>`, which copies bytes between the terminal and the app over a
-  private unix socket (`RemotePipeServer`). The app owns the relay or LAN connection; the child
-  holds no key and no address.
+  `supacode remote-pipe <pipe key>`, which copies bytes between the terminal and the app over a
+  private unix socket (`RemotePipeServer`). One server serves every window (`RemotePipeRouter`):
+  the pipe key is `<window prefix>.<content id>`, so two Macs that use the same content id never
+  share a pipe. The app owns the relay or LAN connection; the child holds no key and no address.
 - **Two paths.** The relay (`URLSessionWebSocketTask`, because it exposes the HTTP status of a
   refused upgrade: 401 / 403) and the LAN shortcut (`NWConnection`, with the certificate pin
   checked in the verify block). The LAN path takes the traffic when it opens and the relay stays
@@ -549,7 +557,7 @@ Each is a small change; keep it on a merge.
 
 | File | Change | Why |
 | --- | --- | --- |
-| `supacode/App/supacodeApp.swift` | The `Window("Remote Mac", id: WindowID.remoteClient)` scene and `RemoteClientCommands()`. The notification tap handler first offers a `remote-client` URL to `RemoteClientNotificationRouter.shared`; every other URL goes on as before. | The window, its menu item, and the tap of an "agent is waiting" notification |
+| `supacode/App/supacodeApp.swift` | The `WindowGroup("Remote Mac", id: WindowID.remoteClient, for: RemoteClientWindowValue.self)` scene and `RemoteClientCommands()`. `RemoteClientWindowOpenerInstaller()` in the main window's `.background`, next to `GlobalHotkeyInstaller`. `applicationWillTerminate` calls `RemoteClientWindowRegistry.shared.closeAll()`. The notification tap handler first offers a `remote-client` URL to `RemoteClientNotificationRouter.shared`; every other URL goes on as before. | The windows (one per Mac), the menu item, opening a window from a notification tap, closing every session on quit, and the tap of an "agent is waiting" notification |
 | `supacode/App/WindowID.swift` | `WindowID.remoteClient`. | The window's id |
 | `supacode-cli/SupacodeCLI.swift` | Registers `RemotePipeCommand`. | The surface's child process |
 | `supacode/Infrastructure/Ghostty/GhosttySurfaceView.swift` | `onPaneGridMeasured` (called after every layout push in a window) and `GridCap.fitting`. | A remote tab asks its host for the grid that fits its pane |

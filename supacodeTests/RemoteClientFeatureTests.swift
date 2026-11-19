@@ -134,12 +134,9 @@ struct RemoteClientFeatureTests {
     #expect(session.closes == 1)
   }
 
-  @Test func theSavedHostIsOpenedOnAppear() async {
-    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
-    $saved.withLock { $0 = "a" }
-    defer { $saved.withLock { $0 = nil } }
+  @Test func theWindowsMacIsOpenedOnAppear() async {
     let session = FakeSession()
-    let store = Self.makeStore(session: session)
+    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: "a"), session: session)
     await store.send(.windowAppeared) {
       $0.ownHostID = "me"
     }
@@ -161,7 +158,8 @@ struct RemoteClientFeatureTests {
     session.yield(.hostsChanged(hosts))
     await store.receive(\.hostsChanged) {
       $0.hosts = hosts
-      $0.$selectedHostID.withLock { $0 = "a" }
+      $0.selectedHostID = "a"
+      $0.$savedHostID.withLock { $0 = "a" }
     }
     #expect(await settle { session.opens.count == 2 })
     session.finishAll()
@@ -192,10 +190,9 @@ struct RemoteClientFeatureTests {
 
   @Test func aSavedHostMissingFromTheListAsksAndKeepsTheSelection() async {
     @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
-    $saved.withLock { $0 = "gone" }
     defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
-    let store = Self.makeStore(session: session)
+    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: "gone"), session: session)
     await store.send(.windowAppeared) {
       $0.ownHostID = "me"
     }
@@ -211,10 +208,9 @@ struct RemoteClientFeatureTests {
 
   @Test func aSavedHostThatIsThisMacAsks() async {
     @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
-    $saved.withLock { $0 = "me" }
     defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
-    let store = Self.makeStore(session: session)
+    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: "me"), session: session)
     await store.send(.windowAppeared) {
       $0.ownHostID = "me"
     }
@@ -240,7 +236,8 @@ struct RemoteClientFeatureTests {
     let hosts = [Self.host("me", online: true), Self.host("a", online: true)]
     await store.send(.hostsChanged(hosts)) {
       $0.hosts = hosts
-      $0.$selectedHostID.withLock { $0 = "a" }
+      $0.selectedHostID = "a"
+      $0.$savedHostID.withLock { $0 = "a" }
       $0.isHostPickerPresented = false
     }
     await store.finish()
@@ -249,16 +246,16 @@ struct RemoteClientFeatureTests {
 
   @Test func pickingAHostClearsTheOldMacsState() async {
     @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
-    $saved.withLock { $0 = "a" }
     defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
-    var state = RemoteClientFeature.State()
+    var state = RemoteClientFeature.State(selectedHostID: "a")
     state.list = Self.list([RemoteClientWorktree(id: "w1", name: "one")])
     state.selectedWorktreeID = "w1"
     state.isHostPickerPresented = true
     let store = Self.makeStore(state, session: session)
     await store.send(.hostPicked("b")) {
-      $0.$selectedHostID.withLock { $0 = "b" }
+      $0.selectedHostID = "b"
+      $0.$savedHostID.withLock { $0 = "b" }
       $0.list = nil
       $0.selectedWorktreeID = nil
       $0.isHostPickerPresented = false
@@ -381,7 +378,8 @@ struct RemoteClientFeatureTests {
       $0.hasBeenOnline = true
     }
     await store.send(.hostPicked("b")) {
-      $0.$selectedHostID.withLock { $0 = "b" }
+      $0.selectedHostID = "b"
+      $0.$savedHostID.withLock { $0 = "b" }
       $0.hasBeenOnline = false
     }
     #expect(await settle { session.opens.count == 2 })
@@ -482,7 +480,8 @@ struct RemoteClientFeatureTests {
     let hosts = [Self.host("me", online: true), Self.host("a", online: true)]
     await store.send(.hostsChanged(hosts)) {
       $0.hosts = hosts
-      $0.$selectedHostID.withLock { $0 = "a" }
+      $0.selectedHostID = "a"
+      $0.$savedHostID.withLock { $0 = "a" }
     }
     await store.send(.windowClosed) {
       $0.hosts = []
@@ -525,9 +524,9 @@ struct RemoteClientFeatureTests {
 
   /// A store showing `list`, non-exhaustive: the tests check the fields they are about.
   private func shownStore(
-    _ list: RemoteClientList = Self.list([Self.twoPane()]), session: FakeSession
+    _ list: RemoteClientList = Self.list([Self.twoPane()]), hostID: String? = nil, session: FakeSession
   ) async -> TestStoreOf<RemoteClientFeature> {
-    let store = Self.makeStore(session: session)
+    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: hostID), session: session)
     store.exhaustivity = .off
     await store.send(.listChanged(list))
     return store
@@ -1135,12 +1134,11 @@ struct RemoteClientFeatureTests {
 
   /// A store on the Mac `a` (named "Office Mac") with system notifications switched on.
   private func notifyingStore(
-    session: FakeSession, notifications: FakeNotifications, enabled: Bool = true
+    session: FakeSession, notifications: FakeNotifications, enabled: Bool = true, hostID: String? = "a"
   ) -> TestStoreOf<RemoteClientFeature> {
     @Shared(.settingsFile) var settingsFile
     $settingsFile.withLock { $0.global.systemNotificationsEnabled = enabled }
-    var state = RemoteClientFeature.State()
-    state.$selectedHostID.withLock { $0 = "a" }
+    var state = RemoteClientFeature.State(selectedHostID: hostID)
     state.hostName = "Office Mac"
     let store = Self.makeStore(state, session: session)
     store.exhaustivity = .off
@@ -1264,11 +1262,8 @@ struct RemoteClientFeatureTests {
   }
 
   @Test func openingANotificationSelectsItsWorktreeAndTab() async {
-    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
-    $saved.withLock { $0 = "a" }
-    defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
-    let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), session: session)
+    let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), hostID: "a", session: session)
     #expect(store.state.selectedWorktreeID == "w1")
     // t1 sits in P1 of w2, behind t2, and P2 is focused.
     await store.send(.notificationOpened(hostID: "a", worktreeID: "w2", contentID: "c-t1")) {
@@ -1282,11 +1277,8 @@ struct RemoteClientFeatureTests {
   }
 
   @Test func openingANotificationOfAGoneWorktreeChangesNothing() async {
-    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
-    $saved.withLock { $0 = "a" }
-    defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
-    let store = await shownStore(session: session)
+    let store = await shownStore(hostID: "a", session: session)
     let before = store.state
     await store.send(.notificationOpened(hostID: "a", worktreeID: "gone", contentID: "c-t1"))
     #expect(store.state == before)
@@ -1294,12 +1286,9 @@ struct RemoteClientFeatureTests {
   }
 
   @Test func aNotificationOfAnotherMacIsDropped() async {
-    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
-    $saved.withLock { $0 = "b" }
-    defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
     // The same worktree and tab ids exist on the Mac shown now, `b`.
-    let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), session: session)
+    let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), hostID: "b", session: session)
     let before = store.state
     await store.send(.notificationOpened(hostID: "a", worktreeID: "w2", contentID: "c-t1"))
     #expect(store.state == before)
@@ -1334,11 +1323,17 @@ struct RemoteClientFeatureTests {
   }
 
   @Test func theRouterClaimsRemoteURLsEvenWithoutAWindow() throws {
-    let router = RemoteClientNotificationRouter()
+    let windows = RemoteClientWindowRegistry()
+    var opened: [RemoteClientWindowValue] = []
+    windows.openWindow = { opened.append($0) }
+    let router = RemoteClientNotificationRouter(windows: windows)
     let url = try #require(RemoteClientNotifier.url(hostID: "a", worktreeID: "w1", contentID: "t1"))
-    // A stale notification after a relaunch: dropped, never handed to the app's deeplinks.
+    // A stale notification after a relaunch: a window opens for its Mac, and the URL never
+    // reaches the app's deeplinks.
     #expect(router.open(url))
+    #expect(opened == [RemoteClientWindowValue(hostID: "a")])
     #expect(!router.open(URL(string: "supacode://worktree/abc")!))
+    #expect(opened.count == 1)
   }
 
   // MARK: - Task 14 review minors
@@ -1400,9 +1395,8 @@ struct RemoteClientFeatureTests {
     @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
     defer { $saved.withLock { $0 = nil } }
     let notifications = FakeNotifications()
-    let store = notifyingStore(session: FakeSession(), notifications: notifications)
-    // Nothing saved: an unbound connection to an old relay's single Mac.
-    store.state.$selectedHostID.withLock { $0 = nil }
+    // A new window: an unbound connection to an old relay's single Mac.
+    let store = notifyingStore(session: FakeSession(), notifications: notifications, hostID: nil)
     await store.send(.windowAppeared)
     await store.send(.listChanged(Self.waitingList("idle")))
     await store.send(.listChanged(Self.waitingList("awaitingInput")))
@@ -1432,5 +1426,124 @@ struct RemoteClientFeatureTests {
     await store.send(.listChanged(shown("awaitingInput")))
     await store.finish()
     #expect(notifications.posted.value.map(\.identifier) == ["remote:a:t1"])
+  }
+
+  // MARK: - One window per Mac (Task 16)
+
+  /// Stands in for the other remote windows: `shown` are the Macs they show.
+  final class FakeWindows: Sendable {
+    let shown: Set<String>
+    let claims = LockIsolated<[String]>([])
+    let focused = LockIsolated<[String]>([])
+
+    init(shown: Set<String>) {
+      self.shown = shown
+    }
+
+    nonisolated deinit {}
+
+    var client: RemoteClientWindowsClient {
+      RemoteClientWindowsClient(
+        claim: { [shown, claims] hostID in
+          claims.withValue { $0.append(hostID) }
+          return !shown.contains(hostID)
+        },
+        focus: { [focused] hostID in focused.withValue { $0.append(hostID) } }
+      )
+    }
+  }
+
+  @Test func thePickerLeavesOutMacsShownInOtherWindows() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession()
+    var state = RemoteClientFeature.State()
+    state.ownHostID = "me"
+    let store = Self.makeStore(state, session: session)
+    await store.send(.otherWindowsChanged(["a"])) {
+      $0.otherWindowHostIDs = ["a"]
+    }
+    let hosts = [
+      Self.host("me", online: true), Self.host("a", online: true), Self.host("b", online: true),
+      Self.host("c", online: true),
+    ]
+    await store.send(.hostsChanged(hosts)) {
+      $0.hosts = hosts
+      $0.isHostPickerPresented = true
+    }
+    #expect(store.state.pickableHosts.map(\.id) == ["b", "c"])
+    await store.finish()
+  }
+
+  /// A new window, nothing online but the Mac another window shows and one more: the one left is
+  /// chosen alone, never the one shown elsewhere.
+  @Test func aMacChosenAloneIsNeverOneShownElsewhere() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession()
+    var state = RemoteClientFeature.State()
+    state.ownHostID = "me"
+    state.otherWindowHostIDs = ["a"]
+    let store = Self.makeStore(state, session: session)
+    let windows = FakeWindows(shown: ["a"])
+    store.dependencies.remoteClientWindows = windows.client
+    let hosts = [Self.host("me", online: true), Self.host("a", online: true), Self.host("b", online: true)]
+    await store.send(.hostsChanged(hosts)) {
+      $0.hosts = hosts
+      $0.selectedHostID = "b"
+      $0.$savedHostID.withLock { $0 = "b" }
+    }
+    await store.finish()
+    #expect(session.opens == ["b"])
+    #expect(windows.claims.value == ["b"])
+  }
+
+  @Test func pickingAMacAnotherWindowShowsFocusesThatWindow() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession()
+    var state = RemoteClientFeature.State(selectedHostID: "b")
+    state.isHostPickerPresented = true
+    let store = Self.makeStore(state, session: session)
+    let windows = FakeWindows(shown: ["a"])
+    store.dependencies.remoteClientWindows = windows.client
+    // The picker was open before the other window took `a`.
+    await store.send(.hostPicked("a")) {
+      $0.isHostPickerPresented = false
+    }
+    await store.finish()
+    #expect(windows.focused.value == ["a"])
+    // This window keeps its Mac: nothing reconnects.
+    #expect(session.opens.isEmpty)
+    #expect(store.state.selectedHostID == "b")
+  }
+
+  /// A window opened for a Mac another window took meanwhile: that window comes forward and this
+  /// one shows the picker.
+  @Test func aWindowOpenedForAMacShownElsewhereShowsThePicker() async {
+    let session = FakeSession()
+    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: "a"), session: session)
+    let windows = FakeWindows(shown: ["a"])
+    store.dependencies.remoteClientWindows = windows.client
+    await store.send(.windowAppeared) {
+      $0.ownHostID = "me"
+      $0.selectedHostID = nil
+    }
+    await store.finish()
+    #expect(windows.focused.value == ["a"])
+    #expect(session.opens == [nil])
+  }
+
+  @Test func aWindowClaimsItsMacWhenItAppears() async {
+    let session = FakeSession()
+    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: "a"), session: session)
+    let windows = FakeWindows(shown: [])
+    store.dependencies.remoteClientWindows = windows.client
+    await store.send(.windowAppeared) {
+      $0.ownHostID = "me"
+    }
+    await store.finish()
+    #expect(windows.claims.value == ["a"])
+    #expect(session.opens == ["a"])
   }
 }

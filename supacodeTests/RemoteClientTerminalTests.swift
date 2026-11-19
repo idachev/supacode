@@ -183,7 +183,7 @@ struct RemoteClientTerminalTests {
 
   @Test func thePipeCommandQuotesTheCLIAndTheID() {
     let command = RemoteTerminalContent.pipeCommand(
-      remoteContentID: "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+      pipeKey: "6F9619FF-8B86-D011-B42D-00C04FC964FF",
       resourceURL: URL(filePath: "/Apps/My Supacode.app/Contents/Resources", directoryHint: .isDirectory)
     )
     #expect(
@@ -194,9 +194,9 @@ struct RemoteClientTerminalTests {
   @Test func anIDThatIsNotAPlainWordGetsNoCommand() {
     let resources = URL(filePath: "/Apps/Supacode.app/Contents/Resources", directoryHint: .isDirectory)
     for id in ["", "-h", "--help", "a b", "a;rm", "$(x)", "a'b", "é"] {
-      #expect(RemoteTerminalContent.pipeCommand(remoteContentID: id, resourceURL: resources) == nil)
+      #expect(RemoteTerminalContent.pipeCommand(pipeKey: id, resourceURL: resources) == nil)
     }
-    #expect(RemoteTerminalContent.pipeCommand(remoteContentID: "abc", resourceURL: nil) == nil)
+    #expect(RemoteTerminalContent.pipeCommand(pipeKey: "abc", resourceURL: nil) == nil)
   }
 
   @Test func theSnapshotIsNeverPersisted() {

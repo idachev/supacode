@@ -1,5 +1,3 @@
-import AppKit
-import ComposableArchitecture
 import Foundation
 import SupacodeSettingsShared
 
@@ -79,38 +77,30 @@ nonisolated enum RemoteClientNotifier {
   }
 }
 
-/// Routes taps on remote notifications to the remote window, so they never reach `AppFeature`'s
-/// deeplinks. The window root registers its store while the window is open and its `NSWindow`
-/// (both weak); a tap brings that window forward, then selects the tab.
+/// Routes taps on remote notifications to the remote windows, so they never reach `AppFeature`'s
+/// deeplinks: the window of the tap's Mac comes forward and selects the tab, or one opens for that
+/// Mac (`RemoteClientWindowRegistry`).
 @MainActor
 final class RemoteClientNotificationRouter {
   static let shared = RemoteClientNotificationRouter()
 
-  /// Set while the remote window is open.
-  weak var store: StoreOf<RemoteClientFeature>?
-  weak var window: NSWindow?
+  private let windows: RemoteClientWindowRegistry
+
+  init(windows: RemoteClientWindowRegistry = .shared) {
+    self.windows = windows
+  }
 
   nonisolated deinit {}
 
-  /// True when the URL is a remote-client one: handled, or dropped when the window is closed or the
-  /// URL is malformed. False: not ours, the caller routes it as before.
+  /// True when the URL is a remote-client one: handled, or dropped when it is malformed. False: not
+  /// ours, the caller routes it as before.
   func open(_ url: URL) -> Bool {
     guard RemoteClientNotifier.isRemoteClientURL(url) else { return false }
     guard let target = RemoteClientNotifier.target(of: url) else {
       remoteNotifierLogger.warning("Dropped a remote notification tap: no target")
       return true
     }
-    guard let store else {
-      remoteNotifierLogger.info("Dropped a remote notification tap: the remote window is closed")
-      return true
-    }
-    if let window {
-      if window.isMiniaturized { window.deminiaturize(nil) }
-      window.makeKeyAndOrderFront(nil)
-    }
-    NSApplication.shared.activate()
-    store.send(
-      .notificationOpened(hostID: target.hostID, worktreeID: target.worktreeID, contentID: target.contentID))
+    windows.notificationOpened(target)
     return true
   }
 }

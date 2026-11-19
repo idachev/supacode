@@ -138,7 +138,7 @@ nonisolated struct RemoteTerminalDriver: Sendable {
 
 /// A tab whose terminal lives on another Mac (ТР1).
 ///
-/// The tab is a normal Ghostty surface whose child is the bundled CLI's `supacode remote-pipe <id>`;
+/// The tab is a normal Ghostty surface whose child is the bundled CLI's `supacode remote-pipe <key>`;
 /// that process copies the surface's bytes to and from `RemotePipeServer`. The owner of the shared
 /// pipe server routes its callbacks by content id to `pipeOpened()`, `pipeInput(_:)` and
 /// `pipeClosed()` (the server has one callback of each kind for every content). Once the pipe opens
@@ -162,6 +162,10 @@ final class RemoteTerminalContent: TabContent {
     var expectPipe: @MainActor (_ contentID: String) -> String
     var forgetPipe: @MainActor (_ contentID: String) -> Void
     var writePipe: @MainActor (_ contentID: String, _ bytes: [UInt8]) -> Void
+    /// The word the surface's `remote-pipe` names and its header carries: the content id under the
+    /// session's prefix on the shared pipe server (`RemotePipeRouter`); the content id itself on a
+    /// server of its own.
+    var pipeKey: @MainActor (_ contentID: String) -> String = { $0 }
 
     static func live(connection: RemoteClientConnection, pipes: RemotePipeServer) -> Ports {
       Ports(
@@ -248,11 +252,11 @@ final class RemoteTerminalContent: TabContent {
   /// toolbar, so what it shows reads the observed link state, and nothing is reserved when nil.
   var toolbar: (any TabContentToolbar)? { self }
 
-  /// Starts the surface whose child is `supacode remote-pipe <id>`, with no zmx, no command
+  /// Starts the surface whose child is `supacode remote-pipe <key>`, with no zmx, no command
   /// wrapper and no shell integration. A second call while the surface lives does nothing.
   func startSession(at geometry: ContentGeometry) {
     guard surfaceView == nil, !isTornDown else { return }
-    guard let command = Self.pipeCommand(remoteContentID: remoteContentID) else {
+    guard let command = Self.pipeCommand(pipeKey: ports.pipeKey(remoteContentID)) else {
       remoteTerminalLogger.warning("Remote tab not started: no pipe command")
       sessionFailedToStart = true
       return
@@ -426,13 +430,13 @@ final class RemoteTerminalContent: TabContent {
     }
   }
 
-  /// `'<app>/Contents/Resources/bin/supacode' remote-pipe '<id>'`, the CLI the app puts on `PATH`
-  /// for its terminals. Nil without a resource directory, or for an id that is not one plain word
-  /// (the id comes from the other Mac and lands in a shell command line).
-  nonisolated static func pipeCommand(remoteContentID: String, resourceURL: URL? = Bundle.main.resourceURL) -> String? {
-    guard isPlainWord(remoteContentID), let resourceURL else { return nil }
+  /// `'<app>/Contents/Resources/bin/supacode' remote-pipe '<pipe key>'`, the CLI the app puts on
+  /// `PATH` for its terminals. Nil without a resource directory, or for a key that is not one plain
+  /// word (its content id comes from the other Mac and lands in a shell command line).
+  nonisolated static func pipeCommand(pipeKey: String, resourceURL: URL? = Bundle.main.resourceURL) -> String? {
+    guard isPlainWord(pipeKey), let resourceURL else { return nil }
     let cli = resourceURL.appending(path: "bin/supacode", directoryHint: .notDirectory).path(percentEncoded: false)
-    return "\(SSHCommand.loginShellQuote(cli)) remote-pipe \(SSHCommand.loginShellQuote(remoteContentID))"
+    return "\(SSHCommand.loginShellQuote(cli)) remote-pipe \(SSHCommand.loginShellQuote(pipeKey))"
   }
 
   /// Letters, digits, `-`, `_` and `.`, not starting with `-` (an option to the CLI's parser).

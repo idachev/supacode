@@ -220,7 +220,7 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
 ## Use another Mac from Supacode
 
 Besides the phone, Supacode itself can show another Mac's Supacode in a window: its sidebar, tabs and
-splits, each pane a real terminal. Design: `docs/plans/2026-11-17-remote-client-design.md`; the code
+splits, each pane a real terminal. Each Mac gets its own window, so several Macs can be open at once. Design: `docs/plans/2026-11-17-remote-client-design.md`; the code
 is described in `docs/fork.md` → "Remote Client Window".
 
 Both Macs need the same relay and key pair, as for the phone. The Mac you open (the "host") must
@@ -238,23 +238,31 @@ key file; it need not host anything.
    The file is one line, `<relay host>/<client key>` (`relay.example.com/abcde-fghij-…`). Without
    it the window shows "No connection key", the path to put the file at, and **Check Again**.
 
-2. File ▸ **Open Remote Mac…** (⌃⌘O). The window is called "Remote Mac".
+2. File ▸ **Open Remote Mac…** (⌃⌘O). The window is called "Remote Mac". With no Remote Mac window
+   open it opens the Mac you picked last; with one open, it opens a new window for another Mac.
 3. Pick the Mac. The window lists the Macs that are on the relay, by name ("Office Mac", "Home
-   Mac"; see "Name this Mac"), never the Mac you are on. With nothing saved and exactly one other
-   Mac online, it picks that one. Otherwise it shows "Choose a Mac". Later, click the title (the
-   Mac's name) to choose another one. The choice is saved and used the next time. The window never
-   switches Mac on its own: when the saved Mac is no longer in the relay's list, it opens the
-   picker, and a saved Mac that is listed but not online shows "<Mac> is offline".
+   Mac"; see "Name this Mac"), never the Mac you are on and never a Mac another window already
+   shows. With nothing picked yet and exactly one such Mac online, it picks that one. Otherwise it
+   shows "Choose a Mac". Later, click the title (the Mac's name) to show another Mac in this window.
+   The last pick is saved for the next "Open Remote Mac…" with no window open. A window never
+   switches Mac on its own: when its Mac is no longer in the relay's list, it opens the picker, and
+   a Mac that is listed but not online shows "<Mac> is offline".
+
+   A Mac is never open in two windows: opening it again (from the menu, the picker or a
+   notification) brings its window forward. Each window has its own connection, so four windows
+   are four connections to the relay; closing a window disconnects only its Mac, and quitting
+   Supacode disconnects them all.
 4. Work as on the Mac itself: the sidebar, tabs and splits are the host's, and what you do in the
    window (a new tab, a split, a close, a new worktree) is done on the host, without a confirmation
    there. Each terminal is the host's real terminal, sized to its pane here.
 
-The line under the Mac's name in the title is the path in use: **LAN** when both Macs are on the
-same network (see "LAN shortcut": the relay tells the host, the host offers its address and the
-window pins the certificate), otherwise **Relay**. When the direct path fails, the window uses the
+Next to the Mac's name in the title is the path in use ("Office Mac · LAN"): **LAN** when both Macs
+are on the same network (see "LAN shortcut": the relay tells the host, the host offers its address
+and the window pins the certificate), otherwise **Relay**. While there is no live link, the line
+under the name is the banner's notice instead (see "What the banner means"). When the direct path fails, the window uses the
 relay again and goes back to LAN when it can.
 
-While the Remote Mac window is key, the menus act on the remote Mac: New Terminal (⌘T), Close (⌘W),
+While a Remote Mac window is key, the menus act on the Mac it shows: New Terminal (⌘T), Close (⌘W),
 the splits and zoom, Select Tab (⌘1 to ⌘9, previous, next), and the Worktrees menu (new, refresh,
 next and previous worktree, select by slot). Items that have no meaning there are disabled, for
 example Add Repository and Clone, Archived Worktrees, Recent Terminals, Jump to Latest Unread and
@@ -284,8 +292,10 @@ status and **Try Again**, and that status is the only sign of it.
 When an agent in a tab of the remote Mac starts waiting for input, this Mac posts one system
 notification, "<Mac> — agent is waiting", with the worktree and tab title. It is posted only when
 system notifications are on in Supacode's settings and the tab is not visible in the key Remote Mac
-window; a tab that stays waiting gives no second one. Clicking it brings the window forward and
-opens that tab; with the window closed, the click does nothing. The notification goes away when the tab stops waiting.
+window; a tab that stays waiting gives no second one. Clicking it brings the window of that Mac
+forward and opens that tab; when no window shows that Mac (a notification left from before a
+relaunch), a window opens for it, without selecting the tab. The notification goes away when the
+tab stops waiting, and when the window of its Mac closes or switches to another Mac.
 
 ## Troubleshooting
 
