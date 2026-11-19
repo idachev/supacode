@@ -1400,6 +1400,61 @@ settings say (the surface does that by itself); OSC 9 / 777 from the remote prog
   revalidate each against the source, fix the confirmed ones, report all.
 - [ ] **Step 6: Commit** (`docs(remote-client): fork notes and how to use another Mac`).
 
+## Stage ЕТ6 — several remote Macs at once (ПС8)
+
+Added by the owner on 2026-11-19, after ЕТ5. Only the first half of ПС8: one window per Mac.
+Notifications while no remote window is open stay out (КЛ6 holds per window).
+
+### Task 16: One Remote Mac window per Mac
+
+**Files:**
+- Modify: `supacode/App/supacodeApp.swift` (the `Window` scene becomes a `WindowGroup` keyed by the
+  Mac)
+- Modify: `supacode/Features/RemoteClient/RemoteClientCommands.swift`,
+  `RemoteClientFeature.swift`, `RemoteClientSession.swift`, `Views/RemoteClientWindowView.swift`
+- Modify: `supacode/Features/RemoteClient/RemoteClientNotifier.swift` (the window that a
+  notification opens)
+- Test: `supacodeTests/RemoteClientFeatureTests.swift`, `supacodeTests/RemoteClientSessionTests.swift`
+
+**Interfaces:**
+- Produces:
+
+```swift
+/// The value a remote window is opened for. `nil` hostID: a new window that shows the picker.
+nonisolated struct RemoteClientWindowValue: Codable, Hashable, Sendable { var hostID: String? }
+```
+
+Rules:
+- `WindowGroup("Remote Mac", for: RemoteClientWindowValue.self)`. "Open Remote Mac…" (⌃⌘O) opens a
+  new window with `hostID: nil`; its picker lists the Macs that no other remote window shows, and
+  a Mac that is already open is brought forward instead of opened twice.
+- Each window owns its own `RemoteClientSession` (connection, contents, `ContentRuntime`). The pipe
+  server is shared by every window of the app and routes by content id; content ids are keyed by
+  host id too, so two Macs with the same content id never collide.
+- The selected Mac belongs to the window (the window's value), not to one `@Shared` value. The
+  last selection is still remembered for the next "Open Remote Mac…" when only one window is open,
+  so the one-Mac flow does not change.
+- Switching the Mac inside a window (МХ3) changes that window's value; a Mac already open in another
+  window is not offered.
+- Every window has its own awaiting tracker (ИВ1–ИВ3); a notification's identifier keeps the host
+  id (`remote:<hostId>:<contentId>`), and clicking it brings forward the window of that Mac, or
+  opens one.
+- Closing a window disconnects only that Mac (КЛ6). Quitting the app closes every session.
+- Relay limits: one client connection per window. Four windows are four connections; the relay's 20
+  connects per IP per minute and the reconnect backoff (Task 6) keep within it.
+
+- [ ] **Step 1: Write the failing tests:** two sessions for two hosts get separate connections and
+  separate lists; a content id that both Macs use maps to two contents; opening a Mac that a window
+  already shows focuses that window; the picker leaves out Macs shown in other windows; closing one
+  window stops only its session; a notification for host B brings B's window forward.
+- [ ] **Step 2: Run the suites; expect failures.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run every `RemoteClient*Tests`; expect PASS. Build** (`make build-app`, logged).
+- [ ] **Step 5: Live check:** with the mock host (it serves Office Mac and Home Mac), open both Macs
+  in two windows, type in both, resize both, close one: the other keeps working; the mock host log
+  shows two client connections and one closing.
+- [ ] **Step 6: Commit** (`feat(remote-client): one Remote Mac window per Mac`).
+
 ## After this plan
 
 Tell the owner what `supacode-remote` can pick up now: `tools/mock-host.mjs` with the new

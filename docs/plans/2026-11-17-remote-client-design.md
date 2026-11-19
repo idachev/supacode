@@ -61,7 +61,8 @@ the other Supacode, not that Mac's repositories mixed into the local ones.
 - **ПС6.** Layout edits beyond ОБ3: moving a tab between panes, dragging a split divider, renaming
   a tab, reordering tabs, pane windows.
 - **ПС7.** Dropped: АВ1 makes font scaling unnecessary.
-- **ПС8.** Several remote windows at once (one per Mac), and notifications while the remote window
+- **ПС8.** Several remote windows at once (one per Mac; the owner moved this part into the plan as
+  stage ЕТ6, Task 16, on 2026-11-19), and notifications while the remote window
   is closed.
 - A host older than this design (see ПТ0). Both Macs run the owner's fork.
 - Any change to the relay Worker. Every new message is a client ⇄ host application message, which
