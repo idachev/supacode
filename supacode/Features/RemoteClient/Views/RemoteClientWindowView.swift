@@ -221,6 +221,8 @@ private struct RemoteClientSplitView: View {
         RemoteTabDetailView(session: session, tab: tab, macName: store.macName)
       } else {
         ContentUnavailableView("No terminal", systemImage: "terminal")
+          // No tab shown: nothing stays attached.
+          .task(id: session.epoch) { session.releaseAll(except: nil) }
       }
     }
   }
@@ -258,14 +260,13 @@ private struct RemoteTabDetailView: View {
     // Made outside the body: making a content starts its surface. A new epoch (another Mac, a
     // reconnect from the window) tore the old content down.
     .task(id: Key(contentID: tab.contentId, epoch: session.epoch)) {
-      guard !tab.contentId.isEmpty else { return }
-      let previous = content
-      let next = session.content(for: tab.contentId, title: tab.title)
-      content = next
-      // One tab shown at a time in this window: the one shown before lets go of the Mac.
-      if let previous, previous !== next, previous.remoteContentID != next.remoteContentID {
-        session.release(previous.remoteContentID)
+      // One tab shown at a time in this window: every other one lets go of the Mac.
+      guard !tab.contentId.isEmpty else {
+        session.releaseAll(except: nil)
+        return
       }
+      content = session.content(for: tab.contentId, title: tab.title)
+      session.releaseAll(except: tab.contentId)
     }
   }
 }

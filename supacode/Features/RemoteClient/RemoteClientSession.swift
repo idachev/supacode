@@ -160,6 +160,14 @@ final class RemoteClientSession {
     content.tearDown()
   }
 
+  /// Tears down every content but `remoteContentID` (nil: all of them), so a terminal the window no
+  /// longer shows lets go of the Mac and its held size (ТР8б).
+  func releaseAll(except remoteContentID: String?) {
+    for id in Array(contents.keys) where id != remoteContentID {
+      release(id)
+    }
+  }
+
   private func tearDownContents() {
     // Emptied first: `tearDown` forgets the pipe, whose `onClosed` comes back at once.
     let all = contents.values

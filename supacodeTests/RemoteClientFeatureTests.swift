@@ -53,6 +53,8 @@ struct RemoteClientFeatureTests {
     }
     await store.finish()
     #expect(calls.opens.value.isEmpty)
+    // A connection left from an earlier opening (the key was removed since) is closed.
+    #expect(calls.closes.value == 1)
   }
 
   @Test func theSavedHostIsOpenedOnAppear() async {
