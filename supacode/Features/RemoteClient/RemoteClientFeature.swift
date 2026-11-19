@@ -41,6 +41,9 @@ struct RemoteClientFeature {
     var pendingTabs: [String: String] = [:]
     /// A worktree `worktree.new` created: selected once a `list` holds it.
     var pendingWorktreeID: String?
+    /// Request key of each `worktree.new` in flight → the worktree selected when it was confirmed
+    /// (nil: none). Its reply selects the new worktree only if that is still the selection.
+    var newWorktreeOrigins: [String: String?] = [:]
     @Presents var alert: AlertState<Action.Alert>?
 
     /// The picker's rows: every Mac the relay lists except this one.
@@ -210,6 +213,7 @@ struct RemoteClientFeature {
     state.busyRequests = []
     state.pendingTabs = [:]
     state.pendingWorktreeID = nil
+    state.newWorktreeOrigins = [:]
     state.alert = nil
   }
 

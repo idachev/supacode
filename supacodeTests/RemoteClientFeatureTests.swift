@@ -84,7 +84,9 @@ struct RemoteClientFeatureTests {
   static func host(_ id: String, online: Bool) -> RemoteClientHostInfo { .init(id: id, name: id, online: online) }
 
   static func list(_ worktrees: [RemoteClientWorktree]) -> RemoteClientList {
-    RemoteClientList(repos: [RemoteClientRepository(id: "r", name: "repo", worktrees: worktrees)])
+    RemoteClientList(
+      repos: [RemoteClientRepository(id: "r", name: "repo", canCreateWorktree: true, worktrees: worktrees)],
+      canRefreshWorktrees: true)
   }
 
   static func makeStore(
@@ -438,7 +440,7 @@ struct RemoteClientFeatureTests {
     tree: RemoteClientLayoutNode? = nil
   ) -> RemoteClientWorktree {
     RemoteClientWorktree(
-      id: id, name: id, branch: id,
+      id: id, name: id, branch: id, canDeleteWorktree: true,
       tabs: tabs ?? [tab("t1"), tab("t2"), tab("t3")],
       layout: RemoteClientLayout(
         mode: "tabsPerSplit", activeGroupId: "main",
@@ -487,10 +489,14 @@ struct RemoteClientFeatureTests {
     let store = await shownStore(session: session)
     await store.send(.tabSelected(paneID: "P1", tabID: "t1"))
     // The Mac adds a tab and still has t2 selected in P1.
+    // P3 sits in the group's tree: the host never sends a pane outside it.
     let pushed = Self.list([
       Self.twoPane(
         tabs: [Self.tab("t1"), Self.tab("t2"), Self.tab("t3"), Self.tab("t4")],
-        extraPanes: [RemoteClientLayoutPane(id: "P3", tabIds: ["t4"], selectedTabId: "t4")])
+        extraPanes: [RemoteClientLayoutPane(id: "P3", tabIds: ["t4"], selectedTabId: "t4")],
+        tree: .split(
+          direction: "horizontal", ratio: 0.5, left: .pane("P1"),
+          right: .split(direction: "vertical", ratio: 0.5, left: .pane("P2"), right: .pane("P3"))))
     ])
     await store.send(.listChanged(pushed))
     #expect(store.state.projection?.panes["P1"]?.selectedTabID == "t1")
@@ -790,5 +796,140 @@ struct RemoteClientFeatureTests {
     #expect(store.state.sidebarSections.flatMap(\.rows).map(\.id) == ["beta"])
     #expect(store.state.selectedWorktreeID == "alpha")
     await store.finish()
+  }
+
+  // MARK: - Review minors (task 11 fix round)
+
+  typealias Outcome = Result<[String: String], RemoteClientRequestError>
+
+  /// A reply the test releases by hand: the request waits on the returned stream.
+  private func gated(_ session: FakeSession) -> AsyncStream<Outcome>.Continuation {
+    let (gate, release) = AsyncStream.makeStream(of: Outcome.self)
+    session.reply.setValue({ _ in
+      for await result in gate { return try result.get() }
+      throw CancellationError()
+    })
+    return release
+  }
+
+  @Test func aNewWorktreeDoesNotStealASelectionMadeWhileItRan() async {
+    let session = FakeSession()
+    let release = gated(session)
+    let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), session: session)
+    await store.send(.newWorktreeTapped(repositoryID: "r"))
+    await store.send(.newWorktreeNameChanged("feature-x"))
+    await store.send(.newWorktreeConfirmed)
+    #expect(await settle { session.sent.value.count == 1 })
+    // Picked while the request ran (up to 320 s).
+    await store.send(.worktreeSelected("w2"))
+    release.yield(.success(["worktreeId": "w9", "tabId": "t9"]))
+    await store.receive(\.requestFinished)
+    #expect(store.state.pendingWorktreeID == nil)
+    #expect(store.state.newWorktreeOrigins.isEmpty)
+    let created = RemoteClientWorktree(id: "w9", name: "feature-x", tabs: [Self.tab("t9")])
+    await store.send(.listChanged(Self.list([Self.twoPane("w1"), Self.twoPane("w2"), created])))
+    #expect(store.state.selectedWorktreeID == "w2")
+    await store.finish()
+  }
+
+  @Test func aNewWorktreeFailureForgetsWhereItWasAsked() async {
+    let session = FakeSession()
+    session.reply.setValue({ _ in throw Self.hostError("no", code: nil) })
+    let store = await shownStore(session: session)
+    await store.send(.newWorktreeTapped(repositoryID: "r"))
+    await store.send(.newWorktreeNameChanged("feature-x"))
+    await store.send(.newWorktreeConfirmed)
+    #expect(store.state.newWorktreeOrigins == ["worktree.new:r": "w1"])
+    await store.receive(\.requestFinished)
+    #expect(store.state.newWorktreeOrigins.isEmpty)
+    await store.finish()
+  }
+
+  @Test func actionsTheMacDoesNotOfferDoNothing() async {
+    let session = FakeSession()
+    // A list that allows nothing: no create, no delete, no refresh.
+    let list = RemoteClientList(
+      repos: [RemoteClientRepository(id: "r", name: "repo", worktrees: [RemoteClientWorktree(id: "w1", name: "one")])])
+    let store = await shownStore(list, session: session)
+    await store.send(.newWorktreeTapped(repositoryID: "r"))
+    #expect(store.state.newWorktree == nil)
+    await store.send(.deleteWorktreeTapped(worktreeID: "w1"))
+    #expect(store.state.alert == nil)
+    await store.send(.refreshTapped)
+    #expect(store.state.busyRequests.isEmpty)
+    await store.finish()
+    #expect(session.sent.value.isEmpty)
+  }
+
+  @Test func aNewTabInASecondPaneIsNotDroppedWhileTheFirstRuns() async {
+    let session = FakeSession()
+    // One gate per pane: a stream has one reader.
+    let (gate1, release1) = AsyncStream.makeStream(of: Bool.self)
+    let (gate2, release2) = AsyncStream.makeStream(of: Bool.self)
+    session.reply.setValue({ sent in
+      for await _ in sent.fields["paneId"] == "P1" ? gate1 : gate2 { return [:] }
+      throw CancellationError()
+    })
+    let store = await shownStore(session: session)
+    await store.send(.newTabTapped(paneID: "P1"))
+    await store.send(.newTabTapped(paneID: "P2"))
+    #expect(store.state.busyRequests == ["tab.new:w1|P1", "tab.new:w1|P2"])
+    // The same pane again while its request runs: dropped.
+    await store.send(.newTabTapped(paneID: "P1"))
+    #expect(await settle { session.sent.value.count == 2 })
+    release1.yield(true)
+    release2.yield(true)
+    await store.receive(\.requestFinished)
+    await store.receive(\.requestFinished)
+    #expect(store.state.busyRequests.isEmpty)
+    #expect(Set(session.sent.value.map { $0.fields["paneId"] }) == ["P1", "P2"])
+    #expect(session.sent.value.count == 2)
+    await store.finish()
+  }
+
+  @Test func aRequestInFlightAcrossAMacSwitchChangesNothing() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession()
+    let release = gated(session)
+    let store = await shownStore(session: session)
+    await store.send(.newTabTapped(paneID: "P1"))
+    #expect(await settle { session.sent.value.count == 1 })
+    await store.send(.hostPicked("b"))
+    // The old Mac's reply, from the cancelled wait or late: nothing happens.
+    release.yield(.failure(Self.hostError("no such pane", code: "pane_invalid")))
+    await store.send(.requestFinished(key: "tab.new:w1|P1", .failure(Self.hostError("no", code: nil))))
+    await store.send(.requestFinished(key: "tab.new:w1|P1", .success(["worktreeId": "w1", "tabId": "t9"])))
+    await store.finish()
+    #expect(store.state.alert == nil)
+    #expect(store.state.busyRequests.isEmpty)
+    #expect(store.state.pendingTabs.isEmpty)
+    #expect(store.state.pendingWorktreeID == nil)
+  }
+
+  @Test func aNewTabInAWorktreeWithoutLayoutSendsNoPaneId() async {
+    let session = FakeSession()
+    let plain = RemoteClientWorktree(id: "w1", name: "one", tabs: [Self.tab("t1")])
+    let store = await shownStore(Self.list([plain]), session: session)
+    // The synthetic `main` pane of a layout-less worktree is no real pane id.
+    await store.send(.newTabTapped(paneID: "main"))
+    await store.receive(\.requestFinished)
+    await store.finish()
+    #expect(
+      session.sent.value == [Sent(type: "tab.new", fields: ["worktreeId": "w1"], ints: [:], timeout: .seconds(15))])
+  }
+
+  @Test func cancellingTheWorkingTabConfirmationSendsNothing() async {
+    let session = FakeSession()
+    let busy = Self.tab("t2", working: true)
+    let store = await shownStore(
+      Self.list([Self.twoPane(tabs: [Self.tab("t1"), busy, Self.tab("t3")])]), session: session)
+    await store.send(.closeTabTapped(tabID: "t2"))
+    #expect(store.state.alert != nil)
+    await store.send(.alert(.dismiss))
+    #expect(store.state.alert == nil)
+    await store.finish()
+    #expect(session.sent.value.isEmpty)
+    #expect(store.state.busyRequests.isEmpty)
   }
 }

@@ -49,13 +49,14 @@ struct RemoteClientSidebarTests {
   @Test func sectionsFollowTheHostsOrder() {
     let sections = Model.sections(Self.fullList, filter: "")
     #expect(Self.ids(sections) == ["highlight:active", "highlight:pinned", "group:Work|A,B", "repository:C"])
-    guard case .group(let title, let collapsed, let repositories) = sections[2] else {
+    guard case .group(let title, let collapsed, let repositories, let memberIDs) = sections[2] else {
       Issue.record("expected the group third")
       return
     }
     #expect(title == "Work")
     #expect(collapsed)
     #expect(repositories.map(\.id) == ["A", "B"])
+    #expect(memberIDs == ["A", "B"])
     #expect(sections[0] == .highlight(kind: "active", title: "Active", rows: sections[0].rows))
   }
 
@@ -128,5 +129,28 @@ struct RemoteClientSidebarTests {
   @Test func aListWithoutSectionsShowsEveryRepository() {
     let list = RemoteClientList(repos: [Self.repo("A", worktrees: [Self.worktree("a1")], rowIds: [])])
     #expect(Self.rowIDs(Model.sections(list, filter: "")) == [["a1"]])
+  }
+
+  @Test func aGroupKeepsItsIdWhileTheFilterDropsMembers() {
+    let unfiltered = Model.sections(Self.fullList, filter: "")
+    // `a1` is only in repository A: B drops out of the group, the group stays.
+    let filtered = Model.sections(Self.fullList, filter: "a1")
+    guard case .group(_, _, let repositories, _) = filtered.first(where: { $0.id.hasPrefix("group:") }) else {
+      Issue.record("expected the group to stay")
+      return
+    }
+    #expect(repositories.map(\.id) == ["A"])
+    #expect(filtered.first { $0.id.hasPrefix("group:") }?.id == unfiltered.first { $0.id.hasPrefix("group:") }?.id)
+  }
+
+  @Test func twoGroupsWithOneTitleHaveDifferentIds() {
+    var list = Self.fullList
+    list.sections = [
+      RemoteClientSection(kind: "group", title: "Work", repositoryIds: ["A"]),
+      RemoteClientSection(kind: "group", title: "Work", repositoryIds: ["B"]),
+    ]
+    #expect(Self.ids(Model.sections(list, filter: "")) == ["group:Work|A", "group:Work|B"])
+    // The filter drops A's rows: the second keeps its own id, the first is gone.
+    #expect(Self.ids(Model.sections(list, filter: "b1")) == ["group:Work|B"])
   }
 }

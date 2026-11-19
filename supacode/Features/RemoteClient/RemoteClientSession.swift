@@ -174,7 +174,8 @@ final class RemoteClientSession {
     for worktree in worktrees {
       guard let pane = worktree.layout?.panes.first(where: { $0.id == paneID }) else { continue }
       let contentIDs = worktree.tabs.filter { pane.tabIds.contains($0.id) }.map(\.contentId)
-      guard let shown = contentIDs.first(where: visible.contains) else { return nil }
+      // Another worktree may hold the pane id too: keep looking.
+      guard let shown = contentIDs.first(where: visible.contains) else { continue }
       return contents[shown]?.measuredGrid
     }
     return nil

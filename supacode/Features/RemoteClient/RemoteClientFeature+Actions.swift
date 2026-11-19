@@ -40,6 +40,10 @@ extension RemoteClientFeature {
   func reduceSelection(_ state: inout State, _ action: Action) -> Effect<Action> {
     switch action {
     case .newWorktreeTapped(let repositoryID):
+      // The Mac offers it per repository (`canCreateWorktree`); otherwise nothing happens.
+      guard state.list?.repos.first(where: { $0.id == repositoryID })?.canCreateWorktree == true else {
+        return .none
+      }
       state.newWorktree = NewWorktreePrompt(repositoryID: repositoryID)
       return .none
 
@@ -115,7 +119,10 @@ extension RemoteClientFeature {
       state.pendingWorktreeID = nil
     }
     if state.selectedWorktree == nil {
-      let firstRow = RemoteSidebarModel.sections(list, filter: "").lazy.flatMap(\.rows).first?.id
+      // The unfiltered sidebar: the one already built unless a filter narrows it.
+      let isFiltering = !state.filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      let sidebar = isFiltering ? RemoteSidebarModel.sections(list, filter: "") : state.sidebarSections
+      let firstRow = sidebar.lazy.flatMap(\.rows).first?.id
       state.selectedWorktreeID = worktrees.first(where: \.focused)?.id ?? firstRow ?? worktrees.first?.id
     }
     state.selections = state.selections.filter { ids.contains($0.key) }
@@ -194,11 +201,14 @@ extension RemoteClientFeature {
       return newWorktree(state: &state)
 
     case .deleteWorktreeTapped(let worktreeID):
-      guard let worktree = state.worktrees.first(where: { $0.id == worktreeID }) else { return .none }
+      guard let worktree = state.worktrees.first(where: { $0.id == worktreeID }), worktree.canDeleteWorktree else {
+        return .none
+      }
       state.alert = Self.confirmDeleteWorktreeAlert(worktree)
       return .none
 
     case .refreshTapped:
+      guard state.list?.canRefreshWorktrees == true else { return .none }
       return request("worktrees.refresh", subject: nil, [:], timeout: Timeout.worktreesRefresh, state: &state)
 
     case .requestFinished(let key, let result):
@@ -217,13 +227,15 @@ extension RemoteClientFeature {
   private func newTab(paneID: String?, state: inout State) -> Effect<Action> {
     guard let worktree = state.selectedWorktree else { return .none }
     var fields = ["worktreeId": worktree.id]
-    if let paneID, worktree.layout != nil { fields["paneId"] = paneID }
+    let sentPane = worktree.layout != nil ? paneID : nil
+    if let sentPane { fields["paneId"] = sentPane }
     var ints: [String: Int] = [:]
     if let gridPane = paneID ?? state.projection?.focusedPaneID, let grid = session.fittingGrid(gridPane) {
       ints = ["cols": grid.columns, "rows": grid.rows]
     }
-    return request(
-      "tab.new", subject: worktree.id, fields, ints: ints, timeout: Timeout.newTerminal, state: &state)
+    // Keyed by worktree and pane: a second pane's New Tab is not held back by the first's.
+    let subject = "\(worktree.id)|\(sentPane ?? "")"
+    return request("tab.new", subject: subject, fields, ints: ints, timeout: Timeout.newTerminal, state: &state)
   }
 
   private func closeTab(_ tabID: String, state: inout State) -> Effect<Action> {
@@ -237,6 +249,7 @@ extension RemoteClientFeature {
     let key = RequestKey.make("worktree.new", prompt.repositoryID)
     guard !name.isEmpty, !state.busyRequests.contains(key) else { return .none }
     state.newWorktree = nil
+    state.newWorktreeOrigins.updateValue(state.selectedWorktreeID, forKey: key)
     return request(
       "worktree.new", subject: prompt.repositoryID, ["repositoryId": prompt.repositoryID, "name": name],
       timeout: Timeout.worktreeNew, state: &state)
@@ -286,14 +299,18 @@ extension RemoteClientFeature {
     key: String, _ result: Result<[String: String], RemoteClientRequestError>, state: inout State
   ) -> Effect<Action> {
     guard state.busyRequests.remove(key) != nil else { return .none }
+    let origin = state.newWorktreeOrigins.removeValue(forKey: key)
     let type = RequestKey.type(of: key)
     switch result {
     case .success(let reply):
       guard ["tab.new", "pane.split", "worktree.new"].contains(type), let worktreeID = reply["worktreeId"] else {
         return .none
       }
-      // A new worktree is selected too, or its selected tab would not show.
-      if type == "worktree.new" { state.pendingWorktreeID = worktreeID }
+      // A new worktree is selected too, or its selected tab would not show; not when the laptop
+      // picked another worktree while the request ran.
+      if type == "worktree.new", let origin, origin == state.selectedWorktreeID {
+        state.pendingWorktreeID = worktreeID
+      }
       if let tabID = reply["tabId"] { state.pendingTabs[worktreeID] = tabID }
       // The list that holds it may have come before the reply.
       guard let list = state.list else { return .none }

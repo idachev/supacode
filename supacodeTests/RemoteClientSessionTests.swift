@@ -278,4 +278,27 @@ struct RemoteClientSessionTests {
     rig.session.setVisible(["c1"])
     #expect(rig.session.attachedContent("c1") == nil)
   }
+
+  /// Two worktrees hold a pane with this id: the one whose tab is shown answers, not the first one.
+  @Test func theFittingGridSkipsAWorktreeWhosePaneIsNotShown() async throws {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    rig.session.open(hostID: "h1")
+    await online(rig)
+    func worktree(_ id: String, tab: String) -> String {
+      """
+      {"id":"\(id)","tabs":[{"id":"\(tab)","contentId":"c-\(tab)","title":"zsh"}],\
+      "layout":{"mode":"tabsPerSplit","activeGroupId":"main","groups":[],\
+      "panes":[{"id":"P1","tabIds":["\(tab)"],"selectedTabId":"\(tab)"}]}}
+      """
+    }
+    rig.sockets.relays[0].receive(
+      #"{"t":"list","repos":[{"id":"r","name":"r","worktrees":["#
+        + worktree("w1", tab: "t1") + "," + worktree("w2", tab: "t2") + "]}]}")
+    #expect(await settle { rig.session.connection?.list?.repos.first?.worktrees.count == 2 })
+    rig.session.setVisible(["c-t2"])
+    let content = try #require(rig.session.attachedContent("c-t2"))
+    content.paneMeasured(RemoteAutoResize.Grid(columns: 100, rows: 30))
+    #expect(rig.session.fittingGrid("P1") == RemoteAutoResize.Grid(columns: 100, rows: 30))
+  }
 }

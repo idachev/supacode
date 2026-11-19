@@ -24,7 +24,9 @@ nonisolated enum RemoteSidebarModel {
     /// `active` or `pinned`: rows of any repository.
     case highlight(kind: String, title: String, rows: [Row])
     /// A repository group header and its repositories; `collapsed` is the Mac's state, a hint.
-    case group(title: String, collapsed: Bool, repositories: [Repository])
+    /// `memberIDs` are the repository ids as the host sent them, before the filter: the section's
+    /// identity does not change while the filter drops members.
+    case group(title: String, collapsed: Bool, repositories: [Repository], memberIDs: [String])
     case repository(Repository)
     /// A repository the Mac could not read (`loadFailures`).
     case loadFailure(repositoryID: String, message: String)
@@ -33,7 +35,7 @@ nonisolated enum RemoteSidebarModel {
       switch self {
       case .highlight(let kind, _, _): "highlight:\(kind)"
       // Two groups may share a title; a repository is in one group only.
-      case .group(let title, _, let repositories): "group:\(title)|\(repositories.map(\.id).joined(separator: ","))"
+      case .group(let title, _, _, let memberIDs): "group:\(title)|\(memberIDs.joined(separator: ","))"
       case .repository(let repository): "repository:\(repository.id)"
       case .loadFailure(let repositoryID, _): "loadFailure:\(repositoryID)"
       }
@@ -43,7 +45,7 @@ nonisolated enum RemoteSidebarModel {
     var rows: [Row] {
       switch self {
       case .highlight(_, _, let rows): rows
-      case .group(_, _, let repositories): repositories.flatMap(\.rows)
+      case .group(_, _, let repositories, _): repositories.flatMap(\.rows)
       case .repository(let repository): repository.rows
       case .loadFailure: []
       }
@@ -82,10 +84,13 @@ nonisolated enum RemoteSidebarModel {
         guard !index.isFiltering || !rows.isEmpty else { continue }
         append(.highlight(kind: section.kind, title: section.title ?? section.kind, rows: rows))
       case "group":
-        let repositories = (section.repositoryIds ?? []).compactMap { index.repository($0) }
+        let memberIDs = section.repositoryIds ?? []
+        let repositories = memberIDs.compactMap { index.repository($0) }
         guard !index.isFiltering || !repositories.isEmpty else { continue }
         append(
-          .group(title: section.title ?? "", collapsed: section.collapsed ?? false, repositories: repositories))
+          .group(
+            title: section.title ?? "", collapsed: section.collapsed ?? false, repositories: repositories,
+            memberIDs: memberIDs))
       case "repository":
         append(section.repositoryId.flatMap { index.repository($0) }.map(Section.repository))
       default:
