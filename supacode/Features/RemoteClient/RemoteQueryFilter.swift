@@ -35,6 +35,7 @@ nonisolated struct RemoteQueryFilter: Sendable {
     Array("4".utf8), Array("10".utf8), Array("11".utf8), Array("12".utf8),
   ]
   private static let presenceOscNumber = Array("3008".utf8)
+  private static let clipboardOscNumber = Array("52".utf8)
 
   private var state = State.ground
   /// The bytes of the current sequence, from its ESC on.
@@ -92,11 +93,18 @@ nonisolated struct RemoteQueryFilter: Sendable {
   }
 
   private mutating func afterEsc(_ byte: UInt8, into out: inout [UInt8]) {
+    // A second ESC starts the sequence again in the terminal, so the first one does nothing: it is
+    // left out and the new one is read as usual (`ESC ESC [ c` is DA1).
+    if byte == Self.esc {
+      begin(byte)
+      return
+    }
     pending.append(byte)
     switch byte {
     case UInt8(ascii: "["): state = .csi
     case UInt8(ascii: "]"): state = .osc
     case UInt8(ascii: "P"): state = .dcs
+    case UInt8(ascii: "Z"): finish(into: &out, drop: true)  // DECID: asks for the terminal's id
     default: flush(into: &out)  // ESC 7, ESC ( B and the like are not queries
     }
   }
@@ -170,13 +178,19 @@ nonisolated struct RemoteQueryFilter: Sendable {
   }
 
   /// OSC 4/10/11/12 with a `?` after the first `;` ask for a colour; with a value they set it and
-  /// pass. OSC 3008 is Supacode's own presence signal and is always dropped.
+  /// pass. OSC 52 whose data (after its second `;`) is `?` reads the clipboard; with base64 data it
+  /// sets it and passes. OSC 3008 is Supacode's own presence signal and is always dropped.
   private static func isDroppedOsc(_ body: ArraySlice<UInt8>) -> Bool {
     guard let semicolonIndex = body.firstIndex(of: semicolon) else {
       return Array(body) == presenceOscNumber
     }
     let number = Array(body[body.startIndex..<semicolonIndex])
     if number == presenceOscNumber { return true }
+    if number == clipboardOscNumber {
+      let rest = body[body.index(after: semicolonIndex)...]
+      guard let dataSemicolon = rest.firstIndex(of: semicolon) else { return false }
+      return Array(rest[rest.index(after: dataSemicolon)...]) == [questionMark]
+    }
     return semicolonIndex > body.startIndex
       && oscQueryNumbers.contains(number)
       && body[semicolonIndex...].contains(questionMark)

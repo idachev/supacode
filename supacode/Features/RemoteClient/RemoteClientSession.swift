@@ -146,6 +146,8 @@ final class RemoteClientSession {
     // The reducer resets its copy when the window closes; the next connection reports afresh.
     published = Published()
     hasBeenOnline = false
+    // The window's view sets it again when its split view next appears.
+    onSurfaceFocused = nil
     sessionLogger.info("Remote client closed")
   }
 

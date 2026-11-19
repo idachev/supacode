@@ -154,6 +154,16 @@ struct RemoteClientSessionTests {
     #expect(FileManager.default.fileExists(atPath: rig.session.pipes.socketPath))
   }
 
+  /// M-a: the window's focus handler goes with the close, so nothing the view set keeps the
+  /// window's store (and through it this session) alive after the window closed.
+  @Test func closingDropsTheSurfaceFocusHandler() {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    rig.session.onSurfaceFocused = { _ in }
+    rig.session.close()
+    #expect(rig.session.onSurfaceFocused == nil)
+  }
+
   @Test func aPipeServerThatCannotListenFailsTheWindowWithoutConnecting() async throws {
     // A regular file where the pipe directory should be: the directory cannot be made.
     let blocker = URL(filePath: "/tmp/sc-test-\(UUID().uuidString.prefix(8))")

@@ -142,6 +142,41 @@ struct RemoteClientQueryFilterTests {
     #expect(filter.push(text) == text)
   }
 
+  // M-c: the clipboard read (OSC 52 with `?` as its data), DECID (`ESC Z`) and a query behind a
+  // doubled ESC are queries too.
+  @Test func anOsc52ClipboardReadIsDroppedInBothEndings() {
+    #expect(run("a\u{1b}]52;c;?\u{07}b\u{1b}]52;;?\u{1b}\\c") == bytes("abc"))
+  }
+
+  @Test func anOsc52ClipboardReadSplitAcrossTwoPushesIsDropped() {
+    #expect(run("a\u{1b}]52;c", ";?\u{07}b") == bytes("ab"))
+  }
+
+  @Test func anOsc52ClipboardWritePasses() {
+    let write = "\u{1b}]52;c;aGVsbG8=\u{07}\u{1b}]52;c;!\u{1b}\\"
+    #expect(run(write) == bytes(write))
+  }
+
+  @Test func decidIsDroppedWholeOrSplit() {
+    #expect(run("a\u{1b}Zb") == bytes("ab"))
+    #expect(run("a\u{1b}", "Zb") == bytes("ab"))
+  }
+
+  @Test func backTabAndOtherEscFinalsPass() {
+    #expect(run("\u{1b}[Z\u{1b}c\u{1b}=") == bytes("\u{1b}[Z\u{1b}c\u{1b}="))
+  }
+
+  /// In a terminal the second ESC starts the sequence again, so `ESC ESC [ c` asks for DA1.
+  @Test func aQueryBehindADoubledEscIsDropped() {
+    #expect(run("a\u{1b}\u{1b}[cb") == bytes("ab"))
+    #expect(run("a\u{1b}", "\u{1b}[", "cb") == bytes("ab"))
+    #expect(run("a\u{1b}\u{1b}\u{1b}Zb") == bytes("ab"))
+  }
+
+  @Test func aSequenceBehindADoubledEscStillPasses() {
+    #expect(run("\u{1b}\u{1b}[31mx") == bytes("\u{1b}[31mx"))
+  }
+
   @Test func otherOscNumbersThatStartLike3008Pass() {
     let text = Array("\u{1b}]30080;x\u{07}\u{1b}]300;x\u{07}".utf8)
     var filter = RemoteQueryFilter()

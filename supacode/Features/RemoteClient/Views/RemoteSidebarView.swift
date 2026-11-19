@@ -20,6 +20,8 @@ struct RemoteSidebarView: View {
   var body: some View {
     let sections = store.sidebarSections
     let busy = store.busyRequests
+    // Repository id → the name of the worktree `worktree.new` is creating there.
+    let creating = store.creatingWorktrees.mapValues(\.name)
     let selectedID = store.selectedWorktreeID
     let selection = Binding<String?>(
       get: { selectedID },
@@ -31,7 +33,8 @@ struct RemoteSidebarView: View {
     List(selection: selection) {
       ForEach(sections) { section in
         RemoteSidebarSectionView(
-          section: section, busyRequests: busy, hideSubtitleOnMatch: hideSubtitleOnMatch, store: store)
+          section: section, busyRequests: busy, creatingWorktrees: creating, hideSubtitleOnMatch: hideSubtitleOnMatch,
+          store: store)
       }
     }
     .listStyle(.sidebar)
@@ -76,6 +79,8 @@ private struct RemoteSidebarSectionView: View {
 
   let section: RemoteSidebarModel.Section
   let busyRequests: Set<String>
+  /// Repository id → the name of the worktree being created there.
+  let creatingWorktrees: [String: String]
   let hideSubtitleOnMatch: Bool
   let store: StoreOf<RemoteClientFeature>
 
@@ -125,6 +130,11 @@ private struct RemoteSidebarSectionView: View {
     return Section {
       ForEach(repository.rows) { row in
         rowView(row, isHighlighted: false)
+          .padding(.leading, indent)
+      }
+      // Until the list holds the new worktree: the Mac may take a while to create it.
+      if let name = creatingWorktrees[repository.id] {
+        RemoteCreatingWorktreeRow(name: name)
           .padding(.leading, indent)
       }
     } header: {
@@ -292,6 +302,27 @@ private struct RemoteNewWorktreeButton: View {
       isBusy ? "Creating a worktree in \(repositoryName) on the Mac…" : "New Worktree in \(repositoryName) on the Mac"
     )
     .padding(.trailing, 4)
+  }
+}
+
+/// The row of a worktree `worktree.new` is creating, drawn from its name only.
+private struct RemoteCreatingWorktreeRow: View {
+  let name: String
+
+  var body: some View {
+    Label {
+      Text("Creating \(name)…")
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .foregroundStyle(.secondary)
+    } icon: {
+      ProgressView()
+        .controlSize(.small)
+    }
+    .appFont(.body)
+    .help("The Mac is creating the worktree \(name)")
+    .accessibilityElement(children: .combine)
+    .selectionDisabled()
   }
 }
 

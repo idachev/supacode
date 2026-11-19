@@ -99,21 +99,26 @@ struct RemoteClientFeatureTests {
     TestStore(initialState: state) {
       RemoteClientFeature()
     } withDependencies: {
-      $0.remoteClientSession = RemoteClientSessionClient(
-        hasKeyFile: { hasKeyFile },
-        open: { hostID in session.log.withValue { $0.append("open \(hostID ?? "nil")") } },
-        close: { session.log.withValue { $0.append("close") } },
-        events: { session.events() },
-        ownHostID: { "me" },
-        request: { type, fields, ints, timeout in
-          let sent = Sent(type: type, fields: fields, ints: ints, timeout: timeout)
-          session.sent.withValue { $0.append(sent) }
-          return try await session.reply.value(sent)
-        },
-        setVisible: { ids in session.visible.withValue { $0.append(ids) } },
-        fittingGrid: { session.grids.value[$0] }
-      )
+      $0.remoteClientSession = Self.client(session, hasKeyFile: hasKeyFile)
     }
+  }
+
+  /// The session client over the fake: records every call, hands out its streams.
+  static func client(_ session: FakeSession, hasKeyFile: Bool = true) -> RemoteClientSessionClient {
+    RemoteClientSessionClient(
+      hasKeyFile: { hasKeyFile },
+      open: { hostID in session.log.withValue { $0.append("open \(hostID ?? "nil")") } },
+      close: { session.log.withValue { $0.append("close") } },
+      events: { session.events() },
+      ownHostID: { "me" },
+      request: { type, fields, ints, timeout in
+        let sent = Sent(type: type, fields: fields, ints: ints, timeout: timeout)
+        session.sent.withValue { $0.append(sent) }
+        return try await session.reply.value(sent)
+      },
+      setVisible: { ids in session.visible.withValue { $0.append(ids) } },
+      fittingGrid: { session.grids.value[$0] }
+    )
   }
 
   /// The effect subscribes and opens off the test's own task: wait for it.
@@ -899,6 +904,88 @@ struct RemoteClientFeatureTests {
     await store.finish()
   }
 
+  // MARK: - A worktree being created (M-g)
+
+  /// Sends `worktree.new` for "feature-x" in the repository `r`.
+  private func createFeatureX(_ store: TestStoreOf<RemoteClientFeature>) async {
+    await store.send(.newWorktreeTapped(repositoryID: "r"))
+    await store.send(.newWorktreeNameChanged(" feature-x "))
+    await store.send(.newWorktreeConfirmed)
+  }
+
+  @Test func aWorktreeBeingCreatedShowsUntilTheListHoldsIt() async {
+    let session = FakeSession()
+    let release = gated(session)
+    let store = await shownStore(session: session)
+    await createFeatureX(store)
+    #expect(store.state.creatingWorktrees == ["r": .init(name: "feature-x")])
+    #expect(await settle { session.sent.value.count == 1 })
+    release.yield(.success(["worktreeId": "w9", "name": "feature-x"]))
+    await store.receive(\.requestFinished)
+    // Replied, but not in the list yet: the row stays.
+    #expect(store.state.creatingWorktrees == ["r": .init(name: "feature-x", worktreeID: "w9")])
+    await store.send(.listChanged(Self.list([Self.twoPane()])))
+    #expect(store.state.creatingWorktrees == ["r": .init(name: "feature-x", worktreeID: "w9")])
+    let created = RemoteClientWorktree(id: "w9", name: "feature-x", tabs: [Self.tab("t9")])
+    await store.send(.listChanged(Self.list([Self.twoPane(), created])))
+    #expect(store.state.creatingWorktrees.isEmpty)
+    await store.finish()
+  }
+
+  @Test func aWorktreeTheListHeldBeforeTheReplyShowsNoRowAfterIt() async {
+    let session = FakeSession()
+    let release = gated(session)
+    let store = await shownStore(session: session)
+    await createFeatureX(store)
+    #expect(await settle { session.sent.value.count == 1 })
+    let created = RemoteClientWorktree(id: "w9", name: "feature-x", tabs: [Self.tab("t9")])
+    await store.send(.listChanged(Self.list([Self.twoPane(), created])))
+    // Which row is the new one is known only from the reply.
+    #expect(store.state.creatingWorktrees == ["r": .init(name: "feature-x")])
+    release.yield(.success(["worktreeId": "w9", "name": "feature-x"]))
+    await store.receive(\.requestFinished)
+    #expect(store.state.creatingWorktrees.isEmpty)
+    await store.finish()
+  }
+
+  @Test func aFailedCreationRemovesItsRow() async {
+    let session = FakeSession()
+    session.reply.setValue({ _ in throw Self.hostError("no", code: nil) })
+    let store = await shownStore(session: session)
+    await createFeatureX(store)
+    await store.receive(\.requestFinished)
+    #expect(store.state.creatingWorktrees.isEmpty)
+    #expect(store.state.alert != nil)
+    await store.finish()
+  }
+
+  @Test func aReplyWithoutAWorktreeIdRemovesItsRow() async {
+    let session = FakeSession()
+    let store = await shownStore(session: session)
+    await createFeatureX(store)
+    await store.receive(\.requestFinished)
+    #expect(store.state.creatingWorktrees.isEmpty)
+    await store.finish()
+  }
+
+  @Test func switchingTheMacOrClosingTheWindowRemovesTheRow() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession()
+    _ = gated(session)
+    let store = await shownStore(session: session)
+    await createFeatureX(store)
+    #expect(!store.state.creatingWorktrees.isEmpty)
+    await store.send(.hostPicked("b"))
+    #expect(store.state.creatingWorktrees.isEmpty)
+    await store.send(.listChanged(Self.list([Self.twoPane()])))
+    await createFeatureX(store)
+    #expect(!store.state.creatingWorktrees.isEmpty)
+    await store.send(.windowClosed)
+    #expect(store.state.creatingWorktrees.isEmpty)
+    await store.finish()
+  }
+
   @Test func aNewWorktreeFailureForgetsWhereItWasAsked() async {
     let session = FakeSession()
     session.reply.setValue({ _ in throw Self.hostError("no", code: nil) })
@@ -1563,5 +1650,59 @@ struct RemoteClientFeatureTests {
     await store.finish()
     #expect(windows.claims.value == ["a"])
     #expect(session.opens == ["a"])
+  }
+
+  // MARK: - Two windows (C1)
+
+  /// Each window's root store, built as `RemoteClientWindowModel` builds it (`Store`, not
+  /// `TestStore`). State is read with `withState` (a test-built `Store` traps on observable reads).
+  private static func windowStore(
+    _ state: RemoteClientFeature.State, session: FakeSession
+  ) -> StoreOf<RemoteClientFeature> {
+    Store(initialState: state) {
+      RemoteClientFeature()
+    } withDependencies: {
+      $0.remoteClientSession = Self.client(session)
+      $0.remoteClientWindows = RemoteClientWindowsClient(claim: { _ in true }, focus: { _ in })
+    }
+  }
+
+  /// The cancel ids carry no window, but TCA's `Store` puts a fresh `NavigationID` in each root
+  /// store's path, and a cancel matches on id and path: a second window opening, switching its Mac
+  /// and closing leaves this window's events, its request and its visible set alone.
+  @Test func anotherWindowOpeningSwitchingAndClosingLeavesThisWindowsEffects() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let sessionA = FakeSession(live: true)
+    let releaseA = gated(sessionA)
+    let single = RemoteClientWorktree(id: "w2", name: "two", tabs: [Self.tab("t5")])
+    let storeA = Self.windowStore(RemoteClientFeature.State(selectedHostID: "a"), session: sessionA)
+    storeA.send(.windowAppeared)
+    #expect(await settle { sessionA.opens.count == 1 })
+    storeA.send(.listChanged(Self.list([Self.twoPane(), single])))
+    storeA.send(.newTabTapped(paneID: "P1"))
+    #expect(await settle { sessionA.sent.value.count == 1 })
+
+    let sessionB = FakeSession(live: true)
+    let storeB = Self.windowStore(RemoteClientFeature.State(selectedHostID: "b"), session: sessionB)
+    storeB.send(.windowAppeared)
+    #expect(await settle { sessionB.opens.count == 1 })
+    // A's newest visible set is sent right before B switches its Mac and closes.
+    storeA.send(.worktreeSelected("w2"))
+    storeB.send(.hostPicked("c"))
+    #expect(await settle { sessionB.opens == ["b", "c"] })
+    await storeB.send(.windowClosed).finish()
+    #expect(sessionB.closes == 1)
+
+    // A's subscription still reaches its store.
+    #expect(sessionA.terminations.value[0] == nil)
+    sessionA.yield(.statusChanged(.online(.lan)))
+    #expect(await settle { storeA.withState(\.status) == .online(.lan) })
+    // A's request is still waited for, and its reply frees the button.
+    releaseA.yield(.success(["worktreeId": "w1", "tabId": "t9"]))
+    #expect(await settle { storeA.withState(\.busyRequests).isEmpty })
+    #expect(await settle { sessionA.visible.value.last == ["c-t5"] })
+    sessionA.finishAll()
+    await storeA.send(.windowClosed).finish()
   }
 }

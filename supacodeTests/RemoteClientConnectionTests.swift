@@ -351,6 +351,24 @@ struct RemoteClientConnectionTests {
     #expect(relay.types == ["hello"])
   }
 
+  /// РФ3: only the false → true edge says hello. A `hostOnline: true` repeated once the path is
+  /// online, with a terminal attached, neither says hello again nor re-attaches.
+  @Test func aRepeatedOnlineAfterHelloSendsNothingAgain() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let log = RemoteTerminalEventLog(rig.connection.attach(contentID: "c1", scrollback: 500))
+    relay.receive(Self.attached("c1", id: Self.lastID(relay, "attach")))
+    #expect(await settle { log.events == [.attached(cols: 120, rows: 40)] })
+    let before = relay.types
+    relay.receive(Self.relayFrame(online: true, name: "Renamed"))
+    // The frame was read: the relay's name for the Mac changed.
+    #expect(await settle { rig.connection.hosts?.first?.name == "Renamed" })
+    #expect(relay.types == before)
+    #expect(rig.connection.status == .online(.relay))
+    #expect(log.events == [.attached(cols: 120, rows: 40)])
+    #expect(!log.ended)
+  }
+
   @Test func helloWithEveryCapAsksForListAndWatch() async {
     let rig = rig()
     let relay = await online(rig)

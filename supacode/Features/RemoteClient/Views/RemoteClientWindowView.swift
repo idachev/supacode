@@ -13,10 +13,13 @@ struct RemoteClientWindowView: View {
   let ghostty: GhosttyRuntime
 
   var body: some View {
+    // `FocusedAction` compares only `isEnabled` and `token`: two remote windows would publish equal
+    // values that send to different stores, and the menu would keep the first window's closure.
+    let window = ObjectIdentifier(store)
     content
       // Published whatever the window shows, always enabled: otherwise ⌘1…⌘9 and previous / next
       // would reach the main window's tabs while this window is key.
-      .focusedSceneAction(\.remoteTabSelectionAction, enabled: true) { selection in
+      .focusedSceneAction(\.remoteTabSelectionAction, enabled: true, token: window) { selection in
         switch store.withState(\.projection)?.target(of: selection) {
         case .tab(let paneID, let tabID): store.send(.tabSelected(paneID: paneID, tabID: tabID))
         case .group(let groupID): store.send(.groupSelected(groupID))
@@ -29,7 +32,7 @@ struct RemoteClientWindowView: View {
         RemoteWorktreeMenu(
           canCreateWorktree: store.selectedRepository?.canCreateWorktree == true,
           canRefreshWorktrees: store.list?.canRefreshWorktrees == true,
-          perform: FocusedAction(isEnabled: true) { store.send(.worktreeCommand($0)) }
+          perform: FocusedAction(isEnabled: true, token: window) { store.send(.worktreeCommand($0)) }
         )
       )
       // On the window, not the split view: a request that fails as the connection fails (a refused
@@ -247,9 +250,10 @@ private struct RemoteClientSplitView: View {
     }
     .modifier(RemoteClientMenuActions(store: store, focusFilter: { isFilterFocused = true }))
     .onAppear {
-      // A click into another pane's terminal focuses that pane, as on the Mac.
-      session.onSurfaceFocused = { [store] contentID in
-        guard let projection = store.withState(\.projection),
+      // A click into another pane's terminal focuses that pane, as on the Mac. Weak: the store's
+      // session client holds the session, so a strong store here would keep both alive after close.
+      session.onSurfaceFocused = { [weak store] contentID in
+        guard let store, let projection = store.withState(\.projection),
           let paneID = projection.paneID(showing: contentID),
           paneID != projection.focusedPaneID
         else { return }
@@ -274,7 +278,9 @@ private struct RemoteClientMenuActions: ViewModifier {
   let store: StoreOf<RemoteClientFeature>
   let focusFilter: () -> Void
 
+  /// The window (its store) too: two remote windows may show the same worktree ids.
   private struct Token: Hashable {
+    let window: ObjectIdentifier
     let worktreeID: String?
     let paneID: String?
     let tabID: String?
@@ -287,7 +293,7 @@ private struct RemoteClientMenuActions: ViewModifier {
     let tab = projection?.focusedTab
     let canEditPanes = store.selectedWorktree?.layout != nil
     let isSplit = projection?.isActiveGroupSplit ?? false
-    let token = Token(worktreeID: worktreeID, paneID: paneID, tabID: tab?.id)
+    let token = Token(window: ObjectIdentifier(store), worktreeID: worktreeID, paneID: paneID, tabID: tab?.id)
     content
       .focusedSceneAction(\.newTerminalAction, enabled: worktreeID != nil, token: token) {
         store.send(.newTabTapped(paneID: paneID))
@@ -304,7 +310,7 @@ private struct RemoteClientMenuActions: ViewModifier {
         guard let paneID else { return }
         store.send(.zoomToggled(paneID: paneID))
       }
-      .focusedSceneAction(\.filterSidebarAction, enabled: true, perform: focusFilter)
+      .focusedSceneAction(\.filterSidebarAction, enabled: true, token: ObjectIdentifier(store), perform: focusFilter)
   }
 }
 

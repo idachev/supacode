@@ -510,7 +510,7 @@ extension RemoteClientConnection {
       case .failure(let unreadable):
         // Its type and where decoding stopped only: never the frame's content.
         connectionLogger.warning(
-          "Remote client dropped a \(unreadable.type ?? "untyped") frame it cannot read: \(unreadable.reason)")
+          "Remote client dropped a frame it cannot read (type \(unreadable.type ?? "none")): \(unreadable.reason)")
         return
       }
       guard let path = link.path else { return }

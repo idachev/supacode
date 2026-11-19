@@ -714,20 +714,7 @@ struct SupacodeApp: App {
       }
       WindowCommands()
       RemoteClientCommands()
-      CommandGroup(after: .textEditing) {
-        Button("Go to Worktree") {
-          guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
-          store.send(.commandPalette(.togglePresentInMode(.worktreeSwitcher)))
-        }
-        .appKeyboardShortcut(AppShortcuts.worktreeSwitcher.effective(from: store.settings.shortcutOverrides))
-        .help("Switch between worktrees, sorted by most recently used")
-        Button("Command Palette") {
-          guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
-          store.send(.commandPalette(.togglePresentInMode(.commands)))
-        }
-        .appKeyboardShortcut(AppShortcuts.commandPalette.effective(from: store.settings.shortcutOverrides))
-        .help("Command Palette")
-      }
+      CommandPaletteCommands(store: store)
       CommandGroup(replacing: .appInfo) {
         Button("About Supacode") {
           AppBuildStamp.showAboutPanel()

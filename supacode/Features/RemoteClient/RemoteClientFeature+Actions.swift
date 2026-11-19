@@ -159,6 +159,7 @@ extension RemoteClientFeature {
       state.selectedWorktreeID = worktrees.first(where: \.focused)?.id ?? firstRow ?? worktrees.first?.id
     }
     state.selections = state.selections.filter { ids.contains($0.key) }
+    state.creatingWorktrees = state.creatingWorktrees.filter { $0.value.worktreeID.map(ids.contains) != true }
     applyPendingTabs(&state)
     return reproject(&state)
   }
@@ -309,6 +310,7 @@ extension RemoteClientFeature {
     guard !name.isEmpty, !state.busyRequests.contains(key) else { return .none }
     state.newWorktree = nil
     state.newWorktreeOrigins.updateValue(state.selectedWorktreeID, forKey: key)
+    state.creatingWorktrees[prompt.repositoryID] = CreatingWorktree(name: name)
     return request(
       "worktree.new", subject: prompt.repositoryID, ["repositoryId": prompt.repositoryID, "name": name],
       timeout: Timeout.worktreeNew, state: &state)
@@ -366,6 +368,7 @@ extension RemoteClientFeature {
     guard state.busyRequests.remove(key) != nil else { return .none }
     let origin = state.newWorktreeOrigins.removeValue(forKey: key)
     let type = RequestKey.type(of: key)
+    if type == "worktree.new" { creationFinished(key: key, result, state: &state) }
     switch result {
     case .success(let reply):
       guard ["tab.new", "pane.split", "worktree.new"].contains(type), let worktreeID = reply["worktreeId"] else {
@@ -385,6 +388,20 @@ extension RemoteClientFeature {
       state.alert = Self.failureAlert(title: Self.failureTitle(type), message: Self.failureMessage(type, error))
       return .none
     }
+  }
+
+  /// A `worktree.new` reply: a failure, or a reply without the worktree's id, removes its progress
+  /// row; a success names the worktree the row waits for. `listChanged` removes the row once the
+  /// list holds that worktree; the caller re-runs it for a list that came before the reply.
+  private func creationFinished(
+    key: String, _ result: Result<[String: String], RemoteClientRequestError>, state: inout State
+  ) {
+    let repositoryID = String(key.dropFirst("worktree.new:".count))
+    guard case .success(let reply) = result, let worktreeID = reply["worktreeId"] else {
+      state.creatingWorktrees[repositoryID] = nil
+      return
+    }
+    state.creatingWorktrees[repositoryID]?.worktreeID = worktreeID
   }
 
   // MARK: - Alerts

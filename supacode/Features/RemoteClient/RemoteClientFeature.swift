@@ -55,6 +55,9 @@ struct RemoteClientFeature {
     /// Request key of each `worktree.new` in flight → the worktree selected when it was confirmed
     /// (nil: none). Its reply selects the new worktree only if that is still the selection.
     var newWorktreeOrigins: [String: String?] = [:]
+    /// Repository id → the worktree `worktree.new` is creating there, from the request until the
+    /// list holds it (or the request fails): a progress row in that repository's section.
+    var creatingWorktrees: [String: CreatingWorktree] = [:]
     /// Who waits for input on the Mac, so each wait posts one notification (ИВ1).
     var awaiting = RemoteAwaitingTracker()
     /// The remote window is the key window: a waiting tab it shows posts nothing (ИВ2).
@@ -95,6 +98,12 @@ struct RemoteClientFeature {
   struct NewWorktreePrompt: Equatable, Sendable {
     let repositoryID: String
     var name = ""
+  }
+
+  /// A worktree `worktree.new` is creating: the trimmed name sent, and its id once the reply gave it.
+  struct CreatingWorktree: Equatable, Sendable {
+    let name: String
+    var worktreeID: String?
   }
 
   enum Action {
@@ -378,6 +387,7 @@ struct RemoteClientFeature {
     state.pendingTabs = [:]
     state.pendingWorktreeID = nil
     state.newWorktreeOrigins = [:]
+    state.creatingWorktrees = [:]
     state.alert = nil
   }
 

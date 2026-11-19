@@ -560,7 +560,7 @@ Each is a small change; keep it on a merge.
 
 | File | Change | Why |
 | --- | --- | --- |
-| `supacode/App/supacodeApp.swift` | The `WindowGroup("Remote Mac", id: WindowID.remoteClient, for: RemoteClientWindowValue.self)` scene and `RemoteClientCommands()`. `RemoteClientWindowOpenerInstaller()` in the main window's `.background`, next to `GlobalHotkeyInstaller`. `applicationWillTerminate` calls `RemoteClientWindowRegistry.shared.closeAll()`. The notification tap handler first offers a `remote-client` URL to `RemoteClientNotificationRouter.shared`; every other URL goes on as before. | The windows (one per Mac), the menu item, opening a window from a notification tap, closing every session on quit, and the tap of an "agent is waiting" notification |
+| `supacode/App/supacodeApp.swift` | The `WindowGroup("Remote Mac", id: WindowID.remoteClient, for: RemoteClientWindowValue.self)` scene and `RemoteClientCommands()`. `RemoteClientWindowOpenerInstaller()` in the main window's `.background`, next to `GlobalHotkeyInstaller`. `applicationWillTerminate` calls `RemoteClientWindowRegistry.shared.closeAll()`. The notification tap handler first offers a `remote-client` URL to `RemoteClientNotificationRouter.shared`; every other URL goes on as before. Edit ▸ Go to Worktree and Command Palette moved, unchanged, into `CommandPaletteCommands` (`supacode/Commands/CommandPaletteCommands.swift`, a fork-only file), which disables both while the `remoteWorktreeMenu` focused value is present; with no remote window key they work as before. | The windows (one per Mac), the menu item, opening a window from a notification tap, closing every session on quit, the tap of an "agent is waiting" notification, and the main window's palette never opening from a key remote window |
 | `supacode/App/WindowID.swift` | `WindowID.remoteClient`. | The window's id |
 | `supacode-cli/SupacodeCLI.swift` | Registers `RemotePipeCommand`. | The surface's child process |
 | `supacode/Infrastructure/Ghostty/GhosttySurfaceView.swift` | `onPaneGridMeasured` (called after every layout push in a window) and `GridCap.fitting`. | A remote tab asks its host for the grid that fits its pane |
@@ -577,8 +577,10 @@ actions (`newTerminalAction`, `closeTabAction`, `splitTerminalAction`, `toggleSp
 
 ### Keeping It On Upstream Merges
 
-- The fork-only files are `supacode/Features/RemoteClient/*` and
-  `supacode-cli/Commands/RemotePipeCommand.swift`. The CLI keeps its own copy of the pipe's two
+- The fork-only files are `supacode/Features/RemoteClient/*`,
+  `supacode/Commands/CommandPaletteCommands.swift` and `supacode-cli/Commands/RemotePipeCommand.swift`.
+  If upstream changes Go to Worktree or Command Palette in `supacodeApp.swift`, carry the change
+  into `CommandPaletteCommands`. The CLI keeps its own copy of the pipe's two
   variable names and header (it does not link the app module); `RemoteClientPipeTests` pins both.
 - If upstream changes the focused actions of the terminal or worktree menu, keep the remote
   override: a remote `@FocusedValue` present and enabled wins, otherwise the local code runs as
