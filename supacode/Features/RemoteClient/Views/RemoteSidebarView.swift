@@ -95,6 +95,8 @@ private struct RemoteSidebarSectionView: View {
       }
     case .group(let title, _, let repositories, _):
       RemoteSidebarGroupRow(title: title, count: repositories.count)
+        // Stable, and never a worktree row's id.
+        .id("groupHeader:\(section.id)")
       ForEach(repositories) { repository in
         repositorySection(repository, indent: Self.groupMemberIndent)
       }
@@ -136,6 +138,9 @@ private struct RemoteSidebarSectionView: View {
         }
       }
     }
+    // An explicit identity, so the list's diff keeps the section when a pushed `list` adds a row.
+    // Prefixed: a main worktree's row id is its repository's id.
+    .id("repository:\(repository.id)")
   }
 
   private func rowView(_ row: RemoteSidebarModel.Row, isHighlighted: Bool) -> some View {

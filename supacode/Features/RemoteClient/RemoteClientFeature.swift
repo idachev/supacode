@@ -4,6 +4,8 @@ import Foundation
 import Sharing
 import SupacodeSettingsShared
 
+nonisolated private let remoteFeatureLogger = SupaLogger("RemoteClient")
+
 /// One "Remote Mac" window (ПЗ1): which Mac it shows, the state of the connection to it and the
 /// last `list` it sent. Every remote window has its own store, session and Mac. The live objects
 /// (sockets, pipes, surfaces) stay in `RemoteClientSession`; the reducer reaches them only through
@@ -230,6 +232,10 @@ struct RemoteClientFeature {
 
       case .listChanged(let list):
         let shown = listChanged(list, state: &state)
+        // Counts only: never a name or an id.
+        remoteFeatureLogger.debug(
+          "Remote list arrived (\(state.status.logPath)): \(state.worktrees.count) worktrees, "
+            + "\(state.sidebarRowIDs.count) sidebar rows")
         // After `listChanged`: a tab is visible or not in the projection of this list.
         let changes = state.awaiting.update(list.repos)
         return .merge(shown, awaitingChanged(changes, state: &state))
@@ -394,6 +400,17 @@ struct RemoteClientFeature {
       }
     }
     .cancellable(id: CancelID.events, cancelInFlight: true)
+  }
+}
+
+extension RemoteClientStatus {
+  /// The path a frame came on, for a log line: `lan`, `relay` or `no path`. Never a message.
+  fileprivate var logPath: String {
+    switch self {
+    case .online(.lan): "lan"
+    case .online(.relay): "relay"
+    default: "no path"
+    }
   }
 }
 

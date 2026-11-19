@@ -94,8 +94,76 @@ struct RemoteClientModelsTests {
     #expect(list.repos[0].rowIds.isEmpty)
   }
 
-  @Test func anIdentifiedTypeWithoutAnIDIsNoFrame() {
-    #expect(RemoteClientFrame.decode(#"{"t":"list","repos":[{"name":"no id"}]}"#) == nil)
+  /// R31: an element without its `id` is skipped, not the whole frame (it used to make the frame
+  /// unreadable, so one bad row hid every new worktree).
+  @Test func anIdentifiedElementWithoutAnIDIsSkipped() {
+    guard case .list(let list) = RemoteClientFrame.decode(#"{"t":"list","repos":[{"name":"no id"},{"id":"r"}]}"#)
+    else {
+      Issue.record("not a list")
+      return
+    }
+    #expect(list.repos.map(\.id) == ["r"])
+  }
+
+  @Test func aMalformedElementSkipsOnlyItself() {
+    let text =
+      #"{"t":"list","id":4,"repos":[5,{"id":"r","rowIds":["w1",7,"w2"],"worktrees":["#
+      + #"{"id":"w1","tabs":[{"id":"t1","agents":[{"agent":"claude"},"x",{"agent":"codex"}]},"#
+      + #"{"title":"no id"},null,{"id":"t2"}]},"#
+      + #"{"name":"no id"},{"id":"w2","branch":42},{"id":"w3"}]}],"#
+      + #""sections":[{"kind":"active","worktreeIds":["w1",null,"w3"]},{"kind":5},"oops","#
+      + #"{"kind":"repository","repositoryId":"r"}],"#
+      + #""loadFailures":[{"repositoryId":"/bad","message":"m"},[1]]}"#
+    guard case .list(let list) = RemoteClientFrame.decode(text) else {
+      Issue.record("not a list")
+      return
+    }
+    #expect(list.id == 4)
+    #expect(list.repos.map(\.id) == ["r"])
+    #expect(list.repos[0].rowIds == ["w1", "w2"])
+    // `w2` sends a number for its branch: that worktree goes, its neighbours stay.
+    #expect(list.repos[0].worktrees.map(\.id) == ["w1", "w3"])
+    #expect(list.repos[0].worktrees[0].tabs.map(\.id) == ["t1", "t2"])
+    #expect(list.repos[0].worktrees[0].tabs[0].agents.map(\.agent) == ["claude", "codex"])
+    #expect(list.sections.map(\.kind) == ["active", "repository"])
+    #expect(list.sections[0].worktreeIds == ["w1", "w3"])
+    #expect(list.loadFailures == [RemoteClientLoadFailure(repositoryId: "/bad", message: "m")])
+  }
+
+  @Test func aListFieldThatIsNotAnArrayStillRejectsTheFrame() {
+    for text in [
+      #"{"t":"list","repos":5}"#, #"{"t":"list","repos":{"id":"r"}}"#, #"{"t":"list","sections":"x"}"#,
+      #"{"t":"relay","hosts":"x"}"#, #"{"t":"hello","caps":7}"#,
+    ] {
+      #expect(RemoteClientFrame.decode(text) == nil)
+    }
+    // One level down the same mistake makes that repository the bad element: it alone is skipped.
+    guard case .list(let nested) = RemoteClientFrame.decode(#"{"t":"list","repos":[{"id":"r","worktrees":"w"}]}"#)
+    else {
+      Issue.record("not a list")
+      return
+    }
+    #expect(nested.repos.isEmpty)
+    #expect(
+      RemoteClientFrame.read(#"{"t":"list","repos":5}"#)
+        == .failure(RemoteClientFrame.Unreadable(type: "list", reason: "typeMismatch at repos")))
+  }
+
+  /// The reason names the frame's type and where decoding stopped, never a value of it.
+  @Test func anUnreadableFrameSaysWhyWithoutItsContent() {
+    #expect(
+      RemoteClientFrame.read("not json")
+        == .failure(RemoteClientFrame.Unreadable(type: nil, reason: "not a JSON object")))
+    #expect(
+      RemoteClientFrame.read(#"{"t":5,"secret":"s"}"#)
+        == .failure(RemoteClientFrame.Unreadable(type: nil, reason: "no string t")))
+    #expect(
+      RemoteClientFrame.read(#"{"t":"out","contentId":"secret","b64":"!!!"}"#)
+        == .failure(RemoteClientFrame.Unreadable(type: "out", reason: "b64 is not base64")))
+    #expect(
+      RemoteClientFrame.read(#"{"t":"relay","hosts":"secret"}"#)
+        == .failure(RemoteClientFrame.Unreadable(type: "relay", reason: "typeMismatch at hosts")))
+    #expect(RemoteClientFrame.read(#"{"t":"list"}"#) == .success(.list(RemoteClientList())))
   }
 
   @Test func theLayoutNodeDecodesBothShapes() throws {

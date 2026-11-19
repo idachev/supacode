@@ -160,10 +160,14 @@ private struct RemoteTabButton: View {
         .lineLimit(1)
         .foregroundStyle(TerminalTabBarColors.activeText)
         .shimmer(isActive: isWorking)
+        // Clicks on the label reach the select button behind it, as on a local tab.
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
       Spacer(minLength: 0)
       RemoteAgentBadges(agents: tab?.agents ?? [], size: 14)
         .fixedSize()
+        .allowsHitTesting(false)
+      // The lock ignores clicks itself; the close button above it stays hit-testable.
       ZStack(alignment: .trailing) {
         if tab?.readOnly == true {
           PaneTabLockIndicator(suppress: isHovering)

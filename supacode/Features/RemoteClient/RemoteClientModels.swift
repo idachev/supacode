@@ -1,11 +1,17 @@
 import Foundation
+import SupacodeSettingsShared
 
 // The short names (`v`, `fp`, `t`) are the wire protocol's field names.
 // swiftlint:disable identifier_name
 
 // The client's view of the wire protocol (docs/remote-access-protocol.md). Every model decodes
 // tolerantly: a missing or `null` field takes its default and an unknown string stays a string,
-// so a newer host never breaks an older client. Only a missing `id` on an identified type throws.
+// so a newer host never breaks an older client. A missing `id` on an identified type throws, and
+// an element of a list array that throws is skipped (logged), never the whole frame. A field that
+// is not of its type at all (a list that is not an array) still makes the frame unreadable. A
+// `layout` stays whole or is dropped: half of one would draw panes that do not exist.
+
+nonisolated private let modelsLogger = SupaLogger("RemoteClient")
 
 nonisolated struct RemoteClientHostInfo: Decodable, Equatable, Sendable, Identifiable {
   let id: String
@@ -127,6 +133,38 @@ private nonisolated extension KeyedDecodingContainer {
   func value<T: Decodable>(_ key: Key, or fallback: T) throws -> T {
     try decodeIfPresent(T.self, forKey: key) ?? fallback
   }
+
+  /// The elements of the array at `key` that decode, in order; `[]` when it is missing or `null`.
+  /// A value that is not an array still throws.
+  func elements<T: Decodable>(_ key: Key) throws -> [T] {
+    try elementsIfPresent(key) ?? []
+  }
+
+  /// As `elements`, but nil when the key is missing or `null`.
+  func elementsIfPresent<T: Decodable>(_ key: Key) throws -> [T]? {
+    guard contains(key), try !decodeNil(forKey: key) else { return nil }
+    var items = try nestedUnkeyedContainer(forKey: key)
+    var result: [T] = []
+    while !items.isAtEnd {
+      let index = items.currentIndex
+      do {
+        result.append(try items.decode(T.self))
+      } catch {
+        // Field names and the index only: never a value.
+        let path = RemoteClientFrame.Unreadable.path(items.codingPath)
+        modelsLogger.warning("Remote client skipped a list element it cannot read: \(path)[\(index)]")
+        // A failed decode may leave the element unread; step over it.
+        if items.currentIndex == index { _ = try? items.decode(SkippedElement.self) }
+        guard items.currentIndex > index else { break }
+      }
+    }
+    return result
+  }
+}
+
+/// Decodes any JSON value without reading it: steps over a list element that did not decode.
+private nonisolated struct SkippedElement: Decodable {
+  init(from decoder: Decoder) throws {}
 }
 
 nonisolated extension RemoteClientHostInfo {
@@ -161,7 +199,7 @@ nonisolated extension RemoteClientTab {
     focused = try c.value(.focused, or: false)
     working = try c.value(.working, or: false)
     readOnly = try c.value(.readOnly, or: false)
-    agents = try c.value(.agents, or: [])
+    agents = try c.elements(.agents)
   }
 }
 
@@ -238,7 +276,7 @@ nonisolated extension RemoteClientWorktree {
     title = try c.decodeIfPresent(String.self, forKey: .title)
     working = try c.value(.working, or: false)
     canDeleteWorktree = try c.value(.canDeleteWorktree, or: false)
-    tabs = try c.value(.tabs, or: [])
+    tabs = try c.elements(.tabs)
     // A layout this client cannot read must not hide the worktree and its tabs.
     layout = (try? c.decodeIfPresent(RemoteClientLayout.self, forKey: .layout)) ?? nil
   }
@@ -253,8 +291,8 @@ nonisolated extension RemoteClientRepository {
     name = try c.value(.name, or: "")
     group = try c.decodeIfPresent(String.self, forKey: .group)
     canCreateWorktree = try c.value(.canCreateWorktree, or: false)
-    worktrees = try c.value(.worktrees, or: [])
-    rowIds = try c.value(.rowIds, or: [])
+    worktrees = try c.elements(.worktrees)
+    rowIds = try c.elements(.rowIds)
   }
 }
 
@@ -268,8 +306,8 @@ nonisolated extension RemoteClientSection {
     kind = try c.value(.kind, or: "")
     title = try c.decodeIfPresent(String.self, forKey: .title)
     collapsed = try c.decodeIfPresent(Bool.self, forKey: .collapsed)
-    worktreeIds = try c.decodeIfPresent([String].self, forKey: .worktreeIds)
-    repositoryIds = try c.decodeIfPresent([String].self, forKey: .repositoryIds)
+    worktreeIds = try c.elementsIfPresent(.worktreeIds)
+    repositoryIds = try c.elementsIfPresent(.repositoryIds)
     repositoryId = try c.decodeIfPresent(String.self, forKey: .repositoryId)
   }
 }
@@ -290,10 +328,10 @@ nonisolated extension RemoteClientList {
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     id = try c.decodeIfPresent(Int.self, forKey: .id)
-    repos = try c.value(.repos, or: [])
-    sections = try c.value(.sections, or: [])
+    repos = try c.elements(.repos)
+    sections = try c.elements(.sections)
     canRefreshWorktrees = try c.value(.canRefreshWorktrees, or: false)
-    loadFailures = try c.value(.loadFailures, or: [])
+    loadFailures = try c.elements(.loadFailures)
   }
 }
 
@@ -302,7 +340,7 @@ nonisolated extension RemoteClientLAN {
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
-    addrs = try c.value(.addrs, or: [])
+    addrs = try c.elements(.addrs)
     port = try c.value(.port, or: 0)
     fp = try c.value(.fp, or: "")
     fpMac = try c.value(.fpMac, or: "")
@@ -319,7 +357,7 @@ nonisolated extension RemoteClientHello {
     hostId = try c.decodeIfPresent(String.self, forKey: .hostId)
     lan = try c.decodeIfPresent(RemoteClientLAN.self, forKey: .lan)
     app = try c.decodeIfPresent(String.self, forKey: .app)
-    caps = try c.value(.caps, or: [])
+    caps = try c.elements(.caps)
   }
 }
 
@@ -330,7 +368,7 @@ nonisolated extension RemoteClientRelayStatus {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     hostOnline = try c.value(.hostOnline, or: false)
     host = try c.decodeIfPresent(String.self, forKey: .host)
-    hosts = try c.decodeIfPresent([RemoteClientHostInfo].self, forKey: .hosts)
+    hosts = try c.elementsIfPresent(.hosts)
   }
 }
 
@@ -350,39 +388,92 @@ nonisolated enum RemoteClientFrame: Equatable, Sendable {
   /// integer and boolean fields as text; objects, arrays and `null` are skipped.
   case reply(t: String, id: Int?, fields: [String: String])
 
-  /// nil: not JSON, not an object, no string `t`, or the bare text `pong`.
+  /// nil: whatever `read` refuses (not JSON, not an object, no string `t`, the bare text `pong`,
+  /// a frame of a type this client reads that does not decode).
   static func decode(_ text: String) -> RemoteClientFrame? {
+    try? read(text).get()
+  }
+
+  /// The frame, or why the text is none (`Unreadable`, safe to log).
+  static func read(_ text: String) -> Result<RemoteClientFrame, Unreadable> {
     let data = Data(text.utf8)
     let decoder = JSONDecoder()
-    guard let top = try? decoder.decode([String: Scalar].self, from: data),
-      case .string(let type)? = top["t"]
-    else { return nil }
+    guard let top = try? decoder.decode([String: Scalar].self, from: data) else {
+      return .failure(Unreadable(type: nil, reason: "not a JSON object"))
+    }
+    guard case .string(let type)? = top["t"] else { return .failure(Unreadable(type: nil, reason: "no string t")) }
     switch type {
-    case "relay": return (try? decoder.decode(RemoteClientRelayStatus.self, from: data)).map(Self.relay)
-    case "hello": return (try? decoder.decode(RemoteClientHello.self, from: data)).map(Self.hello)
-    case "list": return (try? decoder.decode(RemoteClientList.self, from: data)).map(Self.list)
+    case "relay": return body(RemoteClientRelayStatus.self, type, data).map(Self.relay)
+    case "hello": return body(RemoteClientHello.self, type, data).map(Self.hello)
+    case "list": return body(RemoteClientList.self, type, data).map(Self.list)
     case "attached":
-      return .attached(
-        id: top["id"]?.int, contentId: top["contentId"]?.string ?? "",
-        cols: top["cols"]?.int ?? 0, rows: top["rows"]?.int ?? 0)
+      return .success(
+        .attached(
+          id: top["id"]?.int, contentId: top["contentId"]?.string ?? "",
+          cols: top["cols"]?.int ?? 0, rows: top["rows"]?.int ?? 0))
     case "out":
-      guard let encoded = top["b64"]?.string, let bytes = Data(base64Encoded: encoded) else { return nil }
-      return .out(contentId: top["contentId"]?.string ?? "", bytes: [UInt8](bytes))
+      guard let encoded = top["b64"]?.string, let bytes = Data(base64Encoded: encoded) else {
+        return .failure(Unreadable(type: type, reason: "b64 is not base64"))
+      }
+      return .success(.out(contentId: top["contentId"]?.string ?? "", bytes: [UInt8](bytes)))
     case "size":
-      return .size(
-        contentId: top["contentId"]?.string ?? "", cols: top["cols"]?.int ?? 0, rows: top["rows"]?.int ?? 0)
+      return .success(
+        .size(contentId: top["contentId"]?.string ?? "", cols: top["cols"]?.int ?? 0, rows: top["rows"]?.int ?? 0))
     case "detached":
-      return .detached(contentId: top["contentId"]?.string ?? "", reason: top["reason"]?.string ?? "")
+      return .success(.detached(contentId: top["contentId"]?.string ?? "", reason: top["reason"]?.string ?? ""))
     case "error":
-      return .error(
-        id: top["id"]?.int, message: top["message"]?.string ?? "", code: top["code"]?.string,
-        contentId: top["contentId"]?.string)
+      return .success(
+        .error(
+          id: top["id"]?.int, message: top["message"]?.string ?? "", code: top["code"]?.string,
+          contentId: top["contentId"]?.string))
     default:
       var fields: [String: String] = [:]
       for (key, value) in top where key != "t" && key != "id" {
         if let text = value.text { fields[key] = text }
       }
-      return .reply(t: type, id: top["id"]?.int, fields: fields)
+      return .success(.reply(t: type, id: top["id"]?.int, fields: fields))
+    }
+  }
+
+  /// Why a text is no frame, for the log. Holds no value of the frame: `type` is set only for the
+  /// frame types this client reads (never a string the host made up), and `reason` names a decoding
+  /// failure by its kind and coding path (field names and array indices).
+  struct Unreadable: Error, Equatable, Sendable {
+    let type: String?
+    let reason: String
+
+    /// `kind at path`, e.g. `typeMismatch at repos[0].worktrees`.
+    static func reason(_ error: any Error) -> String {
+      guard let error = error as? DecodingError else { return "not a decoding error" }
+      switch error {
+      case .typeMismatch(_, let context): return "typeMismatch at \(path(context.codingPath))"
+      case .valueNotFound(_, let context): return "valueNotFound at \(path(context.codingPath))"
+      case .keyNotFound(let key, let context):
+        return "keyNotFound \(key.stringValue) at \(path(context.codingPath))"
+      case .dataCorrupted(let context): return "dataCorrupted at \(path(context.codingPath))"
+      @unknown default: return "unknown decoding error"
+      }
+    }
+
+    /// `repos[0].worktrees`; `top` for the frame itself.
+    static func path(_ codingPath: [any CodingKey]) -> String {
+      var text = ""
+      for key in codingPath {
+        if let index = key.intValue {
+          text += "[\(index)]"
+        } else {
+          text += text.isEmpty ? key.stringValue : ".\(key.stringValue)"
+        }
+      }
+      return text.isEmpty ? "top" : text
+    }
+  }
+
+  private static func body<T: Decodable>(_: T.Type, _ type: String, _ data: Data) -> Result<T, Unreadable> {
+    do {
+      return .success(try JSONDecoder().decode(T.self, from: data))
+    } catch {
+      return .failure(Unreadable(type: type, reason: Unreadable.reason(error)))
     }
   }
 

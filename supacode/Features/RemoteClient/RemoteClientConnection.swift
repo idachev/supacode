@@ -499,8 +499,14 @@ extension RemoteClientConnection {
     case .text(let text):
       link.lastFrame = elapsed()
       guard text != Self.pongText else { return }
-      guard let frame = RemoteClientFrame.decode(text) else {
-        connectionLogger.debug("Remote client dropped a frame it cannot read")
+      let frame: RemoteClientFrame
+      switch RemoteClientFrame.read(text) {
+      case .success(let read):
+        frame = read
+      case .failure(let unreadable):
+        // Its type and where decoding stopped only: never the frame's content.
+        connectionLogger.warning(
+          "Remote client dropped a \(unreadable.type ?? "untyped") frame it cannot read: \(unreadable.reason)")
         return
       }
       guard let path = link.path else { return }

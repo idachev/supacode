@@ -690,6 +690,56 @@ struct RemoteClientConnectionTests {
     #expect(Self.lastText(relay, "attach").contains(#""keep":true"#))
   }
 
+  /// A pushed `list` whose only change is a tab's title (the web client typed into it).
+  static func titledList(_ title: String) -> String {
+    json([
+      "t": "list", "id": NSNull(),
+      "repos": [["id": "r", "worktrees": [["id": "w", "tabs": [["id": "t1", "contentId": "c1", "title": title]]]]]],
+    ])
+  }
+
+  private func tabTitle(_ rig: Rig) -> String? {
+    rig.connection.list?.repos.first?.worktrees.first?.tabs.first?.title
+  }
+
+  /// ЖП13 (L3): lists the host pushes reach `list` on whichever path is up: the LAN once it is
+  /// adopted (it watches there, the relay stops), the relay again after the LAN closed (it watches
+  /// again), and a LAN adopted a second time.
+  @Test func pushedListsArriveOnTheLanTheRelayAndALanAdoptedAgain() async {
+    let rig = rig()
+    let relay = await online(rig)
+    let lan = await lanUp(rig, relay: relay)
+    #expect(Self.lastText(lan, "watch").contains(#""on":true"#))
+    #expect(Self.lastText(relay, "watch").contains(#""on":false"#))
+    var revision = rig.connection.listRevision
+    lan.receive(Self.titledList("vim"))
+    #expect(await settle { tabTitle(rig) == "vim" })
+    #expect(rig.connection.listRevision == revision + 1)
+    lan.receive(Self.titledList("htop"))
+    #expect(await settle { tabTitle(rig) == "htop" })
+
+    // The LAN closes: the relay watches again and its pushes arrive.
+    let mark = relay.types.count
+    lan.drop(reason: "connection lost")
+    #expect(await settle { rig.connection.status == .online(.relay) })
+    #expect(Array(relay.types.dropFirst(mark)) == ["list", "watch"])
+    #expect(Self.lastText(relay, "watch").contains(#""on":true"#))
+    revision = rig.connection.listRevision
+    relay.receive(Self.titledList("zsh"))
+    #expect(await settle { tabTitle(rig) == "zsh" })
+    #expect(rig.connection.listRevision == revision + 1)
+
+    // The LAN retry asks for `hello`; its offer brings a second LAN, which watches in turn.
+    #expect(await stepUntil(rig, { relay.types.last == "hello" }, within: .seconds(11)))
+    let second = await lanUp(rig, relay: relay)
+    #expect(second !== lan)
+    #expect(second.types == ["hello", "list", "watch"])
+    #expect(Self.lastText(second, "watch").contains(#""on":true"#))
+    #expect(Self.lastText(relay, "watch").contains(#""on":false"#))
+    second.receive(Self.titledList("make"))
+    #expect(await settle { tabTitle(rig) == "make" })
+  }
+
   @Test func theRelayDroppingKeepsTheLanPath() async {
     let rig = rig()
     let relay = await online(rig)

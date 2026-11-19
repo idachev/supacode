@@ -1,4 +1,5 @@
 import Clocks
+import ComposableArchitecture
 import ConcurrencyExtras
 import Foundation
 import Testing
@@ -347,6 +348,94 @@ struct RemoteClientSessionTests {
     let content = try #require(rig.session.attachedContent("c-t2"))
     content.paneMeasured(RemoteAutoResize.Grid(columns: 100, rows: 30))
     #expect(rig.session.fittingGrid("P1") == RemoteAutoResize.Grid(columns: 100, rows: 30))
+  }
+
+  // MARK: - A pushed list reaches the sidebar (ЖП13)
+
+  /// A `list` as the Mac pushes it right after New Worktree: no request `id`, the new worktree
+  /// hoisted into Active next to a still-pending one, a group, and worktrees with and without a
+  /// `layout`.
+  static let pushedListText = #"""
+    {"t":"list","id":null,"canRefreshWorktrees":true,
+     "sections":[
+      {"kind":"active","title":"Active","worktreeIds":["/r/a/new","pending:remote-1"]},
+      {"kind":"group","title":"Work","collapsed":true,"repositoryIds":["/r/a"]},
+      {"kind":"repository","repositoryId":"/r/b"}],
+     "repos":[
+      {"id":"/r/a","name":"a","group":"Work","canCreateWorktree":true,"rowIds":["/r/a","/r/a/old","pending:remote-2"],
+       "worktrees":[
+        {"id":"/r/a","name":"a","branch":"a","status":"main","focused":false,"title":null,"working":false,"tabs":[],
+         "canDeleteWorktree":false},
+        {"id":"/r/a/new","name":"new","branch":"new","status":"unpinned","focused":true,"working":true,
+         "tabs":[{"id":"T1","contentId":"C1","title":"zsh","focused":true,"working":true,"readOnly":false,"agents":[]}],
+         "canDeleteWorktree":false,
+         "layout":{"mode":"tabsPerSplit","activeGroupId":"G",
+                   "groups":[{"id":"G","focusedPaneId":"P","tree":{"pane":"P"}}],
+                   "panes":[{"id":"P","tabIds":["T1"],"selectedTabId":"T1"}]}},
+        {"id":"/r/a/old","name":"old","branch":"old","status":"unpinned","focused":false,"working":false,"tabs":[],
+         "canDeleteWorktree":true}]},
+      {"id":"/r/b","name":"b","canCreateWorktree":true,"rowIds":["/r/b"],
+       "worktrees":[{"id":"/r/b","name":"b","branch":"b","status":"main","focused":false,"working":false,"tabs":[]}]}]}
+    """#
+
+  @Test func aPushedListWithANewWorktreeReachesTheSidebar() async throws {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    let log = EventLog(rig.session.events())
+    rig.session.open(hostID: "h1")
+    await online(rig)
+    rig.sockets.relays[0].receive(Self.pushedListText)
+    #expect(await settle { log.events.contains(where: Self.isList) })
+    guard case .listChanged(let list)? = log.events.first(where: Self.isList) else {
+      Issue.record("no listChanged")
+      return
+    }
+    let worktrees = list.repos.flatMap(\.worktrees)
+    #expect(worktrees.map(\.id) == ["/r/a", "/r/a/new", "/r/a/old", "/r/b"])
+    #expect(worktrees[1].layout != nil)
+    #expect(worktrees[2].layout == nil)
+
+    let store = TestStore(initialState: RemoteClientFeature.State()) {
+      RemoteClientFeature()
+    } withDependencies: {
+      $0.remoteClientSession.setVisible = { _ in }
+    }
+    store.exhaustivity = .off
+    await store.send(.listChanged(list))
+    let sections = store.state.sidebarSections
+    #expect(sections.map(\.id) == ["highlight:active", "group:Work|/r/a", "repository:/r/b"])
+    #expect(sections[0].rows.map(\.id) == ["/r/a/new"])
+    #expect(store.state.sidebarRowIDs == ["/r/a/new", "/r/a", "/r/a/old", "/r/b"])
+    // The Mac focuses the new worktree: the window selects it too.
+    #expect(store.state.selectedWorktreeID == "/r/a/new")
+    await store.finish()
+  }
+
+  /// ЖП13 (L3): on the LAN path every pushed list still reaches the window as `.listChanged`, a
+  /// title-only change included.
+  @Test func listsPushedOnTheLanReachTheWindow() async throws {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    let log = EventLog(rig.session.events())
+    rig.session.open(hostID: "h1")
+    await online(rig)
+    let relay = rig.sockets.relays[0]
+    relay.receive(RemoteClientConnectionTests.helloFrame(lan: RemoteClientConnectionTests.lanAddrs))
+    #expect(await settle { rig.sockets.lans.count == 1 })
+    let lan = rig.sockets.lans[0]
+    lan.open()
+    #expect(await settle { rig.session.connection?.status == .online(.lan) })
+    lan.receive(RemoteClientConnectionTests.titledList("vim"))
+    lan.receive(RemoteClientConnectionTests.titledList("htop"))
+    func titles() -> [String] {
+      log.events.compactMap { event in
+        guard case .listChanged(let list) = event else { return nil }
+        return list.repos.first?.worktrees.first?.tabs.first?.title
+      }
+    }
+    #expect(await settle { titles().last == "htop" })
+    lan.receive(RemoteClientConnectionTests.titledList("zsh"))
+    #expect(await settle { titles().last == "zsh" })
   }
 
   // MARK: - One window per Mac (Task 16)
