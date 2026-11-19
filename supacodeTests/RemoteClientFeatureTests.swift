@@ -1099,19 +1099,29 @@ struct RemoteClientFeatureTests {
     let url: URL?
   }
 
-  /// Records what the reducer posts and removes.
+  /// Records what the reducer posts and removes, and what Notification Center would hold. A post
+  /// lands only after `postGate` (when set) lets it: a slow `center.add`.
   final class FakeNotifications: Sendable {
     let posted = LockIsolated<[Posted]>([])
     let removed = LockIsolated<[[String]]>([])
+    let delivered = LockIsolated<Set<String>>([])
+    let postGate = LockIsolated<AsyncStream<Void>?>(nil)
 
     nonisolated deinit {}
 
     var client: SystemNotificationClient {
       var client = SystemNotificationClient.testValue
-      client.post = { [posted] identifier, title, body, url in
+      client.post = { [posted, delivered, postGate] identifier, title, body, url in
         posted.withValue { $0.append(Posted(identifier: identifier, title: title, body: body, url: url)) }
+        if let gate = postGate.value {
+          for await _ in gate { break }
+        }
+        delivered.withValue { _ = $0.insert(identifier) }
       }
-      client.remove = { [removed] identifiers in removed.withValue { $0.append(identifiers) } }
+      client.remove = { [removed, delivered] identifiers in
+        removed.withValue { $0.append(identifiers) }
+        delivered.withValue { $0.subtract(identifiers) }
+      }
       return client
     }
   }
@@ -1152,7 +1162,7 @@ struct RemoteClientFeatureTests {
       notifications.posted.value == [
         Posted(
           identifier: "remote:a:t1", title: "Office Mac — agent is waiting", body: "feature · claude",
-          url: RemoteClientNotifier.url(worktreeID: "w1", contentID: "t1"))
+          url: RemoteClientNotifier.url(hostID: "a", worktreeID: "w1", contentID: "t1"))
       ])
   }
 
@@ -1254,11 +1264,14 @@ struct RemoteClientFeatureTests {
   }
 
   @Test func openingANotificationSelectsItsWorktreeAndTab() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    $saved.withLock { $0 = "a" }
+    defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
     let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), session: session)
     #expect(store.state.selectedWorktreeID == "w1")
     // t1 sits in P1 of w2, behind t2, and P2 is focused.
-    await store.send(.notificationOpened(worktreeID: "w2", contentID: "c-t1")) {
+    await store.send(.notificationOpened(hostID: "a", worktreeID: "w2", contentID: "c-t1")) {
       $0.selectedWorktreeID = "w2"
     }
     #expect(store.state.selections["w2"]?.selectedTabID["P1"] == "t1")
@@ -1269,10 +1282,26 @@ struct RemoteClientFeatureTests {
   }
 
   @Test func openingANotificationOfAGoneWorktreeChangesNothing() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    $saved.withLock { $0 = "a" }
+    defer { $saved.withLock { $0 = nil } }
     let session = FakeSession()
     let store = await shownStore(session: session)
     let before = store.state
-    await store.send(.notificationOpened(worktreeID: "gone", contentID: "c-t1"))
+    await store.send(.notificationOpened(hostID: "a", worktreeID: "gone", contentID: "c-t1"))
+    #expect(store.state == before)
+    await store.finish()
+  }
+
+  @Test func aNotificationOfAnotherMacIsDropped() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    $saved.withLock { $0 = "b" }
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession()
+    // The same worktree and tab ids exist on the Mac shown now, `b`.
+    let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), session: session)
+    let before = store.state
+    await store.send(.notificationOpened(hostID: "a", worktreeID: "w2", contentID: "c-t1"))
     #expect(store.state == before)
     await store.finish()
   }
@@ -1292,20 +1321,116 @@ struct RemoteClientFeatureTests {
 
   @Test func theNotificationURLCarriesOnlyTheIDs() throws {
     let worktreeID = "ssh://host:22/path/to repo&x=1"
-    let url = try #require(RemoteClientNotifier.url(worktreeID: worktreeID, contentID: "c:1/2"))
+    let url = try #require(RemoteClientNotifier.url(hostID: "mac:1", worktreeID: worktreeID, contentID: "c:1/2"))
     #expect(url.scheme == "supacode")
     #expect(url.host() == "remote-client")
     let target = RemoteClientNotifier.target(of: url)
-    #expect(target == RemoteClientNotifier.Target(worktreeID: worktreeID, contentID: "c:1/2"))
+    #expect(target == RemoteClientNotifier.Target(hostID: "mac:1", worktreeID: worktreeID, contentID: "c:1/2"))
     #expect(RemoteClientNotifier.target(of: URL(string: "supacode://worktree/abc")!) == nil)
     #expect(RemoteClientNotifier.target(of: URL(string: "supacode://remote-client/notification")!) == nil)
+    // Without the Mac's id a tap could land on another Mac: no target.
+    let hostless = try #require(RemoteClientNotifier.url(hostID: nil, worktreeID: "w1", contentID: "t1"))
+    #expect(RemoteClientNotifier.target(of: hostless) == nil)
   }
 
   @Test func theRouterClaimsRemoteURLsEvenWithoutAWindow() throws {
     let router = RemoteClientNotificationRouter()
-    let url = try #require(RemoteClientNotifier.url(worktreeID: "w1", contentID: "t1"))
+    let url = try #require(RemoteClientNotifier.url(hostID: "a", worktreeID: "w1", contentID: "t1"))
     // A stale notification after a relaunch: dropped, never handed to the app's deeplinks.
     #expect(router.open(url))
     #expect(!router.open(URL(string: "supacode://worktree/abc")!))
+  }
+
+  // MARK: - Task 14 review minors
+
+  @Test(.dependencies) func aRemovalWaitsForASlowPostOfTheSameID() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let (gate, release) = AsyncStream.makeStream(of: Void.self)
+    notifications.postGate.setValue(gate)
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    #expect(await settle { notifications.posted.value.count == 1 })
+    // The post is suspended in `center.add`; the agent stops waiting meanwhile.
+    await store.send(.listChanged(Self.waitingList("working")))
+    await Task.megaYield()
+    #expect(notifications.removed.value.isEmpty)
+    release.yield()
+    await store.finish()
+    #expect(notifications.removed.value == [["remote:a:t1"]])
+    #expect(notifications.delivered.value.isEmpty)
+  }
+
+  @Test(.dependencies) func closingTheWindowDuringASlowPostLeavesNothingDelivered() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let (gate, release) = AsyncStream.makeStream(of: Void.self)
+    notifications.postGate.setValue(gate)
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    #expect(await settle { notifications.posted.value.count == 1 })
+    await store.send(.windowClosed)
+    await Task.megaYield()
+    #expect(notifications.removed.value.isEmpty)
+    release.yield()
+    await store.finish()
+    // The removal of the close still reaches the center, after the post.
+    #expect(notifications.removed.value == [["remote:a:t1"]])
+    #expect(notifications.delivered.value.isEmpty)
+  }
+
+  @Test(.dependencies) func aTabThatStopsWaitingIsRemovedWithNotificationsOff() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications, enabled: false)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.finish()
+    #expect(notifications.posted.value.isEmpty)
+    #expect(notifications.removed.value == [["remote:a:t1"]])
+  }
+
+  @Test(.dependencies) func aMacPickedAloneRemovesTheNotificationsShownBefore() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    // Nothing saved: an unbound connection to an old relay's single Mac.
+    store.state.$selectedHostID.withLock { $0 = nil }
+    await store.send(.windowAppeared)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.send(.hostsChanged([Self.host("me", online: true), Self.host("a", online: true)]))
+    await store.finish()
+    #expect(store.state.selectedHostID == "a")
+    #expect(notifications.posted.value.map(\.identifier) == ["remote::t1"])
+    #expect(notifications.removed.value == [["remote::t1"]])
+  }
+
+  @Test(.dependencies) func aKeyWindowThatShowsAnotherWorktreeStillPosts() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.windowKeyChanged(true))
+    let other = RemoteClientWorktree(
+      id: "w0", name: "other", focused: true, tabs: [RemoteClientTab(id: "tab0", contentId: "t0")])
+    func shown(_ activity: String) -> RemoteClientList {
+      var list = Self.waitingList(activity)
+      list.repos[0].worktrees.insert(other, at: 0)
+      return list
+    }
+    await store.send(.listChanged(shown("idle")))
+    #expect(store.state.selectedWorktreeID == "w0")
+    #expect(store.state.projection?.visibleContentIDs == ["t0"])
+    await store.send(.listChanged(shown("awaitingInput")))
+    await store.finish()
+    #expect(notifications.posted.value.map(\.identifier) == ["remote:a:t1"])
   }
 }

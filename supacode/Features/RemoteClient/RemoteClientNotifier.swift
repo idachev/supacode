@@ -2,7 +2,6 @@ import AppKit
 import ComposableArchitecture
 import Foundation
 import SupacodeSettingsShared
-import SwiftUI
 
 nonisolated private let remoteNotifierLogger = SupaLogger("RemoteClient")
 
@@ -10,10 +9,17 @@ nonisolated private let remoteNotifierLogger = SupaLogger("RemoteClient")
 /// which identifier, and the deeplink its tap carries. Ids only: never a key, a relay URL or a path
 /// of this Mac.
 nonisolated enum RemoteClientNotifier {
-  /// Where a tap leads: the worktree and the remote content of the waiting tab.
+  /// Where a tap leads: the Mac, the worktree and the remote content of the waiting tab.
   struct Target: Equatable, Sendable {
+    let hostID: String
     let worktreeID: String
     let contentID: String
+  }
+
+  /// One step for the system notification client, run in queue order.
+  enum Command: Equatable, Sendable {
+    case post(identifier: String, title: String, body: String, url: URL?)
+    case remove([String])
   }
 
   private static let scheme = "supacode"
@@ -41,27 +47,30 @@ nonisolated enum RemoteClientNotifier {
     !(isKeyWindow && visibleContentIDs.contains(tab.contentId))
   }
 
-  /// `supacode://remote-client/notification?worktree=<id>&content=<id>`.
-  static func url(worktreeID: String, contentID: String) -> URL? {
+  /// `supacode://remote-client/notification?host=<id>&worktree=<id>&content=<id>`.
+  static func url(hostID: String?, worktreeID: String, contentID: String) -> URL? {
     var components = URLComponents()
     components.scheme = scheme
     components.host = host
     components.path = path
     components.queryItems = [
+      URLQueryItem(name: "host", value: hostID ?? ""),
       URLQueryItem(name: "worktree", value: worktreeID),
       URLQueryItem(name: "content", value: contentID),
     ]
     return components.url
   }
 
-  /// The target of a remote-client notification URL; nil for any other URL or one without both ids.
+  /// The target of a remote-client notification URL; nil for any other URL or one without all three
+  /// ids (without the Mac's, a tap could land on another Mac).
   static func target(of url: URL) -> Target? {
     guard isRemoteClientURL(url),
       let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+      let hostID = items.first(where: { $0.name == "host" })?.value, !hostID.isEmpty,
       let worktreeID = items.first(where: { $0.name == "worktree" })?.value, !worktreeID.isEmpty,
       let contentID = items.first(where: { $0.name == "content" })?.value, !contentID.isEmpty
     else { return nil }
-    return Target(worktreeID: worktreeID, contentID: contentID)
+    return Target(hostID: hostID, worktreeID: worktreeID, contentID: contentID)
   }
 
   /// Any `supacode://remote-client/…` URL: the remote window's, never the app's deeplinks.
@@ -100,28 +109,8 @@ final class RemoteClientNotificationRouter {
       window.makeKeyAndOrderFront(nil)
     }
     NSApplication.shared.activate()
-    store.send(.notificationOpened(worktreeID: target.worktreeID, contentID: target.contentID))
+    store.send(
+      .notificationOpened(hostID: target.hostID, worktreeID: target.worktreeID, contentID: target.contentID))
     return true
   }
-}
-
-/// Hands the remote window's `NSWindow` to the router, so a notification tap can bring it forward.
-struct RemoteClientWindowAnchor: NSViewRepresentable {
-  func makeNSView(context: Context) -> RemoteClientWindowAnchorView {
-    RemoteClientWindowAnchorView()
-  }
-
-  func updateNSView(_ nsView: RemoteClientWindowAnchorView, context: Context) {}
-}
-
-final class RemoteClientWindowAnchorView: NSView {
-  nonisolated deinit {}
-
-  override func viewDidMoveToWindow() {
-    super.viewDidMoveToWindow()
-    guard let window else { return }
-    RemoteClientNotificationRouter.shared.window = window
-  }
-
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

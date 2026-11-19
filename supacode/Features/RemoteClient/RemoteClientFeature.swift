@@ -51,6 +51,9 @@ struct RemoteClientFeature {
     var awaiting = RemoteAwaitingTracker()
     /// The remote window is the key window: a waiting tab it shows posts nothing (ИВ2).
     var isKeyWindow = false
+    /// Posts and removals not yet handed to the center, in order; one batch at a time.
+    var notificationQueue: [RemoteClientNotifier.Command] = []
+    var isDeliveringNotifications = false
     @Presents var alert: AlertState<Action.Alert>?
 
     /// The picker's rows: every Mac the relay lists except this one.
@@ -116,8 +119,11 @@ struct RemoteClientFeature {
     case worktreeCommand(RemoteWorktreeCommand)
     case requestFinished(key: String, Result<[String: String], RemoteClientRequestError>)
     case windowKeyChanged(Bool)
-    /// A tap on an "agent is waiting" notification (ИВ3): the window is already in front.
-    case notificationOpened(worktreeID: String, contentID: String)
+    /// A tap on an "agent is waiting" notification (ИВ3): the window is already in front. A tap for
+    /// a Mac other than the one shown is dropped.
+    case notificationOpened(hostID: String, worktreeID: String, contentID: String)
+    /// The first `count` queued posts and removals reached the center.
+    case notificationsDelivered(Int)
     case alert(PresentationAction<Alert>)
 
     nonisolated enum Alert: Equatable, Sendable {
@@ -208,13 +214,19 @@ struct RemoteClientFeature {
         let shown = listChanged(list, state: &state)
         // After `listChanged`: a tab is visible or not in the projection of this list.
         let changes = state.awaiting.update(list.repos)
-        return .merge(shown, awaitingChanged(changes, state: state))
+        return .merge(shown, awaitingChanged(changes, state: &state))
 
       case .windowKeyChanged(let isKey):
         state.isKeyWindow = isKey
         return .none
 
-      case .notificationOpened(let worktreeID, let contentID):
+      case .notificationsDelivered(let count):
+        state.notificationQueue.removeFirst(min(count, state.notificationQueue.count))
+        state.isDeliveringNotifications = false
+        return deliverNotifications(&state)
+
+      case .notificationOpened(let hostID, let worktreeID, let contentID):
+        guard hostID == state.selectedHostID else { return .none }
         return notificationOpened(worktreeID: worktreeID, contentID: contentID, state: &state)
 
       case .hostPicked(let hostID):
@@ -245,10 +257,10 @@ struct RemoteClientFeature {
       .cancel(id: CancelID.requests), .cancel(id: CancelID.visible), connect(hostID), removeNotifications)
   }
 
-  /// Posts a notification for each tab that started to wait, unless the key window shows it or
-  /// the app's system notifications are off (ИВ1, ИВ2, R25), and removes those of the tabs that
-  /// stopped. Nothing enters the main window's notification list or sidebar.
-  private func awaitingChanged(_ changes: RemoteAwaitingTracker.Changes, state: State) -> Effect<Action> {
+  /// Queues a notification for each tab that started to wait, unless the key window shows it or
+  /// the app's system notifications are off (ИВ1, ИВ2, R25), and the removal of those of the tabs
+  /// that stopped. Nothing enters the main window's notification list or sidebar.
+  private func awaitingChanged(_ changes: RemoteAwaitingTracker.Changes, state: inout State) -> Effect<Action> {
     @Shared(.settingsFile) var settingsFile
     let visible = state.projection?.visibleContentIDs ?? []
     let started =
@@ -257,33 +269,58 @@ struct RemoteClientFeature {
         RemoteClientNotifier.shouldPost($0, isKeyWindow: state.isKeyWindow, visibleContentIDs: visible)
       } : []
     let hostID = state.selectedHostID
-    let removed = changes.ended.map { RemoteClientNotifier.identifier(hostID: hostID, contentID: $0) }
-    guard !started.isEmpty || !removed.isEmpty else { return .none }
+    var commands: [RemoteClientNotifier.Command] = []
+    if !changes.ended.isEmpty {
+      commands.append(.remove(changes.ended.map { RemoteClientNotifier.identifier(hostID: hostID, contentID: $0) }))
+    }
     let title = RemoteClientNotifier.title(hostName: state.knownMacName)
-    let posts = started.map { tab in
-      (
-        identifier: RemoteClientNotifier.identifier(hostID: hostID, contentID: tab.contentId),
-        body: RemoteClientNotifier.body(tab),
-        url: RemoteClientNotifier.url(worktreeID: tab.worktreeId, contentID: tab.contentId)
-      )
+    for tab in started {
+      commands.append(
+        .post(
+          identifier: RemoteClientNotifier.identifier(hostID: hostID, contentID: tab.contentId),
+          title: title,
+          body: RemoteClientNotifier.body(tab),
+          url: RemoteClientNotifier.url(hostID: hostID, worktreeID: tab.worktreeId, contentID: tab.contentId)))
     }
-    let notifications = systemNotifications
-    return .run { _ in
-      if !removed.isEmpty { await notifications.remove(removed) }
-      for post in posts {
-        await notifications.post(post.identifier, title, post.body, post.url)
-      }
-    }
+    return enqueueNotifications(commands, state: &state)
   }
 
-  /// Switching the Mac or closing the window (ИВ4): forgets who waits and removes every
-  /// notification of the Mac shown so far. Runs before `selectedHostID` changes.
+  /// Switching the Mac or closing the window (ИВ4): forgets who waits and queues the removal of
+  /// every notification of the Mac shown so far. Runs before `selectedHostID` changes.
   private func forgetNotifications(_ state: inout State) -> Effect<Action> {
     let hostID = state.selectedHostID
     let removed = state.awaiting.reset().map { RemoteClientNotifier.identifier(hostID: hostID, contentID: $0) }
     guard !removed.isEmpty else { return .none }
+    return enqueueNotifications([.remove(removed)], state: &state)
+  }
+
+  /// Every post and removal goes through `notificationQueue`, one batch at a time and in order: a
+  /// removal never overtakes a post still in `center.add`, which would then land as a stale banner.
+  private func enqueueNotifications(
+    _ commands: [RemoteClientNotifier.Command], state: inout State
+  ) -> Effect<Action> {
+    state.notificationQueue.append(contentsOf: commands)
+    return deliverNotifications(&state)
+  }
+
+  /// Hands the queued commands to the center unless a batch is already on its way. Never
+  /// cancelled: the removals queued as the window closes still reach the center.
+  private func deliverNotifications(_ state: inout State) -> Effect<Action> {
+    guard !state.isDeliveringNotifications, !state.notificationQueue.isEmpty else { return .none }
+    state.isDeliveringNotifications = true
+    let batch = state.notificationQueue
     let notifications = systemNotifications
-    return .run { _ in await notifications.remove(removed) }
+    return .run { send in
+      for command in batch {
+        switch command {
+        case .post(let identifier, let title, let body, let url):
+          await notifications.post(identifier, title, body, url)
+        case .remove(let identifiers):
+          await notifications.remove(identifiers)
+        }
+      }
+      await send(.notificationsDelivered(batch.count))
+    }
   }
 
   /// Drops everything the window knew about the Mac it showed.
