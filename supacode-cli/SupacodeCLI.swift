@@ -14,6 +14,7 @@ struct SupacodeCLI: ParsableCommand {
       RepoCommand.self,
       SettingsCommand.self,
       SocketCommand.self,
+      RemotePipeCommand.self,
     ],
     defaultSubcommand: OpenCommand.self
   )
