@@ -209,6 +209,7 @@ final class RemoteClientSession {
       runtime: ghostty,
       clock: clock
     )
+    content.linkChanged(status: connection.status, hostName: connection.hostName)
     // Kept before the surface starts: its pipe may open before `provision` returns.
     contents[remoteContentID] = content
     guard runtime.provision(content, at: runtime.spawnGeometry(near: nil)) else { return }
@@ -313,6 +314,12 @@ final class RemoteClientSession {
   private func publish(_ current: Published, list: RemoteClientList?) {
     let previous = published
     published = current
+    // The banners over the terminals follow the link, whether or not the reducer listens.
+    if current.status != previous.status || current.hostName != previous.hostName {
+      for content in contents.values {
+        content.linkChanged(status: current.status, hostName: current.hostName)
+      }
+    }
     guard let subscriber else { return }
     if current.status != previous.status { subscriber.yield(.statusChanged(current.status)) }
     if current.hostName != previous.hostName { subscriber.yield(.hostNameChanged(current.hostName)) }

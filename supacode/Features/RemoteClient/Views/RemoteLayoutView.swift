@@ -217,6 +217,14 @@ private struct RemotePaneContentView: View {
           ContentUnavailableView("The terminal could not start", systemImage: "exclamationmark.triangle")
         } else {
           ContentHostView(contentID: content.id, runtime: session.runtime, epoch: UInt64(clamping: session.epoch))
+            // The no-connection banner (БН1) lies over the top row instead of docking above the
+            // surface: a docked line would shrink the pane, and the host would be asked for a
+            // smaller grid and then the old one again as the banner comes and goes.
+            .overlay(alignment: .top) {
+              if let banner = content.toolbar?.view {
+                banner.allowsHitTesting(false)
+              }
+            }
             .overlay {
               if let dim, dim.opacity > 0 {
                 dim.fill

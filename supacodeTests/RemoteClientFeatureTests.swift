@@ -331,12 +331,53 @@ struct RemoteClientFeatureTests {
     session.yield(.statusChanged(.online(.lan)))
     await store.receive(\.statusChanged) {
       $0.status = .online(.lan)
+      $0.hasBeenOnline = true
     }
     session.yield(.hostNameChanged("Office Mac"))
     await store.receive(\.hostNameChanged) {
       $0.hostName = "Office Mac"
     }
     session.finishAll()
+    await store.finish()
+  }
+
+  @Test func aNewOpeningForgetsThatTheLinkWasOnline() async {
+    let session = FakeSession(live: true)
+    let store = Self.makeStore(session: session)
+    await store.send(.windowAppeared) {
+      $0.ownHostID = "me"
+    }
+    #expect(await settle { session.opens.count == 1 })
+    session.yield(.statusChanged(.online(.relay)))
+    await store.receive(\.statusChanged) {
+      $0.status = .online(.relay)
+      $0.hasBeenOnline = true
+    }
+    // "Try Again" opens a new connection: its first connect is not a lost link.
+    await store.send(.windowAppeared) {
+      $0.hasBeenOnline = false
+    }
+    #expect(await settle { session.opens.count == 2 })
+    session.finishAll()
+    await store.finish()
+  }
+
+  @Test func closingTheWindowForgetsThatTheLinkWasOnline() async {
+    let session = FakeSession(live: true)
+    let store = Self.makeStore(session: session)
+    await store.send(.windowAppeared) {
+      $0.ownHostID = "me"
+    }
+    #expect(await settle { session.opens.count == 1 })
+    session.yield(.statusChanged(.online(.lan)))
+    await store.receive(\.statusChanged) {
+      $0.status = .online(.lan)
+      $0.hasBeenOnline = true
+    }
+    await store.send(.windowClosed) {
+      $0.status = .idle
+      $0.hasBeenOnline = false
+    }
     await store.finish()
   }
 

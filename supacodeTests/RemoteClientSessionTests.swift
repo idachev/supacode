@@ -279,6 +279,26 @@ struct RemoteClientSessionTests {
     #expect(rig.session.attachedContent("c1") == nil)
   }
 
+  /// БН1: every content learns the link's status and the Mac's name when the session does.
+  @Test func contentsFollowTheConnectionsStatusAndName() async throws {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    rig.session.open(hostID: "h1")
+    await online(rig)
+    #expect(await settle { rig.session.connection?.hostName == "Office Mac" })
+    rig.session.setVisible(["c1"])
+    let content = try #require(rig.session.attachedContent("c1"))
+    // A content made while online starts from the live status, not from a default.
+    #expect(content.status == .online(.relay))
+    #expect(content.hostName == "Office Mac")
+    #expect(content.bannerText == "Connecting to Office Mac…")
+
+    rig.sockets.relays[rig.sockets.relays.count - 1].drop(reason: "connection lost")
+    #expect(await settle { content.status == .connecting })
+    // Never attached on this connection: connecting, not a lost link.
+    #expect(content.bannerText == "Connecting to Office Mac…")
+  }
+
   /// Two worktrees hold a pane with this id: the one whose tab is shown answers, not the first one.
   @Test func theFittingGridSkipsAWorktreeWhosePaneIsNotShown() async throws {
     let rig = rig()

@@ -19,6 +19,9 @@ struct RemoteClientFeature {
     var status: RemoteClientStatus = .idle
     var hasKeyFile = true
     var hostName: String?
+    /// The connection was `.online` since the window last opened it: a status that is not online
+    /// now is then a lost link (БН3).
+    var hasBeenOnline = false
     var hosts: [RemoteClientHostInfo] = []
     var isHostPickerPresented = false
     var list: RemoteClientList?
@@ -150,6 +153,7 @@ struct RemoteClientFeature {
           )
         }
         state.hasKeyFile = true
+        state.hasBeenOnline = false
         return connect(state.selectedHostID)
 
       case .windowClosed:
@@ -169,6 +173,7 @@ struct RemoteClientFeature {
 
       case .statusChanged(let status):
         state.status = status
+        if case .online = status { state.hasBeenOnline = true }
         return .none
 
       case .hostNameChanged(let name):
@@ -218,6 +223,7 @@ struct RemoteClientFeature {
 
   /// Drops everything the window knew about the Mac it showed.
   private func forgetMac(_ state: inout State) {
+    state.hasBeenOnline = false
     state.list = nil
     state.selectedWorktreeID = nil
     state.sidebarSections = []

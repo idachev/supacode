@@ -564,6 +564,36 @@ struct RemoteClientConnectionTests {
     #expect(Self.lastText(relay, "input").contains(#""b64":"YQ==""#))
   }
 
+  /// РФ5: typing while there is no connection is never sent later and never queued.
+  @Test func inputTypedWhileOfflineIsNeverSentLater() async {
+    let rig = rig()
+    let relay = await online(rig)
+    _ = rig.connection.attach(contentID: "c1", scrollback: 500)
+    #expect(await settle { relay.types.last == "attach" })
+    relay.receive(Self.attached("c1", id: Self.lastID(relay, "attach")))
+    #expect(await settle { rig.connection.sendInput(contentID: "c1", bytes: [0x61]) })
+    #expect(Self.frames(relay).count(where: { $0["t"] as? String == "input" }) == 1)
+
+    relay.drop(reason: "connection lost")
+    #expect(await settle { rig.connection.status == .connecting })
+    for byte: UInt8 in [0x62, 0x63, 0x64] {
+      #expect(!rig.connection.sendInput(contentID: "c1", bytes: [byte]))
+    }
+
+    #expect(await cross(rig, .milliseconds(2500), thenUntil: { rig.sockets.relays.count == 2 }))
+    let second = rig.relay
+    second.open()
+    second.receive(Self.relayFrame(online: true))
+    #expect(await settle { second.types.last == "hello" })
+    second.receive(Self.helloFrame())
+    #expect(await settle { second.types == ["hello", "list", "watch", "attach"] })
+    second.receive(Self.attached("c1", id: Self.lastID(second, "attach")))
+    #expect(await settle { rig.connection.status == .online(.relay) })
+    #expect(!second.sent.contains { $0.contains(#""t":"input""#) })
+    // Only the keystroke typed while online ever left, on the first socket.
+    #expect(Self.frames(relay).filter { $0["t"] as? String == "input" }.count == 1)
+  }
+
   // MARK: LAN
 
   @Test func aValidLanOfferOpensTheLanPath() async {

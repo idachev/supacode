@@ -3,6 +3,7 @@ import Foundation
 import GhosttyKit
 import Observation
 import SupacodeSettingsShared
+import SwiftUI
 
 nonisolated private let remoteTerminalLogger = SupaLogger("RemoteTerminal")
 
@@ -43,6 +44,11 @@ nonisolated struct RemoteTerminalDriver: Sendable {
 
   private(set) var phase = Phase.starting
   private(set) var remoteGrid: Grid?
+  /// The stream got `attached` and the link has not dropped since: the terminal shows the host's
+  /// screen as of the last redraw.
+  private(set) var isAttached = false
+  /// The stream got `attached` at some point (БН1): a `.connecting` link is then a lost one.
+  private(set) var wasAttached = false
   private var autoResize = RemoteAutoResize()
   private var filter = RemoteQueryFilter()
   private var pipeOpen = false
@@ -90,6 +96,8 @@ nonisolated struct RemoteTerminalDriver: Sendable {
       filter = RemoteQueryFilter()
       remoteGrid = grid
       phase = .live
+      isAttached = true
+      wasAttached = true
       var effects: [Effect] = [.writePipe(RemoteTerminalBytes.clearForRedraw), .pin(grid)]
       if case .send(let wanted) = autoResize.attached(remote: grid) { effects.append(.wantGrid(wanted)) }
       return effects
@@ -105,6 +113,12 @@ nonisolated struct RemoteTerminalDriver: Sendable {
       phase = .ended(reason: reason)
       return [.detach]
     }
+  }
+
+  /// The link to the Mac stopped being online: nothing reaches the terminal until the next
+  /// `attached`. The tab stays; only the banner follows.
+  mutating func linkLost() {
+    isAttached = false
   }
 
   /// A layout pass measured the grid that fits the local pane.
@@ -171,6 +185,11 @@ final class RemoteTerminalContent: TabContent {
   private(set) var phase: Phase = .starting
   private(set) var remoteGrid: RemoteAutoResize.Grid?
   private(set) var sessionFailedToStart = false
+  private(set) var isAttached = false
+  private(set) var wasAttached = false
+  /// The connection's status and the Mac's name, as the session last told this content (БН1).
+  private(set) var status: RemoteClientStatus = .idle
+  private(set) var hostName: String?
   /// The grid that fits the local pane at this Mac's font, as the surface last measured it; nil
   /// before its first layout pass in a window. A new tab in this pane starts at it (`tab.new`).
   @ObservationIgnored private(set) var measuredGrid: RemoteAutoResize.Grid?
@@ -219,6 +238,10 @@ final class RemoteTerminalContent: TabContent {
   nonisolated deinit {}
 
   var renderer: NSView? { surfaceView }
+
+  /// The banner over the terminal while there is no live connection (БН1); the content is its own
+  /// toolbar, so what it shows reads the observed link state, and nothing is reserved when nil.
+  var toolbar: (any TabContentToolbar)? { self }
 
   /// Starts the surface whose child is `supacode remote-pipe <id>`, with no zmx, no command
   /// wrapper and no shell integration. A second call while the surface lives does nothing.
@@ -311,6 +334,27 @@ final class RemoteTerminalContent: TabContent {
     run(driver.paneMeasured(grid))
   }
 
+  /// The session reports the connection's status and the Mac's name, now and on every change. A
+  /// status other than online ends the attached state: the banner stays until the next `attached`.
+  func linkChanged(status: RemoteClientStatus, hostName: String?) {
+    if self.status != status { self.status = status }
+    if self.hostName != hostName { self.hostName = hostName }
+    if case .online = status { return }
+    driver.linkLost()
+    mirrorDriver()
+  }
+
+  /// The banner kind over this terminal; nil while it is live.
+  var bannerKind: RemoteConnectionBanner.Kind? {
+    RemoteConnectionBanner.kind(status: status, isAttached: isAttached, wasAttached: wasAttached)
+  }
+
+  /// The banner text over this terminal; nil while it is live.
+  var bannerText: String? {
+    RemoteConnectionBanner.text(
+      status: status, isAttached: isAttached, wasAttached: wasAttached, hostName: hostName)
+  }
+
   // MARK: - Effects
 
   private func run(_ effects: [RemoteTerminalDriver.Effect]) {
@@ -335,9 +379,15 @@ final class RemoteTerminalContent: TabContent {
         ports.detach(remoteContentID)
       }
     }
-    // Only real changes reach observers: `out` runs through here for every chunk.
+    mirrorDriver()
+  }
+
+  /// Only real changes reach observers: `out` runs through here for every chunk.
+  private func mirrorDriver() {
     if phase != driver.phase { phase = driver.phase }
     if remoteGrid != driver.remoteGrid { remoteGrid = driver.remoteGrid }
+    if isAttached != driver.isAttached { isAttached = driver.isAttached }
+    if wasAttached != driver.wasAttached { wasAttached = driver.wasAttached }
   }
 
   private func consume(_ stream: AsyncStream<RemoteTerminalEvent>) {
@@ -382,5 +432,12 @@ final class RemoteTerminalContent: TabContent {
     return value.unicodeScalars.allSatisfy { scalar in
       scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "-_.".unicodeScalars.contains(scalar))
     }
+  }
+}
+
+extension RemoteTerminalContent: TabContentToolbar {
+  var view: AnyView? {
+    guard let kind = bannerKind, let text = bannerText else { return nil }
+    return AnyView(RemoteConnectionBannerView(kind: kind, text: text))
   }
 }

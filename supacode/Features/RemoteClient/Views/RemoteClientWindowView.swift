@@ -47,7 +47,9 @@ struct RemoteClientWindowView: View {
       .navigationTitle(store.macName)
       .toolbar {
         ToolbarItem(placement: .navigation) {
-          RemoteClientTitleButton(name: store.macName, detail: store.status.pathText) {
+          RemoteClientTitleButton(
+            name: store.macName, detail: store.status.pathText, notice: store.connectionNotice
+          ) {
             store.send(.titleTapped)
           }
           .disabled(!store.hasKeyFile)
@@ -103,28 +105,23 @@ struct RemoteClientWindowView: View {
 private struct RemoteClientTitleButton: View {
   let name: String
   let detail: String
+  /// The line under the title while there is no live connection (БН3).
+  let notice: String?
   let action: () -> Void
 
   var body: some View {
-    // One line: a toolbar item has no room for two.
     Button(action: action) {
-      HStack(spacing: 6) {
-        // A long name truncates instead of pushing the toolbar.
-        RemoteBoundedWidthLayout(maxWidth: 280) {
-          Text(name)
-            .font(.headline)
-            .truncationMode(.tail)
+      VStack(alignment: .leading, spacing: 0) {
+        titleLine
+        if let notice {
+          // A long Mac name makes a long line: it truncates like the name does.
+          RemoteBoundedWidthLayout(maxWidth: 420) {
+            Text(notice)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .truncationMode(.tail)
+          }
         }
-        if !detail.isEmpty {
-          Text("·")
-            .foregroundStyle(.secondary)
-          Text(detail)
-            .foregroundStyle(.secondary)
-        }
-        Image(systemName: "chevron.down")
-          .imageScale(.small)
-          .foregroundStyle(.secondary)
-          .accessibilityHidden(true)
       }
       .lineLimit(1)
       .fixedSize()
@@ -132,6 +129,27 @@ private struct RemoteClientTitleButton: View {
     }
     .buttonStyle(.plain)
     .help("Choose which Mac this window shows")
+  }
+
+  private var titleLine: some View {
+    HStack(spacing: 6) {
+      // A long name truncates instead of pushing the toolbar.
+      RemoteBoundedWidthLayout(maxWidth: 280) {
+        Text(name)
+          .font(.headline)
+          .truncationMode(.tail)
+      }
+      if !detail.isEmpty {
+        Text("·")
+          .foregroundStyle(.secondary)
+        Text(detail)
+          .foregroundStyle(.secondary)
+      }
+      Image(systemName: "chevron.down")
+        .imageScale(.small)
+        .foregroundStyle(.secondary)
+        .accessibilityHidden(true)
+    }
   }
 }
 
@@ -379,11 +397,24 @@ private struct RemoteHostPickerView: View {
 }
 
 extension RemoteClientFeature.State {
-  /// The Mac's name: from its `hello`, else from the relay's host list, else a plain word.
-  var macName: String {
+  /// The Mac's name from its `hello`, else from the relay's host list; nil before either is known.
+  var knownMacName: String? {
     if let hostName, !hostName.isEmpty { return hostName }
     if let name = hosts.first(where: { $0.id == selectedHostID })?.name, !name.isEmpty { return name }
-    return "Remote Mac"
+    return nil
+  }
+
+  /// The Mac's name, else a plain word.
+  var macName: String {
+    knownMacName ?? "Remote Mac"
+  }
+
+  /// The line under the title and over the dimmed sidebar (БН3): nil while online, and before the
+  /// window has a list (its waiting and failure screens already say it).
+  var connectionNotice: String? {
+    guard list != nil, !status.isOnline else { return nil }
+    return RemoteConnectionBanner.text(
+      status: status, isAttached: false, wasAttached: hasBeenOnline, hostName: knownMacName)
   }
 }
 
@@ -396,6 +427,10 @@ extension RemoteLayoutProjection {
 }
 
 extension RemoteClientStatus {
+  var isOnline: Bool {
+    if case .online = self { true } else { false }
+  }
+
   /// The title's second line: the path in use, else the connection's state.
   var pathText: String {
     switch self {
