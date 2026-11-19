@@ -68,6 +68,9 @@ struct RemoteSidebarView: View {
 
 /// One section of the Mac's sidebar.
 private struct RemoteSidebarSectionView: View {
+  /// How far a group's repositories sit in from the group row, as in the local sidebar.
+  static let groupMemberIndent: CGFloat = 12
+
   let section: RemoteSidebarModel.Section
   let busyRequests: Set<String>
   let hideSubtitleOnMatch: Bool
@@ -90,7 +93,7 @@ private struct RemoteSidebarSectionView: View {
     case .group(let title, _, let repositories, _):
       RemoteSidebarGroupRow(title: title, count: repositories.count)
       ForEach(repositories) { repository in
-        repositorySection(repository, indent: 12)
+        repositorySection(repository, indent: Self.groupMemberIndent)
       }
     case .repository(let repository):
       repositorySection(repository, indent: 0)

@@ -22,9 +22,27 @@ struct RemoteClientWindowView: View {
         case nil: break
         }
       }
+      // R20: the Worktrees menu acts on this window while it is key, never on the main window.
+      .focusedSceneValue(
+        \.remoteWorktreeMenu,
+        RemoteWorktreeMenu(
+          canCreateWorktree: store.selectedRepository?.canCreateWorktree == true,
+          canRefreshWorktrees: store.list?.canRefreshWorktrees == true,
+          perform: FocusedAction(isEnabled: true) { store.send(.worktreeCommand($0)) }
+        )
+      )
       // On the window, not the split view: a request that fails as the connection fails (a refused
-      // key) shows its alert over the failure screen, not stale after a reconnect.
+      // key) shows its alert over the failure screen, not stale after a reconnect. The New Worktree
+      // prompt likewise closes (and cancels) only when the user or the reducer closes it.
       .alert($store.scope(state: \.alert, action: \.alert))
+      .sheet(
+        isPresented: Binding(
+          get: { store.newWorktree != nil },
+          set: { if !$0 { store.send(.newWorktreeCancelled) } }
+        )
+      ) {
+        RemoteNewWorktreeSheet(store: store)
+      }
       .toolbar(removing: .title)
       .navigationTitle(store.macName)
       .toolbar {
@@ -92,10 +110,11 @@ private struct RemoteClientTitleButton: View {
     Button(action: action) {
       HStack(spacing: 6) {
         // A long name truncates instead of pushing the toolbar.
-        Text(name)
-          .font(.headline)
-          .truncationMode(.tail)
-          .frame(maxWidth: 280, alignment: .leading)
+        RemoteBoundedWidthLayout(maxWidth: 280) {
+          Text(name)
+            .font(.headline)
+            .truncationMode(.tail)
+        }
         if !detail.isEmpty {
           Text("·")
             .foregroundStyle(.secondary)
@@ -113,6 +132,24 @@ private struct RemoteClientTitleButton: View {
     }
     .buttonStyle(.plain)
     .help("Choose which Mac this window shows")
+  }
+}
+
+/// Lays out its one child at its ideal width, but at most `maxWidth`, so a long one-line text
+/// truncates there even inside a `fixedSize()` parent. A flexible frame would not: given no width,
+/// it lets the text keep its full ideal width.
+private struct RemoteBoundedWidthLayout: Layout {
+  let maxWidth: CGFloat
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    guard let child = subviews.first else { return .zero }
+    let limit = min(proposal.width ?? maxWidth, maxWidth)
+    let width = min(child.sizeThatFits(.unspecified).width, limit)
+    return child.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
   }
 }
 
@@ -167,8 +204,7 @@ private struct RemoteClientWaitingView: View {
   }
 }
 
-/// The Mac's sidebar and the selected worktree's layout, with the window's menu actions, the
-/// request alerts and the New Worktree prompt.
+/// The Mac's sidebar and the selected worktree's layout, with the window's terminal menu actions.
 private struct RemoteClientSplitView: View {
   @Bindable var store: StoreOf<RemoteClientFeature>
   let session: RemoteClientSession
@@ -189,14 +225,6 @@ private struct RemoteClientSplitView: View {
       RemoteLayoutView(store: store, session: session, ghostty: ghostty, macName: store.macName)
     }
     .modifier(RemoteClientMenuActions(store: store, focusFilter: { isFilterFocused = true }))
-    .sheet(
-      isPresented: Binding(
-        get: { store.newWorktree != nil },
-        set: { if !$0 { store.send(.newWorktreeCancelled) } }
-      )
-    ) {
-      RemoteNewWorktreeSheet(store: store)
-    }
     .onAppear {
       // A click into another pane's terminal focuses that pane, as on the Mac.
       session.onSurfaceFocused = { [store] contentID in
@@ -237,9 +265,7 @@ private struct RemoteClientMenuActions: ViewModifier {
     let paneID = projection?.focusedPaneID
     let tab = projection?.focusedTab
     let canEditPanes = store.selectedWorktree?.layout != nil
-    let isSplit =
-      projection.flatMap { projection in projection.groups.first { $0.id == projection.activeGroupID } }
-      .map { RemoteLayoutProjection.paneIDs(in: $0.tree).count > 1 } ?? false
+    let isSplit = projection?.isActiveGroupSplit ?? false
     let token = Token(worktreeID: worktreeID, paneID: paneID, tabID: tab?.id)
     content
       .focusedSceneAction(\.newTerminalAction, enabled: worktreeID != nil, token: token) {

@@ -114,6 +114,7 @@ struct TerminalCommands: Commands {
 /// Static ⌘1..⌘9 submenu switching the selected worktree's terminal tab. Uses
 /// the store (not a `FocusedAction`) so the menu key-equivalent fires regardless
 /// of which pane holds first responder; out-of-range tabs clamp in the reducer.
+/// While the "Remote Mac" window is key, its `remoteTabSelectionAction` takes over.
 struct TerminalTabSelectionCommands: Commands {
   @Bindable var store: StoreOf<AppFeature>
   @Shared(.settingsFile) private var settingsFile

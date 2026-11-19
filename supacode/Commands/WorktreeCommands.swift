@@ -35,11 +35,15 @@ private struct WorktreeMainMenu: Commands {
   @FocusedValue(\.deleteWorktreeAction) private var deleteWorktreeAction
   @FocusedValue(\.runScriptAction) private var runScriptAction
   @FocusedValue(\.stopRunScriptAction) private var stopRunScriptAction
+  /// Present while the "Remote Mac" window is key: its items act on that window, the other
+  /// store-bound items are disabled.
+  @FocusedValue(\.remoteWorktreeMenu) private var remote
 
   var body: some Commands {
     #if DEBUG
       let _: Void = commandsRenderLogger.info("WorktreeMainMenu.body re-rendered")
     #endif
+    let isRemote = remote != nil
     let snapshot = store.worktreeMenuSnapshot
     let overrides = snapshot.shortcutOverrides
     let selectNext = AppShortcuts.selectNextWorktree.effective(from: overrides)
@@ -61,11 +65,15 @@ private struct WorktreeMainMenu: Commands {
     let jumpToLatestUnread = AppShortcuts.jumpToLatestUnread.effective(from: overrides)
     CommandMenu("Worktrees") {
       Button("New Worktree…", systemImage: "plus") {
-        store.send(.repositories(.createRandomWorktree))
+        guard let remote else {
+          store.send(.repositories(.createRandomWorktree))
+          return
+        }
+        remote.perform(.newWorktree)
       }
       .appKeyboardShortcut(newWt)
       .help(AppShortcut.helpText("New Worktree", shortcut: newWt))
-      .disabled(!snapshot.canCreateWorktree)
+      .disabled(remote.map { !$0.canCreateWorktree } ?? !snapshot.canCreateWorktree)
       Divider()
       let openLabel = openActionSelection.map { "Open in \($0.labelTitle)" } ?? "Open"
       Button(openLabel, systemImage: "arrow.up.right.square") {
@@ -89,20 +97,24 @@ private struct WorktreeMainMenu: Commands {
       }
       .appKeyboardShortcut(openPR)
       .help(AppShortcut.helpText("Open Pull Request, re-checking for a new one", shortcut: openPR))
-      .disabled(!snapshot.hasSelectedGitWorktree || !snapshot.githubIntegrationEnabled)
+      .disabled(isRemote || !snapshot.hasSelectedGitWorktree || !snapshot.githubIntegrationEnabled)
       Divider()
       Button("Refresh Worktrees", systemImage: "arrow.clockwise") {
-        store.send(.refreshWorktreesRequested)
+        guard let remote else {
+          store.send(.refreshWorktreesRequested)
+          return
+        }
+        remote.perform(.refreshWorktrees)
       }
       .appKeyboardShortcut(refresh)
       .help(AppShortcut.helpText("Refresh", shortcut: refresh))
-      .disabled(!snapshot.isInitialLoadComplete)
+      .disabled(remote.map { !$0.canRefreshWorktrees } ?? !snapshot.isInitialLoadComplete)
       Button("Archived Worktrees", systemImage: "archivebox") {
         store.send(.repositories(.selectArchivedWorktrees))
       }
       .appKeyboardShortcut(archived)
       .help(AppShortcut.helpText("Archived Worktrees", shortcut: archived))
-      .disabled(!snapshot.isInitialLoadComplete)
+      .disabled(isRemote || !snapshot.isInitialLoadComplete)
       // Plain `store.send`, like "Archived Worktrees": no focused value is published,
       // and the menu reads only `pending.isEmpty`, which flips a few times per launch.
       Button("Resume Agent Sessions…", systemImage: "arrow.clockwise.circle") {
@@ -112,13 +124,14 @@ private struct WorktreeMainMenu: Commands {
       .help(
         AppShortcut.helpText("Resume agent sessions that wait after a restart", shortcut: resumeAgentSessions)
       )
-      .disabled(store.agentResume.pending.isEmpty)
+      .disabled(isRemote || store.agentResume.pending.isEmpty)
       Button("Recent Terminals…", systemImage: "terminal") {
         guard NSApp.currentEvent?.isAutoRepeatKeyDown != true else { return }
         store.send(.commandPalette(.togglePresentInMode(.recentTerminals)))
       }
       .appKeyboardShortcut(recentTerminals)
       .help("Recent Terminals (\(recentTerminals?.display ?? "none"))")
+      .disabled(isRemote)
       Divider()
       Button("Archive Worktree…", systemImage: "archivebox") {
         archiveWorktreeAction?()
@@ -150,16 +163,24 @@ private struct WorktreeMainMenu: Commands {
       }
       .appKeyboardShortcut(jumpToLatestUnread)
       .help(AppShortcut.helpText("Jump to Latest Unread Notification", shortcut: jumpToLatestUnread))
-      .disabled(snapshot.notificationIndicatorCount == 0)
+      .disabled(isRemote || snapshot.notificationIndicatorCount == 0)
       Divider()
       // Always-enabled; the reducer beeps when there's no worktree to move to.
       Button("Select Next", systemImage: "chevron.down") {
-        store.send(.repositories(.selectNextWorktree))
+        guard let remote else {
+          store.send(.repositories(.selectNextWorktree))
+          return
+        }
+        remote.perform(.selectNextWorktree)
       }
       .appKeyboardShortcut(selectNext)
       .help(AppShortcut.helpText("Select Next", shortcut: selectNext))
       Button("Select Previous", systemImage: "chevron.up") {
-        store.send(.repositories(.selectPreviousWorktree))
+        guard let remote else {
+          store.send(.repositories(.selectPreviousWorktree))
+          return
+        }
+        remote.perform(.selectPreviousWorktree)
       }
       .appKeyboardShortcut(selectPrevious)
       .help(AppShortcut.helpText("Select Previous", shortcut: selectPrevious))
@@ -168,15 +189,15 @@ private struct WorktreeMainMenu: Commands {
       }
       .appKeyboardShortcut(historyBack)
       .help(AppShortcut.helpText("Back in Worktree History", shortcut: historyBack))
-      .disabled(!snapshot.canNavigateBackward)
+      .disabled(isRemote || !snapshot.canNavigateBackward)
       Button("Forward in Worktree History", systemImage: "chevron.right") {
         store.send(.repositories(.worktreeHistoryForward))
       }
       .appKeyboardShortcut(historyForward)
       .help(AppShortcut.helpText("Forward in Worktree History", shortcut: historyForward))
-      .disabled(!snapshot.canNavigateForward)
+      .disabled(isRemote || !snapshot.canNavigateForward)
       Menu("Select Worktree") {
-        SelectWorktreeSubmenuItems(store: store, overrides: overrides)
+        SelectWorktreeSubmenuItems(store: store, overrides: overrides, remote: remote)
       }
     }
   }
@@ -188,12 +209,17 @@ private struct WorktreeMainMenu: Commands {
 private struct SelectWorktreeSubmenuItems: View {
   let store: StoreOf<AppFeature>
   let overrides: [AppShortcutID: AppShortcutOverride]
+  let remote: RemoteWorktreeMenu?
 
   var body: some View {
     ForEach(0..<AppShortcuts.worktreeSelection.count, id: \.self) { index in
       let shortcut = AppShortcuts.worktreeSelection[index].effective(from: overrides)
       Button("Select Worktree \(index + 1)") {
-        store.send(.repositories(.selectWorktreeAtHotkeySlot(index)))
+        guard let remote else {
+          store.send(.repositories(.selectWorktreeAtHotkeySlot(index)))
+          return
+        }
+        remote.perform(.selectWorktree(slot: index))
       }
       .appKeyboardShortcut(shortcut)
       .help(AppShortcut.helpText("Select Worktree \(index + 1)", shortcut: shortcut))
@@ -207,6 +233,8 @@ private struct SelectWorktreeSubmenuItems: View {
 private struct WorktreeFileMenu: Commands {
   @Bindable var store: StoreOf<AppFeature>
   @FocusedValue(\.confirmWorktreeAction) private var confirmWorktreeAction
+  /// Present while the "Remote Mac" window is key: adding a local repository is disabled there.
+  @FocusedValue(\.remoteWorktreeMenu) private var remote
 
   var body: some Commands {
     #if DEBUG
@@ -236,6 +264,7 @@ private struct WorktreeFileMenu: Commands {
         .appKeyboardShortcut(cloneRepo)
         .help(AppShortcut.helpText("Clone a remote repository into a local folder", shortcut: cloneRepo))
       }
+      .disabled(remote != nil)
       Button("Confirm Action") {
         confirmWorktreeAction?()
       }

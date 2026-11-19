@@ -53,6 +53,9 @@ extension RemoteClientFeature {
       state.newWorktree = NewWorktreePrompt(repositoryID: repositoryID)
       return .none
 
+    case .worktreeCommand(let command):
+      return worktreeCommand(command, state: &state)
+
     case .newWorktreeNameChanged(let name):
       state.newWorktree?.name = name
       return .none
@@ -99,6 +102,30 @@ extension RemoteClientFeature {
     default:
       return .none
     }
+  }
+
+  /// A Worktrees menu item (R20). New Worktree opens the prompt for the selected worktree's
+  /// repository; selection walks the sidebar's shown rows: Select Worktree N picks row N (nothing
+  /// past the end), next and previous wrap, and a selection the filter hides starts from an end.
+  private func worktreeCommand(_ command: RemoteWorktreeCommand, state: inout State) -> Effect<Action> {
+    let rows = state.sidebarRowIDs
+    let current = state.selectedWorktreeID.flatMap { rows.firstIndex(of: $0) }
+    let target: String?
+    switch command {
+    case .newWorktree:
+      guard let repositoryID = state.selectedRepository?.id else { return .none }
+      return reduceSelection(&state, .newWorktreeTapped(repositoryID: repositoryID))
+    case .refreshWorktrees:
+      return reduceRequests(&state, .refreshTapped)
+    case .selectWorktree(let slot):
+      target = rows.indices.contains(slot) ? rows[slot] : nil
+    case .selectNextWorktree:
+      target = rows.isEmpty ? nil : rows[current.map { ($0 + 1) % rows.count } ?? 0]
+    case .selectPreviousWorktree:
+      target = rows.isEmpty ? nil : rows[current.map { ($0 - 1 + rows.count) % rows.count } ?? rows.count - 1]
+    }
+    guard let target, target != state.selectedWorktreeID else { return .none }
+    return reduceSelection(&state, .worktreeSelected(target))
   }
 
   /// The selected worktree's choices changed by `change`, then re-projected.
@@ -228,12 +255,12 @@ extension RemoteClientFeature {
     }
   }
 
-  /// `tab.new` in the selected worktree, into `paneID` when given, at the fitting grid of that pane
-  /// (else of the focused one) when it is known. A worktree without `layout` has no real pane id.
+  /// `tab.new` in the selected worktree, into `paneID` when given (`newTabPane`), at the fitting
+  /// grid of that pane (else of the focused one) when it is known.
   private func newTab(paneID: String?, state: inout State) -> Effect<Action> {
     guard let worktree = state.selectedWorktree else { return .none }
     var fields = ["worktreeId": worktree.id]
-    let sentPane = worktree.layout != nil ? paneID : nil
+    let sentPane = Self.newTabPane(paneID, in: worktree)
     if let sentPane { fields["paneId"] = sentPane }
     var ints: [String: Int] = [:]
     if let gridPane = paneID ?? state.projection?.focusedPaneID, let grid = session.fittingGrid(gridPane) {
@@ -241,6 +268,14 @@ extension RemoteClientFeature {
     }
     let key = RequestKey.newTab(worktreeID: worktree.id, paneID: sentPane)
     return request(key: key, "tab.new", fields, ints: ints, timeout: Timeout.newTerminal, state: &state)
+  }
+
+  /// The pane `tab.new` names: none for a worktree without `layout` (it has no real pane ids) and
+  /// none in `splitPerTab`, where the host ignores it and a new tab is a new top-level tab. Every
+  /// New Tab of such a worktree is then one request, under one busy key.
+  static func newTabPane(_ paneID: String?, in worktree: RemoteClientWorktree) -> String? {
+    guard let layout = worktree.layout, layout.mode != "splitPerTab" else { return nil }
+    return paneID
   }
 
   private func closeTab(_ tabID: String, state: inout State) -> Effect<Action> {
@@ -428,10 +463,26 @@ extension RemoteClientFeature {
 }
 
 extension RemoteLayoutProjection {
+  /// The group the window shows.
+  var activeGroup: GroupView? {
+    groups.first { $0.id == activeGroupID }
+  }
+
+  /// The active group's tree has more than one pane: zoom means something.
+  var isActiveGroupSplit: Bool {
+    activeGroup.map { Self.paneIDs(in: $0.tree).count > 1 } ?? false
+  }
+
   /// The active group's focused pane (its zoomed pane when zoomed).
   var focusedPaneID: String? {
-    guard let group = groups.first(where: { $0.id == activeGroupID }) else { return nil }
+    guard let group = activeGroup else { return nil }
     return group.zoomedPaneID ?? group.focusedPaneID
+  }
+
+  /// The tab a group shows: its focused pane's selected tab (the `splitPerTab` strip's tab).
+  func displayedTab(of group: GroupView) -> RemoteClientTab? {
+    guard let pane = group.focusedPaneID.flatMap({ panes[$0] }) else { return nil }
+    return pane.tabs.first { $0.id == pane.selectedTabID }
   }
 
   /// The group whose tree holds the pane.
@@ -442,7 +493,7 @@ extension RemoteLayoutProjection {
   /// The shown pane of the active group whose selected tab is this remote content: the pane the
   /// user clicked into when that content's surface took the keyboard.
   func paneID(showing contentID: String) -> String? {
-    guard let group = groups.first(where: { $0.id == activeGroupID }) else { return nil }
+    guard let group = activeGroup else { return nil }
     let shown = group.zoomedPaneID.map { [$0] } ?? Self.paneIDs(in: group.tree)
     return shown.first { paneID in
       guard let pane = panes[paneID] else { return false }

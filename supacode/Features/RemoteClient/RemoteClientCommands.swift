@@ -39,3 +39,34 @@ extension FocusedValues {
     set { self[RemoteTabSelectionActionKey.self] = newValue }
   }
 }
+
+/// The Worktrees menu items the remote window serves (R20). `selectWorktree` takes the 0-based
+/// hotkey slot of Select Worktree N.
+nonisolated enum RemoteWorktreeCommand: Hashable, Sendable {
+  case newWorktree
+  case refreshWorktrees
+  case selectWorktree(slot: Int)
+  case selectNextWorktree
+  case selectPreviousWorktree
+}
+
+/// What the remote window offers the Worktrees menu while it is key. Its presence alone disables
+/// every other store-bound Worktrees item, so nothing local fires from the remote window.
+struct RemoteWorktreeMenu: Equatable {
+  /// The selected worktree's repository allows New Worktree on the Mac.
+  let canCreateWorktree: Bool
+  let canRefreshWorktrees: Bool
+  let perform: FocusedAction<RemoteWorktreeCommand>
+}
+
+private struct RemoteWorktreeMenuKey: FocusedValueKey {
+  typealias Value = RemoteWorktreeMenu
+}
+
+extension FocusedValues {
+  /// Published by the remote window while it is key (R20); `WorktreeCommands` reads it.
+  var remoteWorktreeMenu: RemoteWorktreeMenu? {
+    get { self[RemoteWorktreeMenuKey.self] }
+    set { self[RemoteWorktreeMenuKey.self] = newValue }
+  }
+}

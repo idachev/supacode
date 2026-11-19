@@ -60,6 +60,18 @@ struct RemoteClientFeature {
       guard let selectedWorktreeID else { return nil }
       return worktrees.first { $0.id == selectedWorktreeID }
     }
+
+    /// The repository of the selected worktree.
+    var selectedRepository: RemoteClientRepository? {
+      guard let selectedWorktreeID else { return nil }
+      return list?.repos.first { $0.worktrees.contains { $0.id == selectedWorktreeID } }
+    }
+
+    /// The sidebar's rows top to bottom, as shown under the filter: the order of Select Worktree N
+    /// and Select Next / Previous.
+    var sidebarRowIDs: [String] {
+      sidebarSections.flatMap { $0.rows.map(\.id) }
+    }
   }
 
   struct NewWorktreePrompt: Equatable, Sendable {
@@ -93,6 +105,8 @@ struct RemoteClientFeature {
     case newWorktreeCancelled
     case deleteWorktreeTapped(worktreeID: String)
     case refreshTapped
+    /// A Worktrees menu item while the remote window is key (R20).
+    case worktreeCommand(RemoteWorktreeCommand)
     case requestFinished(key: String, Result<[String: String], RemoteClientRequestError>)
     case alert(PresentationAction<Alert>)
 

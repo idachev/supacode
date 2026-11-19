@@ -3,7 +3,7 @@ import Sharing
 import SupacodeSettingsShared
 import SwiftUI
 
-/// What a pane's strip needs to know about its pane beyond the tabs, as plain values.
+/// What a strip needs to know about a pane beyond its tabs, as plain values.
 struct RemotePaneChrome: Equatable {
   let isFocused: Bool
   let isZoomed: Bool
@@ -18,27 +18,32 @@ struct RemotePaneChrome: Equatable {
   let closingTabIDs: Set<String>
 }
 
-/// One pane's tab strip in the remote window (ОБ2, ОБ3): a button per tab (title, working
-/// shimmer, read-only lock, agent badges, a close button on hover), "+" for a new tab and the pane
-/// menu. Every control sends a `RemoteClientFeature` action; the picture changes with the next
-/// pushed `list`. The parent sizes it.
+/// One pane's tab strip in `tabsPerSplit` (ОБ2, ОБ3): a button per tab (title, working shimmer,
+/// read-only lock, agent badges, a close button on hover), "+" for a new tab and the pane menu.
+/// Every control sends a `RemoteClientFeature` action; the picture changes with the next pushed
+/// `list`. The parent sizes it.
 struct RemoteTabStripView: View {
   let pane: RemoteLayoutProjection.PaneView
   let chrome: RemotePaneChrome
   let store: StoreOf<RemoteClientFeature>
 
+  @Shared(.settingsFile) private var settingsFile
   @Environment(\.controlActiveState) private var controlActiveState
 
   var body: some View {
+    let overrides = settingsFile.global.shortcutOverrides
     HStack(spacing: 0) {
       ScrollView(.horizontal) {
         HStack(spacing: TerminalTabBarMetrics.tabSpacing) {
           ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { index, tab in
+            let title = RemoteStripTab.title(tab.title)
             RemoteTabButton(
+              title: title,
               tab: tab,
-              slot: index,
+              // Select Tab N picks the focused pane's tabs.
+              tooltip: RemoteStripTab.tooltip(
+                title: title, slot: index, selectsBySlot: chrome.isFocused, overrides: overrides),
               isSelected: tab.id == pane.selectedTabID,
-              isFocusedPane: chrome.isFocused,
               isClosing: chrome.closingTabIDs.contains(tab.id),
               onSelect: { store.send(.tabSelected(paneID: pane.id, tabID: tab.id)) },
               onClose: { store.send(.closeTabTapped(tabID: tab.id)) }
@@ -60,45 +65,107 @@ struct RemoteTabStripView: View {
   }
 }
 
-/// One remote tab. Selecting is the whole tab's button; the close button shows on hover.
+/// The only strip of `splitPerTab`, as the local `WorktreeGroupStripView`: one tab per group (the
+/// Mac's top-level tabs), each showing its focused pane's selected tab with its badges and a close
+/// button on hover, then the focused pane's "+" and pane menu. Panes have no strip of their own.
+struct RemoteGroupStripView: View {
+  let projection: RemoteLayoutProjection
+  /// The active group's focused pane, which "+" and the pane menu act on.
+  let focusedPaneID: String?
+  let focusedChrome: RemotePaneChrome?
+  /// Tab ids whose `tab.close` is in flight.
+  let closingTabIDs: Set<String>
+  let store: StoreOf<RemoteClientFeature>
+
+  @Shared(.settingsFile) private var settingsFile
+  @Environment(\.controlActiveState) private var controlActiveState
+
+  var body: some View {
+    let overrides = settingsFile.global.shortcutOverrides
+    HStack(spacing: 0) {
+      ScrollView(.horizontal) {
+        HStack(spacing: TerminalTabBarMetrics.tabSpacing) {
+          ForEach(Array(projection.groups.enumerated()), id: \.element.id) { index, group in
+            let tab = projection.displayedTab(of: group)
+            let title = RemoteStripTab.title(group.title)
+            RemoteTabButton(
+              title: title,
+              tab: tab,
+              tooltip: RemoteStripTab.tooltip(title: title, slot: index, selectsBySlot: true, overrides: overrides),
+              isSelected: group.id == projection.activeGroupID,
+              isClosing: tab.map { closingTabIDs.contains($0.id) } ?? true,
+              onSelect: { store.send(.groupSelected(group.id)) },
+              onClose: {
+                guard let tab else { return }
+                store.send(.closeTabTapped(tabID: tab.id))
+              }
+            )
+            if index < projection.groups.count - 1 {
+              TerminalTabDivider()
+            }
+          }
+        }
+        .frame(height: TerminalTabBarMetrics.barHeight)
+      }
+      .scrollIndicators(.never)
+      Spacer(minLength: 0)
+      if let focusedPaneID, let focusedChrome {
+        RemotePaneAccessories(paneID: focusedPaneID, chrome: focusedChrome, store: store)
+      }
+    }
+    .frame(height: TerminalTabBarMetrics.barHeight)
+    .saturation(controlActiveState == .inactive ? 0 : 1)
+    .clipped()
+  }
+}
+
+/// A strip tab's title and tooltip, shared by both strips.
+enum RemoteStripTab {
+  static func title(_ title: String) -> String {
+    title.isEmpty ? "Terminal" : title
+  }
+
+  /// The title and, for the first nine tabs Select Tab N picks, that item and its chord.
+  static func tooltip(
+    title: String, slot: Int, selectsBySlot: Bool, overrides: [AppShortcutID: AppShortcutOverride]
+  ) -> String {
+    guard selectsBySlot, slot < AppShortcuts.tabSelection.count else { return title }
+    let shortcut = AppShortcuts.tabSelection[slot].effective(from: overrides)
+    return WorktreeGroupStrip.tooltip(title: title, slot: slot, chord: AppShortcut.display(of: shortcut))
+  }
+}
+
+/// One strip tab. Selecting is the whole tab's button; the close button shows on hover.
 private struct RemoteTabButton: View {
-  let tab: RemoteClientTab
-  let slot: Int
+  let title: String
+  /// The tab whose badges, working shimmer and lock show; nil draws the title only.
+  let tab: RemoteClientTab?
+  let tooltip: String
   let isSelected: Bool
-  let isFocusedPane: Bool
   let isClosing: Bool
   let onSelect: () -> Void
   let onClose: () -> Void
 
-  @Shared(.settingsFile) private var settingsFile
   @State private var isHovering = false
   @State private var isPressing = false
   @State private var trailingButtonGestureActive = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  private var title: String { tab.title.isEmpty ? "Terminal" : tab.title }
-
-  /// Only the focused pane's tabs answer Select Tab N.
-  private var tooltip: String {
-    guard isFocusedPane, slot < AppShortcuts.tabSelection.count else { return title }
-    let shortcut = AppShortcuts.tabSelection[slot].effective(from: settingsFile.global.shortcutOverrides)
-    return WorktreeGroupStrip.tooltip(title: title, slot: slot, chord: AppShortcut.display(of: shortcut))
-  }
-
   var body: some View {
+    let isWorking = tab?.working == true
     HStack(spacing: TerminalTabBarMetrics.contentSpacing) {
       Text(title)
         .appFont(.caption)
         .fontWeight(isSelected ? .semibold : .regular)
         .lineLimit(1)
         .foregroundStyle(TerminalTabBarColors.activeText)
-        .shimmer(isActive: tab.working)
+        .shimmer(isActive: isWorking)
         .accessibilityHidden(true)
       Spacer(minLength: 0)
-      RemoteAgentBadges(agents: tab.agents, size: 14)
+      RemoteAgentBadges(agents: tab?.agents ?? [], size: 14)
         .fixedSize()
       ZStack(alignment: .trailing) {
-        if tab.readOnly {
+        if tab?.readOnly == true {
           PaneTabLockIndicator(suppress: isHovering)
         }
         TerminalTabTrailingButton(
@@ -126,7 +193,7 @@ private struct RemoteTabButton: View {
       }
       .buttonStyle(TerminalPressTrackingButtonStyle(isPressed: $isPressing))
       .accessibilityLabel(title)
-      .accessibilityValue(tab.working ? "Working" : "")
+      .accessibilityValue(isWorking ? "Working" : "")
       .help(tooltip)
     }
     .opacity(isSelected || isPressing ? 1 : TerminalTabBarMetrics.inactiveContentOpacityIdle)
@@ -148,7 +215,7 @@ private struct RemoteTabButton: View {
   }
 }
 
-/// The strip's trailing controls: exit zoom (zoomed panes only), "+" and the pane menu.
+/// A strip's trailing controls: exit zoom (zoomed panes only), "+" and the pane menu.
 private struct RemotePaneAccessories: View {
   let paneID: String
   let chrome: RemotePaneChrome
@@ -208,7 +275,7 @@ private struct RemotePaneAccessories: View {
           .accessibilityLabel("Pane Actions")
       }
       .menuStyle(.secondaryToolbar)
-      .help("Split, zoom or close this pane")
+      .help("Split, zoom or close the focused pane")
     }
     .frame(height: TerminalTabBarMetrics.barHeight)
     .padding(.trailing, 8)
@@ -233,106 +300,5 @@ struct RemoteStripIconButton: View {
     .buttonStyle(.plain)
     .foregroundStyle(isProminent ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
     .help(help)
-  }
-}
-
-/// The top strip of `splitPerTab`: one button per group (the Mac's top-level tabs), titled by the
-/// projection, and "+" for a new top-level tab.
-struct RemoteGroupStripView: View {
-  let groups: [RemoteLayoutProjection.GroupView]
-  let activeGroupID: String?
-  let isNewTabBusy: Bool
-  let store: StoreOf<RemoteClientFeature>
-
-  @Shared(.settingsFile) private var settingsFile
-  @Environment(\.controlActiveState) private var controlActiveState
-
-  var body: some View {
-    HStack(spacing: 0) {
-      ScrollView(.horizontal) {
-        HStack(spacing: TerminalTabBarMetrics.tabSpacing) {
-          ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-            RemoteGroupButton(
-              title: group.title.isEmpty ? "Terminal" : group.title,
-              tooltip: tooltip(group, slot: index),
-              isSelected: group.id == activeGroupID
-            ) {
-              store.send(.groupSelected(group.id))
-            }
-            if index < groups.count - 1 {
-              TerminalTabDivider()
-            }
-          }
-        }
-        .frame(height: TerminalTabBarMetrics.barHeight)
-      }
-      .scrollIndicators(.never)
-      Spacer(minLength: 0)
-      RemoteStripIconButton(
-        title: "New Tab", systemImage: "plus",
-        help: AppShortcut.helpText(
-          "New Tab", shortcut: AppShortcuts.newTerminalTab.effective(from: settingsFile.global.shortcutOverrides))
-      ) {
-        store.send(.newTabTapped(paneID: nil))
-      }
-      .disabled(isNewTabBusy)
-      .padding(.trailing, 8)
-    }
-    .frame(height: TerminalTabBarMetrics.barHeight)
-    .saturation(controlActiveState == .inactive ? 0 : 1)
-    .clipped()
-  }
-
-  private func tooltip(_ group: RemoteLayoutProjection.GroupView, slot: Int) -> String {
-    let title = group.title.isEmpty ? "Terminal" : group.title
-    guard slot < AppShortcuts.tabSelection.count else { return title }
-    let shortcut = AppShortcuts.tabSelection[slot].effective(from: settingsFile.global.shortcutOverrides)
-    return WorktreeGroupStrip.tooltip(title: title, slot: slot, chord: AppShortcut.display(of: shortcut))
-  }
-}
-
-/// One group of the `splitPerTab` strip.
-private struct RemoteGroupButton: View {
-  let title: String
-  let tooltip: String
-  let isSelected: Bool
-  let action: () -> Void
-
-  @State private var isHovering = false
-  @State private var isPressing = false
-
-  var body: some View {
-    Text(title)
-      .appFont(.caption)
-      .fontWeight(isSelected ? .semibold : .regular)
-      .lineLimit(1)
-      .foregroundStyle(TerminalTabBarColors.activeText)
-      .accessibilityHidden(true)
-      .padding(.horizontal, TerminalTabBarMetrics.tabHorizontalPadding)
-      .frame(
-        minWidth: TerminalTabBarMetrics.tabMinWidth,
-        maxWidth: TerminalTabBarMetrics.tabMaxWidth,
-        minHeight: TerminalTabBarMetrics.tabHeight,
-        maxHeight: TerminalTabBarMetrics.tabHeight
-      )
-      .background {
-        Button(action: action) {
-          Color.clear.contentShape(.rect)
-        }
-        .buttonStyle(TerminalPressTrackingButtonStyle(isPressed: $isPressing))
-        .accessibilityLabel(title)
-        .help(tooltip)
-      }
-      .opacity(isSelected || isPressing ? 1 : TerminalTabBarMetrics.inactiveContentOpacityIdle)
-      .background {
-        TerminalTabBackground(isActive: isSelected, isHovering: isHovering, isPressing: isPressing, isDragging: false)
-      }
-      .overlay(alignment: .top) {
-        PaneTabStripe(
-          isSelected: isSelected, isHovering: isHovering, isPressing: isPressing, tintColor: nil,
-          progressDisplay: nil)
-      }
-      .contentShape(.rect)
-      .onHover { isHovering = $0 }
   }
 }

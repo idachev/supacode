@@ -861,6 +861,88 @@ struct RemoteClientFeatureTests {
     #expect(session.sent.value.isEmpty)
   }
 
+  // MARK: - Worktrees menu (R20)
+
+  @Test func theWorktreesMenuWalksTheSidebarRows() async {
+    let session = FakeSession()
+    let store = await shownStore(
+      Self.list([Self.twoPane("w1"), Self.twoPane("w2"), Self.twoPane("w3")]), session: session)
+    #expect(store.state.selectedWorktreeID == "w1")
+    await store.send(.worktreeCommand(.selectWorktree(slot: 2))) { $0.selectedWorktreeID = "w3" }
+    // Next wraps to the top, previous to the bottom.
+    await store.send(.worktreeCommand(.selectNextWorktree)) { $0.selectedWorktreeID = "w1" }
+    await store.send(.worktreeCommand(.selectPreviousWorktree)) { $0.selectedWorktreeID = "w3" }
+    await store.send(.worktreeCommand(.selectPreviousWorktree)) { $0.selectedWorktreeID = "w2" }
+    // A slot past the last row does nothing.
+    await store.send(.worktreeCommand(.selectWorktree(slot: 5)))
+    #expect(store.state.selectedWorktreeID == "w2")
+    await store.finish()
+    #expect(session.sent.value.isEmpty)
+  }
+
+  @Test func theWorktreesMenuFollowsTheFilteredRows() async {
+    let session = FakeSession()
+    let store = await shownStore(
+      Self.list([Self.twoPane("alpha"), Self.twoPane("beta"), Self.twoPane("gamma")]), session: session)
+    await store.send(.worktreeSelected("beta"))
+    // The filter hides the selection: next starts at the first shown row, previous at the last.
+    await store.send(.filterChanged("a"))
+    #expect(store.state.sidebarRowIDs == ["alpha", "beta", "gamma"])
+    await store.send(.filterChanged("gam"))
+    #expect(store.state.sidebarRowIDs == ["gamma"])
+    await store.send(.worktreeCommand(.selectNextWorktree)) { $0.selectedWorktreeID = "gamma" }
+    await store.send(.worktreeSelected("alpha"))
+    await store.send(.worktreeCommand(.selectPreviousWorktree)) { $0.selectedWorktreeID = "gamma" }
+    // Select Worktree 1 is the first shown row.
+    await store.send(.filterChanged(""))
+    await store.send(.worktreeCommand(.selectWorktree(slot: 0))) { $0.selectedWorktreeID = "alpha" }
+    await store.finish()
+  }
+
+  @Test func theWorktreesMenuOpensNewWorktreeAndRefreshesOnTheMac() async {
+    let session = FakeSession()
+    let store = await shownStore(session: session)
+    // New Worktree… asks for the branch name in the selected worktree's repository.
+    await store.send(.worktreeCommand(.newWorktree)) {
+      $0.newWorktree = RemoteClientFeature.NewWorktreePrompt(repositoryID: "r")
+    }
+    await store.send(.newWorktreeCancelled)
+    await store.send(.worktreeCommand(.refreshWorktrees)) { $0.busyRequests = ["worktrees.refresh"] }
+    #expect(await settle { session.sent.value.map(\.type) == ["worktrees.refresh"] })
+    await store.finish()
+
+    // A repository that does not allow it: nothing opens.
+    var list = Self.list([Self.twoPane()])
+    list.repos[0].canCreateWorktree = false
+    let refused = await shownStore(list, session: FakeSession())
+    await refused.send(.worktreeCommand(.newWorktree))
+    #expect(refused.state.newWorktree == nil)
+  }
+
+  @Test func aNewTabInSplitPerTabNamesNoPane() async {
+    let session = FakeSession()
+    let (gate, release) = AsyncStream.makeStream(of: Bool.self)
+    session.reply.setValue({ _ in
+      for await _ in gate { return [:] }
+      throw CancellationError()
+    })
+    var worktree = Self.twoPane()
+    worktree.layout?.mode = "splitPerTab"
+    let store = await shownStore(Self.list([worktree]), session: session)
+    // The host ignores the pane there: every "+" and ⌘T is one request under one key.
+    await store.send(.newTabTapped(paneID: "P1"))
+    #expect(store.state.busyRequests == ["tab.new:w1|"])
+    await store.send(.newTabTapped(paneID: "P2"))
+    #expect(await settle { session.sent.value.count == 1 })
+    #expect(session.sent.value.first?.fields == ["worktreeId": "w1"])
+    #expect(RemoteClientFeature.newTabPane("P1", in: worktree) == nil)
+    #expect(RemoteClientFeature.newTabPane("P1", in: Self.twoPane()) == "P1")
+    release.yield(true)
+    await store.receive(\.requestFinished)
+    await store.finish()
+    #expect(session.sent.value.count == 1)
+  }
+
   @Test func theNewTabKeyNamesWorktreeAndPane() {
     // The views read busy buttons through it: it must be the key the reducer inserts.
     #expect(RemoteClientFeature.RequestKey.newTab(worktreeID: "w1", paneID: "P1") == "tab.new:w1|P1")
