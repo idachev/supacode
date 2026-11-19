@@ -169,6 +169,9 @@ final class GhosttySurfaceView: NSView, Identifiable {
     return wrapper
   }
   var onFocusChange: ((Bool) -> Void)?
+  /// The grid that fits the pane, from every layout pass in a window, pinned or not; a remote tab
+  /// asks its host for it (ТР8).
+  var onPaneGridMeasured: ((_ columns: Int, _ rows: Int) -> Void)?
   /// Asks the owning state to re-derive activity because user input reached an
   /// occluded surface, passing the window's fresh key/visibility readings so
   /// input alone never stamps unproven visibility into the state.
@@ -1049,6 +1052,14 @@ final class GhosttySurfaceView: NSView, Identifiable {
     // applied size and poison the hibernation freeze.
     guard window != nil || !hasBeenInWindow else { return }
     let backingSize = Self.surfaceBackingSize(of: self, size: contentSize ?? bounds.size)
+    // After any push: an applied pane size then reports Ghostty's own grid.
+    defer {
+      if let onPaneGridMeasured, window != nil,
+        let fitting = GridCap.fitting(pane: backingSize, surface: ghostty_surface_size(surface))
+      {
+        onPaneGridMeasured(fitting.columns, fitting.rows)
+      }
+    }
     // A remote client's grid holds while the pane keeps the size it had then.
     if requestedGridHold.keeps(layoutBackingSize: backingSize) { return }
     let currentSize = ghostty_surface_size(surface)
@@ -1197,6 +1208,21 @@ final class GhosttySurfaceView: NSView, Identifiable {
     static func startBackingSize(current: CGSize, grid: Grid, cell: CGSize, limit: Grid, exact: Bool) -> CGSize? {
       guard cell.width > 0, cell.height > 0 else { return nil }
       return backingSize(current: current, grid: grid, cell: cell, limit: limit, exact: exact) ?? current
+    }
+
+    /// The grid `pane` holds at the surface's cell size and padding remainder. The remainder holds
+    /// a part cell, so another pane size can come out one cell short, never over. Nil while the
+    /// cell metrics are unknown or the grid would be degenerate (`ResizePolicy`).
+    static func fitting(pane: CGSize, surface size: ghostty_surface_size_s) -> Grid? {
+      guard size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
+      let cellWidth = Int(size.cell_width_px)
+      let cellHeight = Int(size.cell_height_px)
+      let paddingWidth = Int(size.width_px) - Int(size.columns) * cellWidth
+      let paddingHeight = Int(size.height_px) - Int(size.rows) * cellHeight
+      let columns = (Int(pane.width.rounded(.down)) - paddingWidth) / cellWidth
+      let rows = (Int(pane.height.rounded(.down)) - paddingHeight) / cellHeight
+      guard columns >= 5, rows >= 2 else { return nil }
+      return (columns, rows)
     }
   }
 

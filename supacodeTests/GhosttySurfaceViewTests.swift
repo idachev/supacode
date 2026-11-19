@@ -197,6 +197,98 @@ struct GhosttySurfaceViewTests {
     #expect(Self.grid(of: surface) == paneGrid)
   }
 
+  // A remote tab asks its host for the grid that fits the pane (ТР8): every
+  // layout pass reports it while the pin holds the remote grid. It is the grid
+  // Ghostty gives that pane unpinned, or one cell short: the padding remainder
+  // the estimate keeps holds a part cell (`GridCap.fitting`).
+  @Test func aPinnedSurfaceReportsThePanesFittingGrid() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let window = Self.makeWindow()
+    defer { window.close() }
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    window.contentView?.addSubview(surfaceView)
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
+    surfaceView.updateSurfaceSize()
+    var reported: [[Int]] = []
+    surfaceView.onPaneGridMeasured = { columns, rows in reported.append([columns, rows]) }
+
+    for size in [CGSize(width: 600, height: 500), CGSize(width: 523, height: 377), CGSize(width: 400, height: 300)] {
+      _ = surfaceView.pinGrid(columns: 40, rows: 12)
+      reported = []
+      surfaceView.updateSurfaceSize(contentSize: size)
+      #expect(Self.grid(of: surface) == [40, 12])
+      surfaceView.unpinGrid()
+      surfaceView.updateSurfaceSize(contentSize: size)
+      let pane = Self.grid(of: surface)
+      guard let fitting = reported.first else {
+        Issue.record("no fitting grid reported at \(size)")
+        continue
+      }
+      #expect((pane[0] - 1...pane[0]).contains(fitting[0]))
+      #expect((pane[1] - 1...pane[1]).contains(fitting[1]))
+    }
+  }
+
+  // Unpinned, the report follows the push, so it is the grid Ghostty itself
+  // gave the pane (a remote tab before its first `attached`).
+  @Test func anUnpinnedSurfaceReportsGhosttysOwnGrid() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    let window = Self.makeWindow()
+    defer { window.close() }
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    window.contentView?.addSubview(surfaceView)
+    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
+    surfaceView.updateSurfaceSize()
+    var reported: [[Int]] = []
+    surfaceView.onPaneGridMeasured = { columns, rows in reported.append([columns, rows]) }
+
+    for size in [CGSize(width: 600, height: 500), CGSize(width: 523, height: 377), CGSize(width: 400, height: 300)] {
+      reported = []
+      surfaceView.updateSurfaceSize(contentSize: size)
+      #expect(reported == [Self.grid(of: surface)])
+    }
+  }
+
+  // Off-window and degenerate measurements are never reported: a remote host
+  // would otherwise be asked for the remote grid itself or for a tiny one.
+  @Test func noFittingGridOffWindowOrForADegeneratePane() {
+    let surfaceView = Self.makeSurfaceView()
+    defer { surfaceView.closeSurface() }
+    var reported: [[Int]] = []
+    surfaceView.onPaneGridMeasured = { columns, rows in reported.append([columns, rows]) }
+    surfaceView.updateSurfaceSize()
+    #expect(reported.isEmpty)
+
+    let window = Self.makeWindow()
+    defer { window.close() }
+    surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    window.contentView?.addSubview(surfaceView)
+    guard Self.measuredSurface(of: surfaceView) != nil else { return }
+    surfaceView.updateSurfaceSize()
+    #expect(!reported.isEmpty)
+    reported = []
+    surfaceView.updateSurfaceSize(contentSize: CGSize(width: 4, height: 4))
+    #expect(reported.isEmpty)
+  }
+
+  @Test func theFittingGridKeepsTheSurfacesPaddingRemainder() {
+    var size = ghostty_surface_size_s()
+    size.columns = 40
+    size.rows = 12
+    size.width_px = 40 * 10 + 30
+    size.height_px = 12 * 20 + 25
+    size.cell_width_px = 10
+    size.cell_height_px = 20
+    let fitting = GhosttySurfaceView.GridCap.fitting(pane: CGSize(width: 1030.5, height: 625), surface: size)
+    #expect(fitting?.columns == 100)
+    #expect(fitting?.rows == 30)
+    #expect(GhosttySurfaceView.GridCap.fitting(pane: CGSize(width: 70, height: 60), surface: size) == nil)
+    size.cell_width_px = 0
+    #expect(GhosttySurfaceView.GridCap.fitting(pane: CGSize(width: 1030, height: 625), surface: size) == nil)
+  }
+
   // A hibernate + wake installs a new surface; the content pins it with the
   // grid it recorded, including a pin made while there was no surface.
   @Test func terminalContentPinsEverySurfaceItInstalls() throws {
