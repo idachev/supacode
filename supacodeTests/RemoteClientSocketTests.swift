@@ -76,6 +76,50 @@ struct RemoteClientSocketTests {
     }
   }
 
+  /// Counts the echo listener's connections that ended; a test waits until one has.
+  nonisolated final class ClosedConnections: Sendable {
+    private struct State {
+      var count = 0
+      var waiter: CheckedContinuation<Bool, Never>?
+      var waiterID = 0
+    }
+
+    private let state = Mutex(State())
+
+    func record() {
+      let waiter = state.withLock { current -> CheckedContinuation<Bool, Never>? in
+        current.count += 1
+        defer { current.waiter = nil }
+        return current.waiter
+      }
+      waiter?.resume(returning: true)
+    }
+
+    /// True once at least one connection ended, false when none did within `seconds`.
+    func wait(within seconds: TimeInterval = RemoteClientSocketTests.wait) async -> Bool {
+      await withCheckedContinuation { continuation in
+        let (done, id) = state.withLock { current -> (Bool, Int) in
+          if current.count > 0 { return (true, 0) }
+          current.waiterID += 1
+          current.waiter = continuation
+          return (false, current.waiterID)
+        }
+        if done {
+          continuation.resume(returning: true)
+          return
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
+          let waiter = self.state.withLock { current -> CheckedContinuation<Bool, Never>? in
+            guard current.waiterID == id, let waiter = current.waiter else { return nil }
+            current.waiter = nil
+            return waiter
+          }
+          waiter?.resume(returning: false)
+        }
+      }
+    }
+  }
+
   /// A local stand-in for the relay: a plain WebSocket echo that records `Authorization`,
   /// or a raw HTTP listener that answers every upgrade with 401. `markerless` is a stand-in
   /// for the host instead: TLS 1.3 with the host's identity, accepting every upgrade without
@@ -99,6 +143,7 @@ struct RemoteClientSocketTests {
     }
 
     let authorizations: Authorizations
+    let closedConnections: ClosedConnections
     private let listener: NWListener
     private let ready = Mutex(Ready())
 
@@ -106,6 +151,8 @@ struct RemoteClientSocketTests {
       let queue = DispatchQueue(label: "supacode.tests.relay")
       let authorizations = Authorizations()
       self.authorizations = authorizations
+      let closedConnections = ClosedConnections()
+      self.closedConnections = closedConnections
       var parameters = NWParameters.tcp
       if case .markerless(let identity) = mode {
         let tls = NWProtocolTLS.Options()
@@ -128,7 +175,7 @@ struct RemoteClientSocketTests {
       listener.newConnectionHandler = { connection in
         connection.start(queue: queue)
         switch mode {
-        case .echo, .markerless: Self.echo(connection)
+        case .echo, .markerless: Self.echo(connection, closed: closedConnections)
         case .unauthorized: Self.refuse(connection)
         }
       }
@@ -167,18 +214,19 @@ struct RemoteClientSocketTests {
       waiter?.resume(returning: port)
     }
 
-    private static func echo(_ connection: NWConnection) {
+    private static func echo(_ connection: NWConnection, closed: ClosedConnections) {
       connection.receiveMessage { data, context, _, error in
         let opcode = (context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
           as? NWProtocolWebSocket.Metadata)?.opcode
         guard error == nil, opcode == .text, let data else {
           connection.cancel()
+          closed.record()
           return
         }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let reply = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
         connection.send(content: data, contentContext: reply, isComplete: true, completion: .idempotent)
-        echo(connection)
+        echo(connection, closed: closed)
       }
     }
 
@@ -264,6 +312,22 @@ struct RemoteClientSocketTests {
     #expect(recorder.opened.isEmpty)
   }
 
+  @Test func aWrongPinNeverSendsTheKey() async throws {
+    let identity = try Self.identity()
+    let host = try TestRelay(.markerless(identity))
+    defer { host.stop() }
+    let port = try #require(await host.port())
+    let socket = RemoteClientSocketFactory.live.lan("127.0.0.1", Int(port), String(repeating: "0", count: 64), Self.key)
+    defer { socket.close() }
+    let probe = EventProbe(socket)
+
+    #expect(await probe.next() == .event(.closed(reason: "certificate pin mismatch")))
+    #expect(await probe.next() == .ended)
+    // The listener's side of the connection has ended, so no request can still arrive.
+    #expect(await host.closedConnections.wait())
+    #expect(host.authorizations.values.withLock { $0 }.isEmpty)
+  }
+
   @Test func aWrongKeyNeverOpens() async throws {
     let identity = try Self.identity()
     let recorder = Recorder()
@@ -278,7 +342,7 @@ struct RemoteClientSocketTests {
       Issue.record("expected .closed first, got \(first)")
       return
     }
-    #expect(!reason.contains("wrong-key"))
+    #expect(["connection failed", "key refused"].contains(reason))
     #expect(await probe.next() == .ended)
     #expect(recorder.opened.isEmpty)
   }
@@ -310,6 +374,19 @@ struct RemoteClientSocketTests {
     #expect(relay.authorizations.values.withLock { $0 } == ["Bearer k"])
   }
 
+  @Test func aDroppedRelaySocketClosesItsConnection() async throws {
+    let relay = try TestRelay(.echo)
+    defer { relay.stop() }
+    var socket: (any RemoteClientSocket)? = try await Self.relaySocket(relay, key: "k")
+    let probe = EventProbe(try #require(socket))
+    #expect(await probe.next() == .event(.opened))
+
+    socket = nil
+    #expect(socket == nil)
+    #expect(await probe.next() == .event(.closed(reason: "released")))
+    #expect(await relay.closedConnections.wait())
+  }
+
   @Test func aRefusedRelayUpgradeClosesWithTheStatus() async throws {
     let relay = try TestRelay(.unauthorized)
     defer { relay.stop() }
@@ -325,11 +402,13 @@ struct RemoteClientSocketTests {
     let relay = try TestRelay(.echo)
     defer { relay.stop() }
     let relaySocket = try await Self.relaySocket(relay, key: "k")
+    defer { relaySocket.close() }
     let identity = try Self.identity()
     let recorder = Recorder()
     let (server, port) = try await lanServer(recorder, identity: identity)
     defer { server.stop() }
     let lanSocket = RemoteClientSocketFactory.live.lan("127.0.0.1", port, identity.fingerprint, Self.key)
+    defer { lanSocket.close() }
 
     for socket in [relaySocket, lanSocket] {
       let probe = EventProbe(socket)

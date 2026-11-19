@@ -32,8 +32,8 @@ nonisolated enum RemoteClientSocketEvent: Equatable, Sendable {
 
 /// One WebSocket. `events` yields `.opened` at most once, then `.text` frames, then exactly one
 /// `.closed`, and ends after it. `send` before `.opened` or after `.closed` is dropped.
-/// `close()` is idempotent; the owner calls it when done (the relay socket's URLSession holds the
-/// socket until then). `.closed(reason:)` is the HTTP status as plain digits when the server
+/// `close()` is idempotent; releasing the last reference closes the socket too (`"released"`).
+/// `.closed(reason:)` is the HTTP status as plain digits when the server
 /// refused the upgrade with a status the socket can see (relay only), otherwise a short English
 /// reason. A socket has no connect timeout of its own: an unreachable address waits for TCP's.
 nonisolated protocol RemoteClientSocket: AnyObject, Sendable {
@@ -239,28 +239,65 @@ nonisolated final class RemoteLANSocket: RemoteClientSocket {
 // MARK: - Relay
 
 /// The WebSocket to the Cloudflare relay with the client key as a bearer token.
-nonisolated final class RemoteRelaySocket: NSObject, RemoteClientSocket, URLSessionWebSocketDelegate {
+nonisolated final class RemoteRelaySocket: RemoteClientSocket {
+  /// The session's delegate. The session retains it until invalidated, so it holds the socket
+  /// weakly: a socket dropped without `close()` still deinits and closes its connection.
+  private final class Delegate: NSObject, URLSessionWebSocketDelegate, Sendable {
+    private struct Owner {
+      weak var socket: RemoteRelaySocket?
+    }
+
+    private let owner = Mutex(Owner())
+
+    private var socket: RemoteRelaySocket? { owner.withLock { $0.socket } }
+
+    func attach(_ socket: RemoteRelaySocket) {
+      owner.withLock { $0.socket = socket }
+    }
+
+    func urlSession(
+      _ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol subprotocol: String?
+    ) {
+      socket?.opened(webSocketTask)
+    }
+
+    func urlSession(
+      _ session: URLSession,
+      webSocketTask: URLSessionWebSocketTask,
+      didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+      reason: Data?
+    ) {
+      socket?.finish(reason: "closed by relay")
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+      socket?.completed(task, failed: error != nil)
+    }
+  }
+
   private let sink = RemoteClientSocketEvents()
-  private let task = Mutex<URLSessionWebSocketTask?>(nil)
-  private let session = Mutex<URLSession?>(nil)
+  private let session: URLSession
+  private let task: URLSessionWebSocketTask
 
   var events: AsyncStream<RemoteClientSocketEvent> { sink.stream }
 
   init(url: URL, key: String) {
-    super.init()
     var request = URLRequest(url: url)
     request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-    // The session retains its delegate until `finish` invalidates it.
-    let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
-    let task = session.webSocketTask(with: request)
+    let delegate = Delegate()
+    session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+    task = session.webSocketTask(with: request)
     task.maximumMessageSize = RemoteClientSocketFactory.maximumMessageSize
-    self.session.withLock { $0 = session }
-    self.task.withLock { $0 = task }
+    delegate.attach(self)
     task.resume()
   }
 
+  deinit {
+    finish(reason: "released")
+  }
+
   func send(_ text: String) {
-    guard sink.isOpen, let task = task.withLock({ $0 }) else { return }
+    guard sink.isOpen else { return }
     task.send(.string(text)) { error in
       if error != nil { socketLogger.debug("Relay socket send failed") }
     }
@@ -272,13 +309,24 @@ nonisolated final class RemoteRelaySocket: NSObject, RemoteClientSocket, URLSess
 
   private func finish(reason: String) {
     guard sink.close(reason: reason) else { return }
-    task.withLock { $0 }?.cancel(with: .normalClosure, reason: nil)
-    // Lets the close frame go out, then releases the delegate (this socket).
-    session.withLock { current in
-      current?.finishTasksAndInvalidate()
-      current = nil
-    }
+    task.cancel(with: .normalClosure, reason: nil)
+    // Lets the close frame go out, then releases the delegate.
+    session.finishTasksAndInvalidate()
     socketLogger.debug("Relay socket closed: \(reason)")
+  }
+
+  private func opened(_ task: URLSessionWebSocketTask) {
+    sink.open()
+    receive(task)
+  }
+
+  /// A refused upgrade closes with its HTTP status as plain digits.
+  private func completed(_ task: URLSessionTask, failed: Bool) {
+    if let status = (task.response as? HTTPURLResponse)?.statusCode, status != 101 {
+      finish(reason: String(status))
+    } else {
+      finish(reason: failed ? "connection failed" : "closed by relay")
+    }
   }
 
   private func receive(_ task: URLSessionWebSocketTask) {
@@ -294,30 +342,6 @@ nonisolated final class RemoteRelaySocket: NSObject, RemoteClientSocket, URLSess
         return
       }
       if sink.isOpen { receive(task) }
-    }
-  }
-
-  func urlSession(
-    _ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol subprotocol: String?
-  ) {
-    sink.open()
-    receive(webSocketTask)
-  }
-
-  func urlSession(
-    _ session: URLSession,
-    webSocketTask: URLSessionWebSocketTask,
-    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
-    reason: Data?
-  ) {
-    finish(reason: "closed by relay")
-  }
-
-  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-    if let status = (task.response as? HTTPURLResponse)?.statusCode, status != 101 {
-      finish(reason: String(status))
-    } else {
-      finish(reason: error == nil ? "closed by relay" : "connection failed")
     }
   }
 }
