@@ -147,6 +147,7 @@ private struct RemoteClientTitleButton: View {
       }
       .lineLimit(1)
       .fixedSize()
+      .padding(.horizontal, 8)
     }
     .buttonStyle(.plain)
     .help("Choose which Mac this window shows")
