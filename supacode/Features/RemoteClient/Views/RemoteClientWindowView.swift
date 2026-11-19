@@ -139,7 +139,8 @@ private struct RemoteClientTitleButton: View {
           .font(.headline)
           .truncationMode(.tail)
       }
-      if !detail.isEmpty {
+      // The notice under the title already says what the state is.
+      if notice == nil, !detail.isEmpty {
         Text("·")
           .foregroundStyle(.secondary)
         Text(detail)
@@ -409,10 +410,15 @@ extension RemoteClientFeature.State {
     knownMacName ?? "Remote Mac"
   }
 
+  /// The window shows a Mac's list and the link to it is not online: the sidebar dims.
+  var isLinkDown: Bool {
+    list != nil && !status.isOnline
+  }
+
   /// The line under the title and over the dimmed sidebar (БН3): nil while online, and before the
   /// window has a list (its waiting and failure screens already say it).
   var connectionNotice: String? {
-    guard list != nil, !status.isOnline else { return nil }
+    guard isLinkDown else { return nil }
     return RemoteConnectionBanner.text(
       status: status, isAttached: false, wasAttached: hasBeenOnline, hostName: knownMacName)
   }

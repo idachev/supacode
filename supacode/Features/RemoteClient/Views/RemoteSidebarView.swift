@@ -65,7 +65,7 @@ struct RemoteSidebarView: View {
     }
     // No connection (БН3): the rows show the last list, and the whole sidebar dims until the Mac
     // answers again.
-    .opacity(store.connectionNotice == nil ? 1 : 0.5)
+    .opacity(store.isLinkDown ? 0.5 : 1)
   }
 }
 

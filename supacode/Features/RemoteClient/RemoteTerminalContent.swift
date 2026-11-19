@@ -64,9 +64,11 @@ nonisolated struct RemoteTerminalDriver: Sendable {
     return [.attach]
   }
 
-  /// Typing from the local terminal. Dropped once the tab ended (the connection would still send it).
+  /// Typing from the local terminal. Dropped, never queued, once the tab ended (the connection would
+  /// still send it) and until the stream's own `attached` after the link came back (R23): the host's
+  /// terminal must not get keys for a screen this tab has not redrawn.
   mutating func pipeInput(_ bytes: [UInt8]) -> [Effect] {
-    guard pipeOpen, !hasEnded, !bytes.isEmpty else { return [] }
+    guard pipeOpen, !hasEnded, isAttached, !bytes.isEmpty else { return [] }
     return [.sendInput(bytes)]
   }
 
@@ -190,6 +192,9 @@ final class RemoteTerminalContent: TabContent {
   /// The connection's status and the Mac's name, as the session last told this content (БН1).
   private(set) var status: RemoteClientStatus = .idle
   private(set) var hostName: String?
+  /// The connection was online at some point since the session opened it (БН1). A content made while
+  /// the link is down has never been attached, but its keys are dropped all the same.
+  private(set) var seenOnline = false
   /// The grid that fits the local pane at this Mac's font, as the surface last measured it; nil
   /// before its first layout pass in a window. A new tab in this pane starts at it (`tab.new`).
   @ObservationIgnored private(set) var measuredGrid: RemoteAutoResize.Grid?
@@ -336,8 +341,9 @@ final class RemoteTerminalContent: TabContent {
 
   /// The session reports the connection's status and the Mac's name, now and on every change. A
   /// status other than online ends the attached state: the banner stays until the next `attached`.
-  func linkChanged(status: RemoteClientStatus, hostName: String?) {
+  func linkChanged(status: RemoteClientStatus, hostName: String?, seenOnline: Bool) {
     if self.status != status { self.status = status }
+    if !self.seenOnline, seenOnline || status.isOnline { self.seenOnline = true }
     if self.hostName != hostName { self.hostName = hostName }
     if case .online = status { return }
     driver.linkLost()
@@ -346,13 +352,13 @@ final class RemoteTerminalContent: TabContent {
 
   /// The banner kind over this terminal; nil while it is live.
   var bannerKind: RemoteConnectionBanner.Kind? {
-    RemoteConnectionBanner.kind(status: status, isAttached: isAttached, wasAttached: wasAttached)
+    RemoteConnectionBanner.kind(status: status, isAttached: isAttached, wasAttached: wasAttached || seenOnline)
   }
 
   /// The banner text over this terminal; nil while it is live.
   var bannerText: String? {
     RemoteConnectionBanner.text(
-      status: status, isAttached: isAttached, wasAttached: wasAttached, hostName: hostName)
+      status: status, isAttached: isAttached, wasAttached: wasAttached || seenOnline, hostName: hostName)
   }
 
   // MARK: - Effects

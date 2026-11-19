@@ -295,8 +295,32 @@ struct RemoteClientSessionTests {
 
     rig.sockets.relays[rig.sockets.relays.count - 1].drop(reason: "connection lost")
     #expect(await settle { content.status == .connecting })
-    // Never attached on this connection: connecting, not a lost link.
-    #expect(content.bannerText == "Connecting to Office Mac…")
+    // The link was online and is gone: its keys are dropped, whether or not it ever attached.
+    #expect(content.bannerText == "No connection to Office Mac. Typing is not sent.")
+  }
+
+  /// A content made while the link is down starts from "seen online on this connection".
+  @Test func aContentMadeWhileTheLinkIsDownSaysTypingIsNotSent() async throws {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    rig.session.open(hostID: "h1")
+    await online(rig)
+    #expect(await settle { rig.session.connection?.hostName == "Office Mac" })
+    rig.sockets.relays[rig.sockets.relays.count - 1].drop(reason: "connection lost")
+    #expect(await settle { rig.session.connection?.status == .connecting })
+    rig.session.setVisible(["c1"])
+    let content = try #require(rig.session.attachedContent("c1"))
+    #expect(content.bannerText == "No connection to Office Mac. Typing is not sent.")
+  }
+
+  /// Before the first online a content is only connecting.
+  @Test func aContentMadeBeforeTheFirstOnlineIsConnecting() throws {
+    let rig = rig()
+    defer { rig.cleanUp() }
+    rig.session.open(hostID: "h1")
+    rig.session.setVisible(["c1"])
+    let content = try #require(rig.session.attachedContent("c1"))
+    #expect(content.bannerText == "Connecting to the Mac…")
   }
 
   /// Two worktrees hold a pane with this id: the one whose tab is shown answers, not the first one.

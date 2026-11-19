@@ -362,6 +362,29 @@ struct RemoteClientFeatureTests {
     await store.finish()
   }
 
+  @Test func pickingAnotherMacForgetsThatTheLinkWasOnline() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let session = FakeSession(live: true)
+    let store = Self.makeStore(session: session)
+    await store.send(.windowAppeared) {
+      $0.ownHostID = "me"
+    }
+    #expect(await settle { session.opens.count == 1 })
+    session.yield(.statusChanged(.online(.relay)))
+    await store.receive(\.statusChanged) {
+      $0.status = .online(.relay)
+      $0.hasBeenOnline = true
+    }
+    await store.send(.hostPicked("b")) {
+      $0.$selectedHostID.withLock { $0 = "b" }
+      $0.hasBeenOnline = false
+    }
+    #expect(await settle { session.opens.count == 2 })
+    session.finishAll()
+    await store.finish()
+  }
+
   @Test func closingTheWindowForgetsThatTheLinkWasOnline() async {
     let session = FakeSession(live: true)
     let store = Self.makeStore(session: session)

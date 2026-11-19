@@ -89,16 +89,16 @@ struct RemoteClientBannerTests {
     let content = ports.liveContent(clock: TestClock<Duration>())
     defer { content.tearDown() }
     #expect(await RemoteRouterTestSupport.settle { content.isAttached })
-    content.linkChanged(status: .online(.relay), hostName: "Office Mac")
+    content.linkChanged(status: .online(.relay), hostName: "Office Mac", seenOnline: false)
     #expect(content.bannerText == nil)
     #expect(content.toolbar?.view == nil)
 
-    content.linkChanged(status: .connecting, hostName: "Office Mac")
+    content.linkChanged(status: .connecting, hostName: "Office Mac", seenOnline: false)
     #expect(content.bannerText == "No connection to Office Mac. Typing is not sent.")
     #expect(content.toolbar?.view != nil)
 
     // Back online but not redrawn yet: still a banner.
-    content.linkChanged(status: .online(.relay), hostName: "Office Mac")
+    content.linkChanged(status: .online(.relay), hostName: "Office Mac", seenOnline: false)
     #expect(content.bannerText == "Connecting to Office Mac…")
 
     ports.continuation?.yield(.attached(cols: 80, rows: 24))
@@ -106,12 +106,69 @@ struct RemoteClientBannerTests {
     #expect(content.toolbar?.view == nil)
   }
 
+  @Test func aDriverDropsInputUntilItsOwnAttached() {
+    var driver = RemoteTerminalDriver()
+    _ = driver.pipeOpened()
+    #expect(driver.pipeInput([0x61]) == [])
+    _ = driver.event(.attached(cols: 80, rows: 24))
+    #expect(driver.pipeInput([0x62]) == [.sendInput([0x62])])
+    driver.linkLost()
+    #expect(driver.pipeInput([0x63]) == [])
+    _ = driver.event(.attached(cols: 80, rows: 24))
+    #expect(driver.pipeInput([0x64]) == [.sendInput([0x64])])
+  }
+
+  /// R23: after a reconnect the host's terminal gets no keys before this tab's own `attached`.
+  @MainActor
+  @Test func inputTypedWhileOnlineButNotYetReattachedIsNotSent() async {
+    let ports = RemoteTerminalPortsRecorder()
+    let content = ports.liveContent(clock: TestClock<Duration>())
+    defer { content.tearDown() }
+    #expect(await RemoteRouterTestSupport.settle { content.isAttached })
+    content.pipeInput([0x61])
+    #expect(ports.inputs == [[0x61]])
+
+    content.linkChanged(status: .connecting, hostName: "Office Mac", seenOnline: true)
+    content.pipeInput([0x62])
+    content.linkChanged(status: .online(.relay), hostName: "Office Mac", seenOnline: true)
+    #expect(!content.isAttached)
+    content.pipeInput([0x63])
+    #expect(ports.inputs == [[0x61]])
+
+    ports.continuation?.yield(.attached(cols: 80, rows: 24))
+    #expect(await RemoteRouterTestSupport.settle { content.isAttached })
+    content.pipeInput([0x64])
+    #expect(ports.inputs == [[0x61], [0x64]])
+  }
+
+  /// A content made while the link is down says so: its keys are dropped, it is not "connecting".
+  @MainActor
+  @Test func aContentMadeWhileTheLinkIsDownSaysTypingIsNotSent() {
+    let ports = RemoteTerminalPortsRecorder()
+    let content = ports.content(clock: TestClock<Duration>())
+    defer { content.tearDown() }
+    content.linkChanged(status: .connecting, hostName: "Office Mac", seenOnline: true)
+    #expect(content.bannerText == "No connection to Office Mac. Typing is not sent.")
+    content.linkChanged(status: .online(.relay), hostName: "Office Mac", seenOnline: true)
+    #expect(content.bannerText == "Connecting to Office Mac…")
+  }
+
+  @Test func theSidebarDimsOnlyForALostLinkOfAShownList() {
+    var state = RemoteClientFeature.State()
+    state.status = .connecting
+    #expect(!state.isLinkDown)
+    state.list = RemoteClientList()
+    #expect(state.isLinkDown)
+    state.status = .online(.lan)
+    #expect(!state.isLinkDown)
+  }
+
   @MainActor
   @Test func aTerminalNotYetAttachedShowsConnecting() {
     let ports = RemoteTerminalPortsRecorder()
     let content = ports.content(clock: TestClock<Duration>())
     defer { content.tearDown() }
-    content.linkChanged(status: .online(.lan), hostName: nil)
+    content.linkChanged(status: .online(.lan), hostName: nil, seenOnline: false)
     #expect(content.bannerText == "Connecting to the Mac…")
   }
 

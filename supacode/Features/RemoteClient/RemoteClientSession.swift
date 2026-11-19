@@ -56,6 +56,8 @@ final class RemoteClientSession {
   @ObservationIgnored private var subscriber: AsyncStream<Event>.Continuation?
   /// What the subscriber was last told, so only a real change becomes an event.
   @ObservationIgnored private var published = Published()
+  /// The connection was online since `open`: a content made later starts from it (БН1).
+  @ObservationIgnored private var hasBeenOnline = false
 
   private struct Published: Equatable {
     var status: RemoteClientStatus = .idle
@@ -116,6 +118,7 @@ final class RemoteClientSession {
     tearDownContents()
     connection?.stop()
     connection = nil
+    hasBeenOnline = false
     epoch += 1
     guard let key = loadKey() else {
       sessionLogger.warning("Remote client not started: no usable key file")
@@ -146,6 +149,7 @@ final class RemoteClientSession {
     epoch += 1
     // The reducer resets its copy when the window closes; the next connection reports afresh.
     published = Published()
+    hasBeenOnline = false
     sessionLogger.info("Remote client closed")
   }
 
@@ -209,7 +213,9 @@ final class RemoteClientSession {
       runtime: ghostty,
       clock: clock
     )
-    content.linkChanged(status: connection.status, hostName: connection.hostName)
+    content.linkChanged(
+      status: connection.status, hostName: connection.hostName,
+      seenOnline: hasBeenOnline || connection.status.isOnline)
     // Kept before the surface starts: its pipe may open before `provision` returns.
     contents[remoteContentID] = content
     guard runtime.provision(content, at: runtime.spawnGeometry(near: nil)) else { return }
@@ -314,10 +320,11 @@ final class RemoteClientSession {
   private func publish(_ current: Published, list: RemoteClientList?) {
     let previous = published
     published = current
+    if current.status.isOnline { hasBeenOnline = true }
     // The banners over the terminals follow the link, whether or not the reducer listens.
     if current.status != previous.status || current.hostName != previous.hostName {
       for content in contents.values {
-        content.linkChanged(status: current.status, hostName: current.hostName)
+        content.linkChanged(status: current.status, hostName: current.hostName, seenOnline: hasBeenOnline)
       }
     }
     guard let subscriber else { return }
