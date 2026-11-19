@@ -15,7 +15,10 @@ paths:
 - For a new worktree, `selectedWorktreeChanged` arrives before `worktreeCreated`. A worktree in
   lifecycle `.pending` must still get its first tab: that tab runs the setup script and sends
   the ack back to CLI `worktree new`.
-- Cmd+W closes a tab only while `closeTabAction` is enabled (focus in the detail view and a
-  focused tab). Otherwise macOS gives it to Close Window. With no tab, or with focus in the
-  sidebar, Cmd+W closing the window is expected, not a regression.
-  **Why:** a long diagnosis of a Cmd+W "regression" found nothing to fix.
+- Cmd+W never closes a window (owner rule, 2026-11-19): "Close Tab/Terminal" always owns Cmd+W
+  and does nothing when `closeTabAction` is not enabled; Close Window is Shift+Cmd+W.
+  **Why:** Cmd+W closing the main window once was "expected"; the owner ruled it out.
+- A `WindowGroup` scene brings its own File > Close (Cmd+W) and Close All, which push out the
+  app's `CommandGroup(replacing: .saveItem)` (Close Tab vanishes, Cmd+W closes the window on every
+  keyboard layout). Every extra `WindowGroup` needs `.commandsRemoved()`.
+  **Why:** the Remote Mac `WindowGroup(for:)` broke Cmd+W app-wide on 2026-11-19.
