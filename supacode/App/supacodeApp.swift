@@ -778,6 +778,9 @@ struct SupacodeApp: App {
         .appChromeTextSize(store.settings.chromeTextSize)
         .appChromeBaseFont(store.settings.chromeTextSize)
     }
+    // A WindowGroup brings its own File ▸ Close (⌘W, `performClose:`) and Close All, which
+    // displace WindowCommands' `.saveItem` group, so ⌘W closed the window on every layout (R32).
+    .commandsRemoved()
     .handlesExternalEvents(matching: [])
     .defaultSize(width: 1000, height: 680)
     .restorationBehavior(.disabled)

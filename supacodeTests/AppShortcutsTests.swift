@@ -609,8 +609,8 @@ struct AppShortcutsTests {
 
   // MARK: - Reserved chords.
 
-  @Test func appKitReservedStringsIncludeTheHardcodedCloseChord() {
-    #expect(AppShortcutOverride.appKitReservedDisplayStrings == ["⌘Q", "⌘H", "⌘M", "⌘W"])
+  @Test func appKitReservedStringsIncludeTheHardcodedCloseChords() {
+    #expect(AppShortcutOverride.appKitReservedDisplayStrings == ["⌘Q", "⌘H", "⌘M", "⌘W", "⌘⇧W"])
   }
 
   @Test func menuReservedShortcutsCollectResponderChainBuiltIns() {

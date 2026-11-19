@@ -1989,14 +1989,38 @@ final class GhosttySurfaceView: NSView, Identifiable {
     return itemMask
   }
 
-  /// Recursively walks the main menu for the first app-owned item matching `event`, returning
-  /// it so the caller knows the chord resolves to an app shortcut worth forwarding. Non-remappable
-  /// macOS built-ins are skipped so a terminal binding wins over them instead of being suppressed.
+  /// Recursively walks the main menu for the app-owned item matching `event`, returning it so the
+  /// caller knows the chord resolves to an app shortcut worth forwarding. Non-remappable macOS
+  /// built-ins are skipped so a terminal binding wins over them instead of being suppressed.
+  ///
+  /// Picks what AppKit's own key-equivalent path would pick: hidden items (and everything under a
+  /// hidden parent) never match unless they allow their key equivalent when hidden, and the first
+  /// enabled match wins over an earlier disabled one, so a Cyrillic chord fired directly cannot
+  /// land on a stale or disabled item (R32). With no enabled match the first visible match is still
+  /// returned: a Latin chord then reaches the native path, which validates the item itself.
+  /// No `menu.update()` here: it makes SwiftUI rebuild and replace its items (cb5670f8), and the
+  /// local key monitor runs this scan on every keyDown.
   static func forwardableMenuItem(for event: NSEvent, in menu: NSMenu) -> NSMenuItem? {
-    for item in menu.items {
-      if let submenu = item.submenu, let match = forwardableMenuItem(for: event, in: submenu) { return match }
+    var firstDisabledMatch: NSMenuItem?
+    let enabledMatch = enabledForwardableMenuItem(for: event, in: menu, firstDisabledMatch: &firstDisabledMatch)
+    return enabledMatch ?? firstDisabledMatch
+  }
+
+  private static func enabledForwardableMenuItem(
+    for event: NSEvent,
+    in menu: NSMenu,
+    firstDisabledMatch: inout NSMenuItem?
+  ) -> NSMenuItem? {
+    for item in menu.items where !item.isHidden || item.allowsKeyEquivalentWhenHidden {
+      if let submenu = item.submenu, !item.isHidden,
+        let match = enabledForwardableMenuItem(for: event, in: submenu, firstDisabledMatch: &firstDisabledMatch)
+      {
+        return match
+      }
       guard menuItem(item, matches: event), !isSystemManagedMenuItem(item) else { continue }
-      return item
+      // A disabled SwiftUI command item drops its action, so both count as disabled.
+      if item.isEnabled, item.action != nil { return item }
+      if firstDisabledMatch == nil { firstDisabledMatch = item }
     }
     return nil
   }

@@ -959,6 +959,128 @@ struct GhosttySurfaceViewTests {
     #expect(target.fired)
   }
 
+  // MARK: - Scan picks what AppKit's native key-equivalent path would pick (R32).
+
+  /// A `⌘W` item on the US key, the way SwiftUI builds a command item.
+  private static func commandWItem(target: MenuActionTarget?, enabled: Bool = true) -> NSMenuItem {
+    let item = NSMenuItem(title: "Close", action: #selector(MenuActionTarget.fire(_:)), keyEquivalent: "w")
+    item.keyEquivalentModifierMask = [.command]
+    item.target = target
+    item.isEnabled = enabled
+    return item
+  }
+
+  /// `⌘W` typed on the Bulgarian layout: the W key produces `ц`.
+  private static func cyrillicCommandW() -> NSEvent {
+    keyEvent(chars: "ц", ignoringModifiers: "ц", modifiers: [.command], keyCode: UInt16(kVK_ANSI_W))
+  }
+
+  private static func manualMenu(_ items: [NSMenuItem]) -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    items.forEach(menu.addItem)
+    return menu
+  }
+
+  @Test func forwardableMenuItemSkipsDisabledMatchBeforeEnabledOne() {
+    let disabled = Self.commandWItem(target: MenuActionTarget(), enabled: false)
+    let enabled = Self.commandWItem(target: MenuActionTarget())
+    let menu = Self.manualMenu([disabled, enabled])
+
+    #expect(GhosttySurfaceView.forwardableMenuItem(for: Self.cyrillicCommandW(), in: menu) === enabled)
+  }
+
+  @Test func forwardableMenuItemSkipsActionlessMatchBeforeEnabledOne() {
+    // A disabled SwiftUI command item drops its action.
+    let actionless = Self.commandWItem(target: nil)
+    actionless.action = nil
+    let enabled = Self.commandWItem(target: MenuActionTarget())
+    let menu = Self.manualMenu([actionless, enabled])
+
+    #expect(GhosttySurfaceView.forwardableMenuItem(for: Self.cyrillicCommandW(), in: menu) === enabled)
+  }
+
+  @Test func forwardableMenuItemSkipsHiddenMatchBeforeEnabledOne() {
+    let hidden = Self.commandWItem(target: MenuActionTarget())
+    hidden.isHidden = true
+    let visible = Self.commandWItem(target: MenuActionTarget())
+    let menu = Self.manualMenu([hidden, visible])
+
+    #expect(GhosttySurfaceView.forwardableMenuItem(for: Self.cyrillicCommandW(), in: menu) === visible)
+  }
+
+  @Test func forwardableMenuItemKeepsHiddenItemThatAllowsItsKeyEquivalent() {
+    let hidden = Self.commandWItem(target: MenuActionTarget())
+    hidden.isHidden = true
+    hidden.allowsKeyEquivalentWhenHidden = true
+    let menu = Self.manualMenu([hidden])
+
+    #expect(GhosttySurfaceView.forwardableMenuItem(for: Self.cyrillicCommandW(), in: menu) === hidden)
+  }
+
+  @Test func forwardableMenuItemSkipsTheSubmenuOfAHiddenParent() {
+    let nested = Self.commandWItem(target: MenuActionTarget())
+    let hiddenParent = NSMenuItem(title: "Hidden", action: nil, keyEquivalent: "")
+    hiddenParent.isHidden = true
+    hiddenParent.submenu = Self.manualMenu([nested])
+    let visible = Self.commandWItem(target: MenuActionTarget())
+    let menu = Self.manualMenu([hiddenParent, visible])
+
+    #expect(GhosttySurfaceView.forwardableMenuItem(for: Self.cyrillicCommandW(), in: menu) === visible)
+  }
+
+  @Test func forwardableMenuItemSkipsDisabledMatchInAnEarlierSubmenu() {
+    let fileMenu = Self.manualMenu([Self.commandWItem(target: MenuActionTarget(), enabled: false)])
+    let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+    fileItem.submenu = fileMenu
+    let enabled = Self.commandWItem(target: MenuActionTarget())
+    let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+    windowItem.submenu = Self.manualMenu([enabled])
+    let root = Self.manualMenu([fileItem, windowItem])
+
+    #expect(GhosttySurfaceView.forwardableMenuItem(for: Self.cyrillicCommandW(), in: root) === enabled)
+  }
+
+  @Test func forwardableMenuItemFallsBackToTheFirstDisabledMatch() {
+    // No enabled candidate: keep today's answer so a Latin chord still reaches
+    // the native path, which validates the item itself.
+    let disabled = Self.commandWItem(target: MenuActionTarget(), enabled: false)
+    let menu = Self.manualMenu([disabled])
+
+    #expect(GhosttySurfaceView.forwardableMenuItem(for: Self.cyrillicCommandW(), in: menu) === disabled)
+  }
+
+  @Test func physicalShortcutDispatchFiresTheEnabledItemPastADisabledOne() {
+    let disabledTarget = MenuActionTarget()
+    let enabledTarget = MenuActionTarget()
+    let menu = Self.manualMenu([
+      Self.commandWItem(target: disabledTarget, enabled: false),
+      Self.commandWItem(target: enabledTarget),
+    ])
+
+    #expect(
+      GhosttySurfaceView.eventAfterPhysicalShortcutDispatch(
+        Self.cyrillicCommandW(), firstResponder: NSView(), menu: menu) == nil
+    )
+    #expect(enabledTarget.fired)
+    #expect(!disabledTarget.fired)
+  }
+
+  @Test func forwardedCyrillicChordFiresTheEnabledItemPastAHiddenOne() {
+    // The terminal path: scan, then dispatch (a physical-only match fires directly).
+    let hiddenTarget = MenuActionTarget()
+    let hidden = Self.commandWItem(target: hiddenTarget)
+    hidden.isHidden = true
+    let enabledTarget = MenuActionTarget()
+    let menu = Self.manualMenu([hidden, Self.commandWItem(target: enabledTarget)])
+    let event = Self.cyrillicCommandW()
+
+    let item = GhosttySurfaceView.forwardableMenuItem(for: event, in: menu)
+    #expect(item.map { GhosttySurfaceView.dispatchForwardableChord($0, for: event, in: menu) } == true)
+    #expect(enabledTarget.fired)
+    #expect(!hiddenTarget.fired)
+  }
+
   @Test func isSystemManagedMenuItemClassifiesActions() {
     let hideOthers = NSMenuItem(
       title: "Hide Others",

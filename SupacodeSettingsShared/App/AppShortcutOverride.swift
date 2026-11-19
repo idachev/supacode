@@ -92,7 +92,8 @@ extension AppShortcutOverride {
 extension AppShortcutOverride {
   // Well-known macOS app conventions always reserved by AppKit (not in the symbolic hotkeys plist).
   // ⌘W included: it is hardcoded to Close Tab, so the recorder must refuse it.
-  public static let appKitReservedDisplayStrings: Set<String> = ["⌘Q", "⌘H", "⌘M", "⌘W"]
+  // ⌘⇧W likewise: it is hardcoded to Close Window (R32).
+  public static let appKitReservedDisplayStrings: Set<String> = ["⌘Q", "⌘H", "⌘M", "⌘W", "⌘⇧W"]
 
   // Reads macOS system symbolic hotkeys at runtime and returns their display strings,
   // combined with well-known AppKit reserved shortcuts.
