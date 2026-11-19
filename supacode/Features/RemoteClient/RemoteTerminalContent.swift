@@ -37,6 +37,9 @@ nonisolated struct RemoteTerminalDriver: Sendable {
 
   /// The reason a pipe that closed under a live tab ends it.
   static let pipeClosedReason = "The local terminal closed"
+  /// The reason a stream that ended without `detached` ends the tab (the connection stopped or
+  /// restarted, or another attach of the same id took the stream).
+  static let streamEndedReason = "The connection to the Mac was reset"
 
   private(set) var phase = Phase.starting
   private(set) var remoteGrid: Grid?
@@ -67,6 +70,15 @@ nonisolated struct RemoteTerminalDriver: Sendable {
     pipeOpen = false
     phase = .ended(reason: Self.pipeClosedReason)
     return [.detach]
+  }
+
+  /// The event stream ended without `detached`. Nothing will reach the terminal again, so the tab
+  /// ends and stops forwarding input. No `detach`: the connection already forgot the terminal, or
+  /// another attach of the same id now owns it.
+  mutating func streamEnded() -> [Effect] {
+    guard !hasEnded else { return [] }
+    phase = .ended(reason: Self.streamEndedReason)
+    return []
   }
 
   mutating func event(_ event: RemoteTerminalEvent) -> [Effect] {
@@ -124,6 +136,31 @@ nonisolated struct RemoteTerminalDriver: Sendable {
 final class RemoteTerminalContent: TabContent {
   typealias Phase = RemoteTerminalDriver.Phase
 
+  /// Everything the content calls on the connection and the pipe server, so tests can stand in.
+  struct Ports {
+    var attach: @MainActor (_ contentID: String, _ scrollback: Int) -> AsyncStream<RemoteTerminalEvent>
+    var detach: @MainActor (_ contentID: String) -> Void
+    var sendInput: @MainActor (_ contentID: String, _ bytes: [UInt8]) -> Void
+    var setWantedGrid: @MainActor (_ contentID: String, _ grid: RemoteAutoResize.Grid) -> Void
+    var socketPath: String
+    var expectPipe: @MainActor (_ contentID: String) -> String
+    var forgetPipe: @MainActor (_ contentID: String) -> Void
+    var writePipe: @MainActor (_ contentID: String, _ bytes: [UInt8]) -> Void
+
+    static func live(connection: RemoteClientConnection, pipes: RemotePipeServer) -> Ports {
+      Ports(
+        attach: { connection.attach(contentID: $0, scrollback: $1) },
+        detach: { connection.detach(contentID: $0) },
+        sendInput: { connection.sendInput(contentID: $0, bytes: $1) },
+        setWantedGrid: { connection.setWantedGrid(contentID: $0, columns: $1.columns, rows: $1.rows) },
+        socketPath: pipes.socketPath,
+        expectPipe: { pipes.expect(contentID: $0) },
+        forgetPipe: { pipes.forget(contentID: $0) },
+        writePipe: { pipes.write(contentID: $0, $1) }
+      )
+    }
+  }
+
   /// Scrollback lines the host replays on `attach`.
   nonisolated static let scrollback = 2000
 
@@ -136,16 +173,17 @@ final class RemoteTerminalContent: TabContent {
   private(set) var sessionFailedToStart = false
   private var surfaceView: GhosttySurfaceView?
 
-  @ObservationIgnored private let connection: RemoteClientConnection
-  @ObservationIgnored private let pipes: RemotePipeServer
+  @ObservationIgnored private let ports: Ports
   @ObservationIgnored private let runtime: GhosttyRuntime
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored private var driver = RemoteTerminalDriver()
   @ObservationIgnored private var events: Task<Void, Never>?
   @ObservationIgnored private var settleTimer: Task<Void, Never>?
+  /// Which `scheduleSettle` the running timer belongs to; an older timer that wakes late does nothing.
+  @ObservationIgnored private var settleGeneration = 0
   @ObservationIgnored private var isTornDown = false
 
-  init(
+  convenience init(
     remoteContentID: String,
     title: String,
     connection: RemoteClientConnection,
@@ -154,11 +192,23 @@ final class RemoteTerminalContent: TabContent {
     clock: any Clock<Duration>,
     id: ContentID = ContentID()
   ) {
+    self.init(
+      remoteContentID: remoteContentID, title: title, ports: .live(connection: connection, pipes: pipes),
+      runtime: runtime, clock: clock, id: id)
+  }
+
+  init(
+    remoteContentID: String,
+    title: String,
+    ports: Ports,
+    runtime: GhosttyRuntime,
+    clock: any Clock<Duration>,
+    id: ContentID = ContentID()
+  ) {
     self.id = id
     self.remoteContentID = remoteContentID
     self.title = title
-    self.connection = connection
-    self.pipes = pipes
+    self.ports = ports
     self.runtime = runtime
     self.clock = clock
   }
@@ -176,14 +226,14 @@ final class RemoteTerminalContent: TabContent {
       sessionFailedToStart = true
       return
     }
-    let token = pipes.expect(contentID: remoteContentID)
+    let token = ports.expectPipe(remoteContentID)
     let view = GhosttySurfaceView(
       id: id.rawValue,
       runtime: runtime,
       workingDirectory: FileManager.default.homeDirectoryForCurrentUser,
       command: command,
       environmentVariables: [
-        RemotePipeProtocol.socketVariable: pipes.socketPath,
+        RemotePipeProtocol.socketVariable: ports.socketPath,
         RemotePipeProtocol.tokenVariable: token,
       ],
       commandWrapper: [],
@@ -193,7 +243,7 @@ final class RemoteTerminalContent: TabContent {
     )
     guard view.surface != nil else {
       view.closeSurface()
-      pipes.forget(contentID: remoteContentID)
+      ports.forgetPipe(remoteContentID)
       remoteTerminalLogger.warning("Remote tab not started: no Ghostty surface")
       sessionFailedToStart = true
       return
@@ -219,8 +269,8 @@ final class RemoteTerminalContent: TabContent {
     events = nil
     settleTimer?.cancel()
     settleTimer = nil
-    connection.detach(contentID: remoteContentID)
-    pipes.forget(contentID: remoteContentID)
+    ports.detach(remoteContentID)
+    ports.forgetPipe(remoteContentID)
     surfaceView?.onPaneGridMeasured = nil
     surfaceView?.closeSurface()
     surfaceView = nil
@@ -252,32 +302,33 @@ final class RemoteTerminalContent: TabContent {
     run(driver.pipeClosed())
   }
 
-  // MARK: - Effects
-
-  private func paneMeasured(_ grid: RemoteAutoResize.Grid) {
+  /// The surface measured the grid that fits its pane (`onPaneGridMeasured`).
+  func paneMeasured(_ grid: RemoteAutoResize.Grid) {
     run(driver.paneMeasured(grid))
   }
+
+  // MARK: - Effects
 
   private func run(_ effects: [RemoteTerminalDriver.Effect]) {
     guard !isTornDown else { return }
     for effect in effects {
       switch effect {
       case .attach:
-        consume(connection.attach(contentID: remoteContentID, scrollback: Self.scrollback))
+        consume(ports.attach(remoteContentID, Self.scrollback))
       case .writePipe(let bytes):
-        pipes.write(contentID: remoteContentID, bytes)
+        ports.writePipe(remoteContentID, bytes)
       case .pin(let grid):
         _ = surfaceView?.pinGrid(columns: grid.columns, rows: grid.rows)
       case .wantGrid(let grid):
-        connection.setWantedGrid(contentID: remoteContentID, columns: grid.columns, rows: grid.rows)
+        ports.setWantedGrid(remoteContentID, grid)
       case .scheduleSettle:
         scheduleSettle()
       case .sendInput(let bytes):
-        connection.sendInput(contentID: remoteContentID, bytes: bytes)
+        ports.sendInput(remoteContentID, bytes)
       case .detach:
         settleTimer?.cancel()
         settleTimer = nil
-        connection.detach(contentID: remoteContentID)
+        ports.detach(remoteContentID)
       }
     }
     // Only real changes reach observers: `out` runs through here for every chunk.
@@ -292,15 +343,21 @@ final class RemoteTerminalContent: TabContent {
         guard let self else { return }
         self.run(self.driver.event(event))
       }
+      // Ended by the connection, not by `tearDown` (which cancels this task first).
+      guard !Task.isCancelled, let self else { return }
+      self.run(self.driver.streamEnded())
     }
   }
 
   private func scheduleSettle() {
     settleTimer?.cancel()
+    settleGeneration &+= 1
+    let generation = settleGeneration
     let clock = self.clock
     settleTimer = Task { [weak self] in
       do { try await clock.sleep(for: RemoteAutoResize.settle) } catch { return }
-      guard let self else { return }
+      // A sleep that already returned ignores `cancel()`; a newer timer owns the handle.
+      guard !Task.isCancelled, let self, self.settleGeneration == generation else { return }
       self.settleTimer = nil
       self.run(self.driver.settled())
     }

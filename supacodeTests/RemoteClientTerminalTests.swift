@@ -1,3 +1,5 @@
+import Clocks
+import ConcurrencyExtras
 import Foundation
 import Testing
 
@@ -154,6 +156,23 @@ struct RemoteClientTerminalTests {
     #expect(driver.phase == .ended(reason: Driver.pipeClosedReason))
   }
 
+  @Test func aStreamThatEndsSilentlyEndsTheTab() {
+    var driver = Self.liveDriver()
+    let effects = driver.streamEnded()
+    let input = driver.pipeInput([0x61])
+    #expect(effects == [])
+    #expect(driver.phase == .ended(reason: Driver.streamEndedReason))
+    #expect(input == [])
+  }
+
+  @Test func aStreamEndAfterDetachedKeepsTheHostsReason() {
+    var driver = Self.liveDriver()
+    _ = driver.event(.detached(reason: "exited"))
+    let effects = driver.streamEnded()
+    #expect(effects == [])
+    #expect(driver.phase == .ended(reason: "exited"))
+  }
+
   @Test func inputBeforeThePipeOpensIsDropped() {
     var driver = Driver()
     let input = driver.pipeInput([0x61])
@@ -184,5 +203,130 @@ struct RemoteClientTerminalTests {
     let snapshot = RemoteTerminalContent.snapshot(id: ContentID())
     #expect(snapshot.kind == .terminal)
     #expect(snapshot.state.isEphemeral)
+  }
+
+  // MARK: - The content over stand-in ports
+
+  @MainActor
+  @Test func theSettleTimerRestartsOnANewerMeasurementAndFiresOnce() async {
+    let clock = TestClock<Duration>()
+    let ports = RemoteTerminalPortsRecorder()
+    let content = ports.liveContent(clock: clock)
+    defer { content.tearDown() }
+    _ = await RemoteRouterTestSupport.settle { content.phase == .live }
+
+    content.paneMeasured(Grid(columns: 120, rows: 40))
+    await RemoteRouterTestSupport.step(clock, by: .milliseconds(150), increment: .milliseconds(50))
+    content.paneMeasured(Grid(columns: 100, rows: 30))
+    await RemoteRouterTestSupport.step(clock, by: .milliseconds(150), increment: .milliseconds(50))
+    #expect(ports.wanted == [])
+
+    let fired = await RemoteRouterTestSupport.step(
+      clock, until: { !ports.wanted.isEmpty }, within: .seconds(1), increment: .milliseconds(50))
+    #expect(fired)
+    await RemoteRouterTestSupport.step(clock, by: .seconds(1), increment: .milliseconds(50))
+    #expect(ports.wanted == [Grid(columns: 100, rows: 30)])
+  }
+
+  @MainActor
+  @Test func tearDownIsIdempotentAndTheForgetsCloseIsANoOp() async {
+    let clock = TestClock<Duration>()
+    let ports = RemoteTerminalPortsRecorder()
+    let content = ports.liveContent(clock: clock)
+    _ = await RemoteRouterTestSupport.settle { content.phase == .live }
+    // The pipe server reports the pipe it closes in `forget` at once.
+    ports.onForget = { content.pipeClosed() }
+
+    content.tearDown()
+    content.tearDown()
+    #expect(ports.detaches == 1)
+    #expect(ports.forgets == 1)
+    #expect(content.phase == .live)
+
+    let writesBefore = ports.writes.count
+    ports.continuation?.yield(.out(Array("late".utf8)))
+    content.pipeInput([0x61])
+    for _ in 0..<10 { await Task.megaYield() }
+    #expect(ports.writes.count == writesBefore)
+    #expect(ports.inputs == [])
+  }
+
+  @MainActor
+  @Test func theClearPreambleReachesThePipeBeforeTheFirstOut() async {
+    let ports = RemoteTerminalPortsRecorder()
+    let content = ports.content(clock: TestClock<Duration>())
+    defer { content.tearDown() }
+    content.pipeOpened()
+    ports.continuation?.yield(.attached(cols: 80, rows: 24))
+    ports.continuation?.yield(.out(Array("hi".utf8)))
+    let wrote = await RemoteRouterTestSupport.settle { ports.writes.count == 2 }
+    #expect(wrote)
+    #expect(ports.writes == [RemoteTerminalBytes.clearForRedraw, Array("hi".utf8)])
+  }
+
+  @MainActor
+  @Test func aSilentlyFinishedStreamEndsTheContent() async {
+    let ports = RemoteTerminalPortsRecorder()
+    let content = ports.liveContent(clock: TestClock<Duration>())
+    defer { content.tearDown() }
+    _ = await RemoteRouterTestSupport.settle { content.phase == .live }
+
+    ports.continuation?.finish()
+    let ended = await RemoteRouterTestSupport.settle {
+      content.phase == .ended(reason: Driver.streamEndedReason)
+    }
+    #expect(ended)
+    content.pipeInput([0x61])
+    #expect(ports.inputs == [])
+    #expect(ports.detaches == 0)
+  }
+}
+
+/// Stands in for the connection and the pipe server under a `RemoteTerminalContent`.
+@MainActor
+final class RemoteTerminalPortsRecorder {
+  var writes: [[UInt8]] = []
+  var inputs: [[UInt8]] = []
+  var wanted: [RemoteAutoResize.Grid] = []
+  var detaches = 0
+  var forgets = 0
+  var continuation: AsyncStream<RemoteTerminalEvent>.Continuation?
+  var onForget: (() -> Void)?
+
+  nonisolated deinit {}
+
+  func content(clock: any Clock<Duration>) -> RemoteTerminalContent {
+    RemoteTerminalContent(remoteContentID: "c1", title: "Tab", ports: ports(), runtime: GhosttyRuntime(), clock: clock)
+  }
+
+  /// A content whose pipe opened and whose terminal attached at 80 × 24 (settle until `.live`).
+  func liveContent(clock: any Clock<Duration>) -> RemoteTerminalContent {
+    let content = content(clock: clock)
+    content.pipeOpened()
+    continuation?.yield(.attached(cols: 80, rows: 24))
+    return content
+  }
+
+  private func ports() -> RemoteTerminalContent.Ports {
+    RemoteTerminalContent.Ports(
+      attach: { _, _ in
+        let (stream, continuation) = AsyncStream.makeStream(of: RemoteTerminalEvent.self)
+        self.continuation = continuation
+        return stream
+      },
+      detach: { _ in
+        self.detaches += 1
+        self.continuation?.finish()
+      },
+      sendInput: { _, bytes in self.inputs.append(bytes) },
+      setWantedGrid: { _, grid in self.wanted.append(grid) },
+      socketPath: "/tmp/none.sock",
+      expectPipe: { _ in "token" },
+      forgetPipe: { _ in
+        self.forgets += 1
+        self.onForget?()
+      },
+      writePipe: { _, bytes in self.writes.append(bytes) }
+    )
   }
 }

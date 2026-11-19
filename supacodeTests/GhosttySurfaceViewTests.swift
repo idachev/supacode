@@ -201,14 +201,14 @@ struct GhosttySurfaceViewTests {
   // layout pass reports it while the pin holds the remote grid. It is the grid
   // Ghostty gives that pane unpinned, or one cell short: the padding remainder
   // the estimate keeps holds a part cell (`GridCap.fitting`).
-  @Test func aPinnedSurfaceReportsThePanesFittingGrid() {
+  @Test func aPinnedSurfaceReportsThePanesFittingGrid() throws {
     let surfaceView = Self.makeSurfaceView()
     defer { surfaceView.closeSurface() }
     let window = Self.makeWindow()
     defer { window.close() }
     surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     window.contentView?.addSubview(surfaceView)
-    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
+    let surface = try #require(Self.measuredSurface(of: surfaceView))
     surfaceView.updateSurfaceSize()
     var reported: [[Int]] = []
     surfaceView.onPaneGridMeasured = { columns, rows in reported.append([columns, rows]) }
@@ -232,14 +232,14 @@ struct GhosttySurfaceViewTests {
 
   // Unpinned, the report follows the push, so it is the grid Ghostty itself
   // gave the pane (a remote tab before its first `attached`).
-  @Test func anUnpinnedSurfaceReportsGhosttysOwnGrid() {
+  @Test func anUnpinnedSurfaceReportsGhosttysOwnGrid() throws {
     let surfaceView = Self.makeSurfaceView()
     defer { surfaceView.closeSurface() }
     let window = Self.makeWindow()
     defer { window.close() }
     surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     window.contentView?.addSubview(surfaceView)
-    guard let surface = Self.measuredSurface(of: surfaceView) else { return }
+    let surface = try #require(Self.measuredSurface(of: surfaceView))
     surfaceView.updateSurfaceSize()
     var reported: [[Int]] = []
     surfaceView.onPaneGridMeasured = { columns, rows in reported.append([columns, rows]) }
@@ -253,7 +253,7 @@ struct GhosttySurfaceViewTests {
 
   // Off-window and degenerate measurements are never reported: a remote host
   // would otherwise be asked for the remote grid itself or for a tiny one.
-  @Test func noFittingGridOffWindowOrForADegeneratePane() {
+  @Test func noFittingGridOffWindowOrForADegeneratePane() throws {
     let surfaceView = Self.makeSurfaceView()
     defer { surfaceView.closeSurface() }
     var reported: [[Int]] = []
@@ -265,7 +265,7 @@ struct GhosttySurfaceViewTests {
     defer { window.close() }
     surfaceView.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     window.contentView?.addSubview(surfaceView)
-    guard Self.measuredSurface(of: surfaceView) != nil else { return }
+    _ = try #require(Self.measuredSurface(of: surfaceView))
     surfaceView.updateSurfaceSize()
     #expect(!reported.isEmpty)
     reported = []
