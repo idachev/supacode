@@ -693,7 +693,6 @@ struct SupacodeApp: App {
       }
       .openSettingsOnSelection(store: store)
       .openDeeplinkReferenceOnRequest(store: store)
-      .publishesOpenRemoteClientAction()
     }
     .handlesExternalEvents(matching: [])
     .environment(ghosttyShortcuts)

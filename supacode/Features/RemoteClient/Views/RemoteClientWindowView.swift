@@ -47,7 +47,6 @@ struct RemoteClientWindowRoot: View {
       }
     }
     .frame(minWidth: 480, minHeight: 320)
-    .publishesOpenRemoteClientAction()
     .onAppear {
       let model = RemoteClientWindowModel.shared(ghostty: ghostty)
       self.model = model
