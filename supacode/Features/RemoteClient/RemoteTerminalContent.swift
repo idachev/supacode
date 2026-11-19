@@ -280,6 +280,9 @@ final class RemoteTerminalContent: TabContent {
       return
     }
     sessionFailedToStart = false
+    // No `bridge.onDesktopNotification`: OSC 9 / 777 from the remote program posts nothing here.
+    // "Agent is waiting" comes from the Mac's `list` (`RemoteClientNotifier`); a BEL is handled by
+    // the surface itself, as in a local tab.
     view.onPaneGridMeasured = { [weak self] columns, rows in
       self?.paneMeasured(RemoteAutoResize.Grid(columns: columns, rows: rows))
     }

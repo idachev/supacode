@@ -82,17 +82,29 @@ public nonisolated struct SystemNotificationClient: Sendable {
   public var authorizationStatus: @MainActor @Sendable () async -> AuthorizationStatus
   public var requestAuthorization: @MainActor @Sendable () async -> AuthorizationRequestResult
   public var send: @MainActor @Sendable (_ title: String, _ body: String, _ deeplinkURL: URL?) async -> Void
+  /// Like `send`, under a stable identifier: a newer post with the same one replaces it.
+  public var post:
+    @MainActor @Sendable (_ identifier: String, _ title: String, _ body: String, _ deeplinkURL: URL?) async -> Void
+  /// Removes delivered and pending notifications posted under these identifiers.
+  public var remove: @MainActor @Sendable (_ identifiers: [String]) async -> Void
   public var openSettings: @MainActor @Sendable () async -> Void
 
   public init(
     authorizationStatus: @escaping @MainActor @Sendable () async -> AuthorizationStatus,
     requestAuthorization: @escaping @MainActor @Sendable () async -> AuthorizationRequestResult,
     send: @escaping @MainActor @Sendable (_ title: String, _ body: String, _ deeplinkURL: URL?) async -> Void,
+    post:
+      @escaping @MainActor @Sendable (
+        _ identifier: String, _ title: String, _ body: String, _ deeplinkURL: URL?
+      ) async -> Void = { _, _, _, _ in },
+    remove: @escaping @MainActor @Sendable (_ identifiers: [String]) async -> Void = { _ in },
     openSettings: @escaping @MainActor @Sendable () async -> Void
   ) {
     self.authorizationStatus = authorizationStatus
     self.requestAuthorization = requestAuthorization
     self.send = send
+    self.post = post
+    self.remove = remove
     self.openSettings = openSettings
   }
 }
@@ -128,20 +140,17 @@ nonisolated extension SystemNotificationClient: DependencyKey {
       }
     },
     send: { title, body, deeplinkURL in
+      await SystemNotificationClient.deliver(
+        identifier: UUID().uuidString, title: title, body: body, deeplinkURL: deeplinkURL)
+    },
+    post: { identifier, title, body, deeplinkURL in
+      await SystemNotificationClient.deliver(identifier: identifier, title: title, body: body, deeplinkURL: deeplinkURL)
+    },
+    remove: { identifiers in
+      guard !identifiers.isEmpty else { return }
       let center = configuredNotificationCenter()
-      let content = UNMutableNotificationContent()
-      content.title = title
-      content.body = body
-      content.sound = .default
-      if let deeplinkURL {
-        content.userInfo = [deeplinkUserInfoKey: deeplinkURL.absoluteString]
-      }
-      let request = UNNotificationRequest(
-        identifier: UUID().uuidString,
-        content: content,
-        trigger: nil
-      )
-      try? await center.add(request)
+      center.removeDeliveredNotifications(withIdentifiers: identifiers)
+      center.removePendingNotificationRequests(withIdentifiers: identifiers)
     },
     openSettings: {
       guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") else {
@@ -155,8 +164,28 @@ nonisolated extension SystemNotificationClient: DependencyKey {
     authorizationStatus: { .notDetermined },
     requestAuthorization: { AuthorizationRequestResult(granted: false, errorMessage: nil) },
     send: { _, _, _ in },
+    post: { _, _, _, _ in },
+    remove: { _ in },
     openSettings: {}
   )
+
+  @MainActor
+  private static func deliver(identifier: String, title: String, body: String, deeplinkURL: URL?) async {
+    let center = configuredNotificationCenter()
+    let content = UNMutableNotificationContent()
+    content.title = title
+    content.body = body
+    content.sound = .default
+    if let deeplinkURL {
+      content.userInfo = [deeplinkUserInfoKey: deeplinkURL.absoluteString]
+    }
+    let request = UNNotificationRequest(
+      identifier: identifier,
+      content: content,
+      trigger: nil
+    )
+    try? await center.add(request)
+  }
 }
 
 nonisolated extension DependencyValues {

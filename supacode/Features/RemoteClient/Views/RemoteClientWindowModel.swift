@@ -45,12 +45,22 @@ struct RemoteClientWindowRoot: View {
       }
     }
     .frame(minWidth: 480, minHeight: 320)
+    .background {
+      // Key or not decides whether a waiting tab it shows posts a notification (ИВ2).
+      // Through `shared`: the first report can come before `onAppear` sets `model`.
+      WindowFocusObserverView { [ghostty] activity in
+        RemoteClientWindowModel.shared(ghostty: ghostty).store.send(.windowKeyChanged(activity.isKeyWindow))
+      }
+      RemoteClientWindowAnchor()
+    }
     .onAppear {
       let model = RemoteClientWindowModel.shared(ghostty: ghostty)
       self.model = model
+      RemoteClientNotificationRouter.shared.store = model.store
       model.store.send(.windowAppeared)
     }
     .onDisappear {
+      RemoteClientNotificationRouter.shared.store = nil
       RemoteClientWindowModel.shared(ghostty: ghostty).store.send(.windowClosed)
     }
   }

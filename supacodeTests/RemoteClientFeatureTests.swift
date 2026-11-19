@@ -1,7 +1,9 @@
 import ComposableArchitecture
 import ConcurrencyExtras
+import DependenciesTestSupport
 import Foundation
 import Sharing
+import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
@@ -298,6 +300,8 @@ struct RemoteClientFeatureTests {
       $0.selectedWorktreeID = "w2"
       $0.selections = ["w2": RemoteLocalSelection()]
       $0.projection = empty
+      // The first list only records who waits.
+      _ = $0.awaiting.update(shown.repos)
     }
     // The laptop's own choice stays while that worktree exists (СЛ4).
     await store.send(.worktreeSelected("w1")) {
@@ -1083,5 +1087,225 @@ struct RemoteClientFeatureTests {
     await store.finish()
     #expect(session.sent.value.isEmpty)
     #expect(store.state.busyRequests.isEmpty)
+  }
+
+  // MARK: - Agent-is-waiting notifications (ИВ1–ИВ4)
+
+  /// One `post` of the system notification client.
+  struct Posted: Equatable, Sendable {
+    let identifier: String
+    let title: String
+    let body: String
+    let url: URL?
+  }
+
+  /// Records what the reducer posts and removes.
+  final class FakeNotifications: Sendable {
+    let posted = LockIsolated<[Posted]>([])
+    let removed = LockIsolated<[[String]]>([])
+
+    nonisolated deinit {}
+
+    var client: SystemNotificationClient {
+      var client = SystemNotificationClient.testValue
+      client.post = { [posted] identifier, title, body, url in
+        posted.withValue { $0.append(Posted(identifier: identifier, title: title, body: body, url: url)) }
+      }
+      client.remove = { [removed] identifiers in removed.withValue { $0.append(identifiers) } }
+      return client
+    }
+  }
+
+  /// A worktree `w1` with one tab (content `t1`) whose agent is in `activity`.
+  static func waitingList(_ activity: String) -> RemoteClientList {
+    let tab = RemoteClientTab(
+      id: "tab1", contentId: "t1", title: "claude", agents: [RemoteClientAgent(agent: "claude", activity: activity)])
+    return list([RemoteClientWorktree(id: "w1", name: "feature", tabs: [tab])])
+  }
+
+  /// A store on the Mac `a` (named "Office Mac") with system notifications switched on.
+  private func notifyingStore(
+    session: FakeSession, notifications: FakeNotifications, enabled: Bool = true
+  ) -> TestStoreOf<RemoteClientFeature> {
+    @Shared(.settingsFile) var settingsFile
+    $settingsFile.withLock { $0.global.systemNotificationsEnabled = enabled }
+    var state = RemoteClientFeature.State()
+    state.$selectedHostID.withLock { $0 = "a" }
+    state.hostName = "Office Mac"
+    let store = Self.makeStore(state, session: session)
+    store.exhaustivity = .off
+    store.dependencies.systemNotificationClient = notifications.client
+    return store
+  }
+
+  @Test(.dependencies) func anAgentThatStartsToWaitPostsOnce() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    // Still waiting in the next list: no second notification.
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.finish()
+    #expect(
+      notifications.posted.value == [
+        Posted(
+          identifier: "remote:a:t1", title: "Office Mac — agent is waiting", body: "feature · claude",
+          url: RemoteClientNotifier.url(worktreeID: "w1", contentID: "t1"))
+      ])
+  }
+
+  @Test(.dependencies) func theFirstListPostsNothing() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.finish()
+    #expect(notifications.posted.value.isEmpty)
+    #expect(notifications.removed.value.isEmpty)
+  }
+
+  @Test(.dependencies) func aTabVisibleInTheKeyWindowPostsNothing() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.windowKeyChanged(true)) {
+      $0.isKeyWindow = true
+    }
+    await store.send(.listChanged(Self.waitingList("idle")))
+    #expect(store.state.projection?.visibleContentIDs == ["t1"])
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.finish()
+    #expect(notifications.posted.value.isEmpty)
+  }
+
+  @Test(.dependencies) func aVisibleTabPostsWhenTheWindowIsNotKey() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.windowKeyChanged(true))
+    await store.send(.windowKeyChanged(false)) {
+      $0.isKeyWindow = false
+    }
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.finish()
+    #expect(notifications.posted.value.map(\.identifier) == ["remote:a:t1"])
+  }
+
+  @Test(.dependencies) func withSystemNotificationsOffNothingIsPosted() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications, enabled: false)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.finish()
+    #expect(notifications.posted.value.isEmpty)
+  }
+
+  @Test(.dependencies) func aTabThatStopsWaitingRemovesItsNotification() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.send(.listChanged(Self.waitingList("working")))
+    await store.finish()
+    #expect(notifications.posted.value.count == 1)
+    #expect(notifications.removed.value == [["remote:a:t1"]])
+  }
+
+  @Test(.dependencies) func switchingTheMacRemovesEveryNotification() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let session = FakeSession()
+    let store = notifyingStore(session: session, notifications: notifications)
+    await store.send(.listChanged(Self.waitingList("idle")))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.send(.hostPicked("b"))
+    await store.finish()
+    // Removed under the old Mac's id, not the new one's.
+    #expect(notifications.removed.value == [["remote:a:t1"]])
+    // The new Mac's first list only records who waits.
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.finish()
+    #expect(notifications.posted.value.count == 1)
+  }
+
+  @Test(.dependencies) func closingTheWindowRemovesEveryNotification() async {
+    @Shared(.appStorage(RemoteClientFeature.selectedHostKey)) var saved: String?
+    defer { $saved.withLock { $0 = nil } }
+    let notifications = FakeNotifications()
+    let store = notifyingStore(session: FakeSession(), notifications: notifications)
+    await store.send(.windowKeyChanged(true))
+    await store.send(.listChanged(Self.waitingList("awaitingInput")))
+    await store.send(.windowClosed) {
+      $0.isKeyWindow = false
+    }
+    await store.finish()
+    #expect(notifications.removed.value == [["remote:a:t1"]])
+  }
+
+  @Test func openingANotificationSelectsItsWorktreeAndTab() async {
+    let session = FakeSession()
+    let store = await shownStore(Self.list([Self.twoPane("w1"), Self.twoPane("w2")]), session: session)
+    #expect(store.state.selectedWorktreeID == "w1")
+    // t1 sits in P1 of w2, behind t2, and P2 is focused.
+    await store.send(.notificationOpened(worktreeID: "w2", contentID: "c-t1")) {
+      $0.selectedWorktreeID = "w2"
+    }
+    #expect(store.state.selections["w2"]?.selectedTabID["P1"] == "t1")
+    #expect(store.state.projection?.focusedPaneID == "P1")
+    #expect(store.state.pendingTabs.isEmpty)
+    await store.finish()
+    #expect(session.visible.value.last == ["c-t1", "c-t3"])
+  }
+
+  @Test func openingANotificationOfAGoneWorktreeChangesNothing() async {
+    let session = FakeSession()
+    let store = await shownStore(session: session)
+    let before = store.state
+    await store.send(.notificationOpened(worktreeID: "gone", contentID: "c-t1"))
+    #expect(store.state == before)
+    await store.finish()
+  }
+
+  @Test func theNotifierNamesTheMacAndTheTab() {
+    #expect(RemoteClientNotifier.title(hostName: "Office Mac") == "Office Mac — agent is waiting")
+    #expect(RemoteClientNotifier.title(hostName: nil) == "Remote Mac — agent is waiting")
+    #expect(RemoteClientNotifier.identifier(hostID: "a", contentID: "t1") == "remote:a:t1")
+    let tab = RemoteAwaitingTab(
+      contentId: "t1", repositoryId: "r", worktreeId: "w1", worktreeName: "feature", tabTitle: "claude",
+      agent: "claude")
+    #expect(RemoteClientNotifier.body(tab) == "feature · claude")
+    #expect(RemoteClientNotifier.shouldPost(tab, isKeyWindow: true, visibleContentIDs: ["t1"]) == false)
+    #expect(RemoteClientNotifier.shouldPost(tab, isKeyWindow: true, visibleContentIDs: ["t2"]))
+    #expect(RemoteClientNotifier.shouldPost(tab, isKeyWindow: false, visibleContentIDs: ["t1"]))
+  }
+
+  @Test func theNotificationURLCarriesOnlyTheIDs() throws {
+    let worktreeID = "ssh://host:22/path/to repo&x=1"
+    let url = try #require(RemoteClientNotifier.url(worktreeID: worktreeID, contentID: "c:1/2"))
+    #expect(url.scheme == "supacode")
+    #expect(url.host() == "remote-client")
+    let target = RemoteClientNotifier.target(of: url)
+    #expect(target == RemoteClientNotifier.Target(worktreeID: worktreeID, contentID: "c:1/2"))
+    #expect(RemoteClientNotifier.target(of: URL(string: "supacode://worktree/abc")!) == nil)
+    #expect(RemoteClientNotifier.target(of: URL(string: "supacode://remote-client/notification")!) == nil)
+  }
+
+  @Test func theRouterClaimsRemoteURLsEvenWithoutAWindow() throws {
+    let router = RemoteClientNotificationRouter()
+    let url = try #require(RemoteClientNotifier.url(worktreeID: "w1", contentID: "t1"))
+    // A stale notification after a relaunch: dropped, never handed to the app's deeplinks.
+    #expect(router.open(url))
+    #expect(!router.open(URL(string: "supacode://worktree/abc")!))
   }
 }

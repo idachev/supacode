@@ -17,7 +17,7 @@ nonisolated struct RemoteAwaitingTab: Equatable, Sendable {
 /// its next wait is a new event. The first snapshot after init or `reset()` only records who
 /// waits; it starts nothing.
 /// Port of `supacode-remote/.../alerts/AwaitingTracker.kt`.
-nonisolated struct RemoteAwaitingTracker: Sendable {
+nonisolated struct RemoteAwaitingTracker: Equatable, Sendable {
   struct Changes: Equatable, Sendable {
     /// Started to wait: a notification.
     var started: [RemoteAwaitingTab]

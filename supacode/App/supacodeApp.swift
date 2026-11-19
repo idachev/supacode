@@ -39,6 +39,8 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
       // Route taps on delivered system notifications through the store
       // so they follow the same dispatch path as URL-scheme deeplinks.
       setSystemNotificationTapHandler { [weak appStore] url in
+        // Remote-window notifications go to that window, never to the app's deeplinks.
+        if RemoteClientNotificationRouter.shared.open(url) { return }
         appStore?.send(.deeplinkReceived(url))
       }
     }

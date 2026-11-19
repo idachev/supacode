@@ -47,6 +47,10 @@ struct RemoteClientFeature {
     /// Request key of each `worktree.new` in flight → the worktree selected when it was confirmed
     /// (nil: none). Its reply selects the new worktree only if that is still the selection.
     var newWorktreeOrigins: [String: String?] = [:]
+    /// Who waits for input on the Mac, so each wait posts one notification (ИВ1).
+    var awaiting = RemoteAwaitingTracker()
+    /// The remote window is the key window: a waiting tab it shows posts nothing (ИВ2).
+    var isKeyWindow = false
     @Presents var alert: AlertState<Action.Alert>?
 
     /// The picker's rows: every Mac the relay lists except this one.
@@ -111,6 +115,9 @@ struct RemoteClientFeature {
     /// A Worktrees menu item while the remote window is key (R20).
     case worktreeCommand(RemoteWorktreeCommand)
     case requestFinished(key: String, Result<[String: String], RemoteClientRequestError>)
+    case windowKeyChanged(Bool)
+    /// A tap on an "agent is waiting" notification (ИВ3): the window is already in front.
+    case notificationOpened(worktreeID: String, contentID: String)
     case alert(PresentationAction<Alert>)
 
     nonisolated enum Alert: Equatable, Sendable {
@@ -130,6 +137,7 @@ struct RemoteClientFeature {
   }
 
   @Dependency(\.remoteClientSession) var session
+  @Dependency(\.systemNotificationClient) var systemNotifications
 
   var body: some Reducer<State, Action> {
     Reduce { state, action in
@@ -157,10 +165,12 @@ struct RemoteClientFeature {
         return connect(state.selectedHostID)
 
       case .windowClosed:
+        let removeNotifications = forgetNotifications(&state)
         state.status = .idle
         state.hostName = nil
         state.hosts = []
         state.isHostPickerPresented = false
+        state.isKeyWindow = false
         forgetMac(&state)
         let session = session
         // The cancel also stops a reopen that has not connected yet (`connect`).
@@ -168,7 +178,8 @@ struct RemoteClientFeature {
           .cancel(id: CancelID.events),
           .cancel(id: CancelID.requests),
           .cancel(id: CancelID.visible),
-          .run { _ in await session.close() }
+          .run { _ in await session.close() },
+          removeNotifications
         )
 
       case .statusChanged(let status):
@@ -194,7 +205,17 @@ struct RemoteClientFeature {
         }
 
       case .listChanged(let list):
-        return listChanged(list, state: &state)
+        let shown = listChanged(list, state: &state)
+        // After `listChanged`: a tab is visible or not in the projection of this list.
+        let changes = state.awaiting.update(list.repos)
+        return .merge(shown, awaitingChanged(changes, state: state))
+
+      case .windowKeyChanged(let isKey):
+        state.isKeyWindow = isKey
+        return .none
+
+      case .notificationOpened(let worktreeID, let contentID):
+        return notificationOpened(worktreeID: worktreeID, contentID: contentID, state: &state)
 
       case .hostPicked(let hostID):
         return switchHost(to: hostID, state: &state)
@@ -215,10 +236,54 @@ struct RemoteClientFeature {
 
   /// Saves the Mac, forgets what the old one showed and reconnects bound to it (МХ3).
   private func switchHost(to hostID: String, state: inout State) -> Effect<Action> {
+    // First: the old Mac's notifications go under its own id.
+    let removeNotifications = forgetNotifications(&state)
     state.$selectedHostID.withLock { $0 = hostID }
     state.isHostPickerPresented = false
     forgetMac(&state)
-    return .merge(.cancel(id: CancelID.requests), .cancel(id: CancelID.visible), connect(hostID))
+    return .merge(
+      .cancel(id: CancelID.requests), .cancel(id: CancelID.visible), connect(hostID), removeNotifications)
+  }
+
+  /// Posts a notification for each tab that started to wait, unless the key window shows it or
+  /// the app's system notifications are off (ИВ1, ИВ2, R25), and removes those of the tabs that
+  /// stopped. Nothing enters the main window's notification list or sidebar.
+  private func awaitingChanged(_ changes: RemoteAwaitingTracker.Changes, state: State) -> Effect<Action> {
+    @Shared(.settingsFile) var settingsFile
+    let visible = state.projection?.visibleContentIDs ?? []
+    let started =
+      settingsFile.global.systemNotificationsEnabled
+      ? changes.started.filter {
+        RemoteClientNotifier.shouldPost($0, isKeyWindow: state.isKeyWindow, visibleContentIDs: visible)
+      } : []
+    let hostID = state.selectedHostID
+    let removed = changes.ended.map { RemoteClientNotifier.identifier(hostID: hostID, contentID: $0) }
+    guard !started.isEmpty || !removed.isEmpty else { return .none }
+    let title = RemoteClientNotifier.title(hostName: state.knownMacName)
+    let posts = started.map { tab in
+      (
+        identifier: RemoteClientNotifier.identifier(hostID: hostID, contentID: tab.contentId),
+        body: RemoteClientNotifier.body(tab),
+        url: RemoteClientNotifier.url(worktreeID: tab.worktreeId, contentID: tab.contentId)
+      )
+    }
+    let notifications = systemNotifications
+    return .run { _ in
+      if !removed.isEmpty { await notifications.remove(removed) }
+      for post in posts {
+        await notifications.post(post.identifier, title, post.body, post.url)
+      }
+    }
+  }
+
+  /// Switching the Mac or closing the window (ИВ4): forgets who waits and removes every
+  /// notification of the Mac shown so far. Runs before `selectedHostID` changes.
+  private func forgetNotifications(_ state: inout State) -> Effect<Action> {
+    let hostID = state.selectedHostID
+    let removed = state.awaiting.reset().map { RemoteClientNotifier.identifier(hostID: hostID, contentID: $0) }
+    guard !removed.isEmpty else { return .none }
+    let notifications = systemNotifications
+    return .run { _ in await notifications.remove(removed) }
   }
 
   /// Drops everything the window knew about the Mac it showed.

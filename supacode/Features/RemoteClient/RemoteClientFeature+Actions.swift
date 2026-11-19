@@ -163,25 +163,44 @@ extension RemoteClientFeature {
     return reproject(&state)
   }
 
-  /// Selects each tab a reply created once the list holds it: in its pane, that pane focused, its
-  /// group active (in `splitPerTab` a new tab is a new group) and not zoomed on another pane.
+  /// Selects each tab a reply created once the list holds it.
   private func applyPendingTabs(_ state: inout State) {
     for (worktreeID, tabID) in state.pendingTabs {
-      guard let worktree = state.worktrees.first(where: { $0.id == worktreeID }),
-        worktree.tabs.contains(where: { $0.id == tabID })
-      else { continue }
-      var selection = state.selections[worktreeID] ?? RemoteLocalSelection()
-      let projection = RemoteLayoutProjection.project(worktree, selection: &selection)
+      guard selectTab(tabID, inWorktree: worktreeID, state: &state) else { continue }
       state.pendingTabs[worktreeID] = nil
-      guard let pane = projection.panes.values.first(where: { $0.tabs.contains { $0.id == tabID } }),
-        let groupID = projection.groupID(containing: pane.id)
-      else { continue }
-      selection.selectedTabID[pane.id] = tabID
-      selection.focusedPaneID[groupID] = pane.id
-      selection.activeGroupID = groupID
-      if let zoomed = selection.zoomedPaneID[groupID], zoomed != pane.id { selection.zoomedPaneID[groupID] = nil }
-      state.selections[worktreeID] = selection
     }
+  }
+
+  /// Selects the tab in its worktree's choices: in its pane, that pane focused, its group active
+  /// (in `splitPerTab` a tab is a group, parked or not) and not zoomed on another pane. False when
+  /// the list holds no such worktree or tab.
+  private func selectTab(_ tabID: String, inWorktree worktreeID: String, state: inout State) -> Bool {
+    guard let worktree = state.worktrees.first(where: { $0.id == worktreeID }),
+      worktree.tabs.contains(where: { $0.id == tabID })
+    else { return false }
+    var selection = state.selections[worktreeID] ?? RemoteLocalSelection()
+    let projection = RemoteLayoutProjection.project(worktree, selection: &selection)
+    guard let pane = projection.panes.values.first(where: { $0.tabs.contains { $0.id == tabID } }),
+      let groupID = projection.groupID(containing: pane.id)
+    else { return true }
+    selection.selectedTabID[pane.id] = tabID
+    selection.focusedPaneID[groupID] = pane.id
+    selection.activeGroupID = groupID
+    if let zoomed = selection.zoomedPaneID[groupID], zoomed != pane.id { selection.zoomedPaneID[groupID] = nil }
+    state.selections[worktreeID] = selection
+    return true
+  }
+
+  /// A notification tap (ИВ3): selects its worktree and, there, the tab that holds the content. A
+  /// worktree the list no longer holds changes nothing; a tab gone leaves the worktree selected.
+  func notificationOpened(worktreeID: String, contentID: String, state: inout State) -> Effect<Action> {
+    guard let worktree = state.worktrees.first(where: { $0.id == worktreeID }) else { return .none }
+    state.selectedWorktreeID = worktreeID
+    state.pendingWorktreeID = nil
+    if let tabID = worktree.tabs.first(where: { $0.contentId == contentID })?.id {
+      _ = selectTab(tabID, inWorktree: worktreeID, state: &state)
+    }
+    return reproject(&state)
   }
 
   /// Projects the selected worktree and hands its visible contents to the attached set (РЗ5).
