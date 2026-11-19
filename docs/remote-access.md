@@ -11,7 +11,7 @@ gitignored files:
 |---|---|
 | `remote-relay/wrangler.jsonc` | Worker name and, if needed, `account_id` (copied from `wrangler.example.jsonc`) |
 | `~/.config/supacode/remote-access.json` (0600) | `enabled`, `relayURL` (`wss://…/host`), `hostKey`, optional `lan`, optional `hostName` (the name the phone shows for this Mac) |
-| `~/.config/supacode/remote-client-key.txt` (0600) | the phone's connection key: `<relay host>/<client key>` |
+| `~/.config/supacode/remote-client-key.txt` (0600) | the connection key of a client, the phone or another Supacode's "Remote Mac" window: `<relay host>/<client key>` |
 | Worker secrets `HOST_KEY_SHA256`, `CLIENT_KEY_SHA256` | SHA-256 hashes of the two keys, never the keys |
 
 `$XDG_CONFIG_HOME/supacode` replaces `~/.config/supacode` when set.
@@ -216,6 +216,76 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
   `Authorization`, inside TLS.
 - Turn it off with `"lan": false` in `~/.config/supacode/remote-access.json` (restart Supacode).
 - If the direct connection fails or drops, the phone stays on, or goes back to, the relay.
+
+## Use another Mac from Supacode
+
+Besides the phone, Supacode itself can show another Mac's Supacode in a window: its sidebar, tabs and
+splits, each pane a real terminal. Design: `docs/plans/2026-11-17-remote-client-design.md`; the code
+is described in `docs/fork.md` → "Remote Client Window".
+
+Both Macs need the same relay and key pair, as for the phone. The Mac you open (the "host") must
+run a Supacode with remote access on, from `/Applications`, and a build new enough for this window;
+an older one shows "<Mac> runs an older Supacode". The Mac you work on (the "client") needs only the
+key file; it need not host anything.
+
+1. Copy `~/.config/supacode/remote-client-key.txt` from the host (or from any Mac that already has
+   it) to the same folder on the client, over a private channel, and set mode 0600:
+
+   ```sh
+   chmod 600 ~/.config/supacode/remote-client-key.txt
+   ```
+
+   The file is one line, `<relay host>/<client key>` (`relay.example.com/abcde-fghij-…`). Without
+   it the window shows "No connection key", the path to put the file at, and **Check Again**.
+
+2. File ▸ **Open Remote Mac…** (⌃⌘O). The window is called "Remote Mac".
+3. Pick the Mac. The window lists the Macs that are on the relay, by name ("Office Mac", "Home
+   Mac"; see "Name this Mac"), never the Mac you are on. With nothing saved and exactly one other
+   Mac online, it picks that one. Otherwise it shows "Choose a Mac". Later, click the title (the
+   Mac's name) to choose another one. The choice is saved and used the next time. The window never
+   switches Mac on its own: when the saved Mac is no longer in the relay's list, it opens the
+   picker, and a saved Mac that is listed but not online shows "<Mac> is offline".
+4. Work as on the Mac itself: the sidebar, tabs and splits are the host's, and what you do in the
+   window (a new tab, a split, a close, a new worktree) is done on the host, without a confirmation
+   there. Each terminal is the host's real terminal, sized to its pane here.
+
+The line under the Mac's name in the title is the path in use: **LAN** when both Macs are on the
+same network (see "LAN shortcut": the relay tells the host, the host offers its address and the
+window pins the certificate), otherwise **Relay**. When the direct path fails, the window uses the
+relay again and goes back to LAN when it can.
+
+While the Remote Mac window is key, the menus act on the remote Mac: New Terminal (⌘T), Close (⌘W),
+the splits and zoom, Select Tab (⌘1 to ⌘9, previous, next), and the Worktrees menu (new, refresh,
+next and previous worktree, select by slot). Items that have no meaning there are disabled, for
+example Add Repository and Clone, Archived Worktrees, Recent Terminals, Jump to Latest Unread and
+the worktree history.
+
+### What the banner means
+
+A line above each remote terminal, repeated under the title, tells why the terminal is not live:
+
+- **Connecting to <Mac>…**: the link is coming up, or coming back, and the terminal has not been
+  redrawn yet. A terminal that never gets its first redraw stays here: a host that never answers
+  `hello` also stays in "Connecting…" (a known limit).
+- **<Mac> is offline.**: the relay is up, but the host is not on it. The window connects again by
+  itself when the host comes back.
+- **No connection to <Mac>. Typing is not sent.**: this Mac has no live link to the relay. Typing is
+  dropped, never queued, also while the window attaches again; nothing you type now reaches the
+  host later.
+
+How fast it shows: a dead link is found when no frame (a `pong` counts) has come for 75 s, checked at
+each 30 s ping, so the banner appears within 75 to 105 s of the link dying, not at once. The window
+then retries after 3, 6 and 12 s, and every 30 s after that. A key the relay refuses (`401` or `403`,
+see "Troubleshooting") is not retried: the window shows "Cannot connect to <Mac>" with the relay's
+status and **Try Again**, and that status is the only sign of it.
+
+### Notifications
+
+When an agent in a tab of the remote Mac starts waiting for input, this Mac posts one system
+notification, "<Mac> — agent is waiting", with the worktree and tab title. It is posted only when
+system notifications are on in Supacode's settings and the tab is not visible in the key Remote Mac
+window; a tab that stays waiting gives no second one. Clicking it brings the window forward and
+opens that tab; with the window closed, the click does nothing. The notification goes away when the tab stops waiting.
 
 ## Troubleshooting
 

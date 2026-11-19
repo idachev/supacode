@@ -1,6 +1,6 @@
 # Remote client: Supacode as a window onto another Mac — design
 
-Date: 2026-11-17. Status: draft for the owner's approval. Builds on
+Date: 2026-11-17. Status: implemented (the plan `docs/plans/2026-11-17-remote-client-app.md`, Tasks 1-15; the fork notes are in `docs/fork.md` → "Remote Client Window", how to use it in `docs/remote-access.md` → "Use another Mac from Supacode"). Builds on
 `docs/plans/done/2026-11-03-remote-access-android-design.md` and
 `docs/plans/2026-11-10-remote-multi-host-design.md`. The wire protocol is
 `docs/remote-access-protocol.md`; operations are `docs/remote-access.md`. Stage 1 (a Node `attach`
@@ -563,11 +563,16 @@ These were not decided by the owner; each can be changed before the plan.
 
 - That zmx's broadcast carries OSC 3008 from the remote hooks to an attached client (ТР4 drops it
   either way).
-- That Network.framework's WebSocket client can send the `Authorization` header and check the pinned
-  leaf certificate in the TLS verify block the way the LAN path needs (КЛ3); the server side does
-  the mirror of it today.
-- The cost of holding a pinned grid larger than the pane inside the surface's scroll wrapper (ТР7):
-  the wrapper sets the surface frame from the scroll view's bounds today.
+- ~~That Network.framework's WebSocket client can send the `Authorization` header and check the pinned
+  leaf certificate in the TLS verify block the way the LAN path needs (КЛ3).~~ Spike outcome (Task 5):
+  the LAN path uses `NWConnection` with the WebSocket protocol options, and the certificate pin is
+  checked in the verify block. The relay path uses `URLSessionWebSocketTask` instead, because it
+  exposes the HTTP status of a refused upgrade (401 / 403), which `NWConnection` does not.
+- ~~The cost of holding a pinned grid larger than the pane inside the surface's scroll wrapper (ТР7).~~
+  Spike outcome (Task 9): the pinned grid sits at the top left of the pane, and the fallback (a
+  fixed-size view) was not needed. Known limit: while the grid is pinned, the estimate of the grid
+  that fits the pane (`GridCap.fitting`) can be one cell smaller than the real one, because the
+  padding is not readable then; it is never larger.
 - Relay volume on the non-LAN path. Cloudflare bills an incoming WebSocket message to a Durable
   Object at 20:1 as a request, outgoing messages are free, and the Workers Free plan allows 100,000
   Durable Object requests a day, after which requests fail until 00:00 UTC (Cloudflare docs,

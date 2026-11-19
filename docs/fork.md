@@ -515,6 +515,77 @@ terminal:
   the `supa-<content-uuid>` session name, `ZmxRemoteStreamTests` and `RemoteAccessProtocolTests`
   must be updated with them.
 
+## Remote Client Window
+
+File ▸ **Open Remote Mac…** (⌃⌘O) opens a "Remote Mac" window that shows another Mac's Supacode: its
+sidebar, tabs and splits, each pane a real Ghostty terminal. It is the reverse of "Remote Access From
+The Android App": the same relay, protocol and keys, with this Mac as the client. Design:
+`docs/plans/2026-11-17-remote-client-design.md`; plan: `docs/plans/2026-11-17-remote-client-app.md`;
+how to use it: `docs/remote-access.md` → "Use another Mac from Supacode".
+
+- **Fork-only code.** `supacode/Features/RemoteClient/` (the TCA feature `RemoteClientFeature`, the
+  connection `RemoteClientConnection` and its sockets, the layout projection, the window views and
+  the notifier) and `supacode-cli/Commands/RemotePipeCommand.swift`.
+- **A remote tab is a local surface.** Its Ghostty child process is the hidden command
+  `supacode remote-pipe <contentId>`, which copies bytes between the terminal and the app over a
+  private unix socket (`RemotePipeServer`). The app owns the relay or LAN connection; the child
+  holds no key and no address.
+- **Two paths.** The relay (`URLSessionWebSocketTask`, because it exposes the HTTP status of a
+  refused upgrade: 401 / 403) and the LAN shortcut (`NWConnection`, with the certificate pin
+  checked in the verify block). The LAN path takes the traffic when it opens and the relay stays
+  as a pinged fallback; the window title shows which one is in use.
+- **Layout state stays out of `LayoutFeature`.** The remote layout is a projection
+  (`RemoteLayoutProjection`) of the host's `list`, kept in `RemoteClientFeature`; nothing remote
+  is added to the local layout reducer.
+- **The size follows the window.** The local surface always shows the remote grid, pinned with
+  `pinGrid` ("Pinned grid" above), and sits at the top left of its pane. When the grid that fits the
+  pane changes and holds for 200 ms, the client asks the host to make it the remote grid (`resize`
+  with `hold`); `onPaneGridMeasured` on `GhosttySurfaceView` reports the fitting grid. Known limit:
+  while a grid is pinned, `GridCap.fitting` can estimate one cell too few, never too many.
+
+### Upstream files it touches
+
+Each is a small change; keep it on a merge.
+
+| File | Change | Why |
+| --- | --- | --- |
+| `supacode/App/supacodeApp.swift` | The `Window("Remote Mac", id: WindowID.remoteClient)` scene and `RemoteClientCommands()`. The notification tap handler first offers a `remote-client` URL to `RemoteClientNotificationRouter.shared`; every other URL goes on as before. | The window, its menu item, and the tap of an "agent is waiting" notification |
+| `supacode/App/WindowID.swift` | `WindowID.remoteClient`. | The window's id |
+| `supacode-cli/SupacodeCLI.swift` | Registers `RemotePipeCommand`. | The surface's child process |
+| `supacode/Infrastructure/Ghostty/GhosttySurfaceView.swift` | `onPaneGridMeasured` (called after every layout push in a window) and `GridCap.fitting`. | A remote tab asks its host for the grid that fits its pane |
+| `supacode/Features/Terminal/Views/LayoutContentView.swift` | `ContentHostView` is `internal` (access only). | The remote layout view hosts surfaces the same way |
+| `supacode/Features/Repositories/Views/SidebarItemView.swift` | `TitleView` and `IconContent` are `internal` (access only). | The remote sidebar draws the same row title and icon |
+| `supacode/Commands/TerminalCommands.swift` | Select Tab 1-9 / Previous / Next read an optional `remoteTabSelectionAction` focused value and call it when it is enabled. | While the remote window is key, the tab keys act on the remote Mac |
+| `supacode/Commands/WorktreeCommands.swift` | The Worktrees menu reads the optional `remoteWorktreeMenu` focused value: New, Refresh, Select Next / Previous and the slot items go to the remote window; items with no remote meaning are disabled. File ▸ Add Repository and Clone are disabled. | Same, for the worktree menu |
+| `SupacodeSettingsShared/Clients/Notifications/SystemNotificationClient.swift` | `post(identifier, …)` and `remove(identifiers)`; `send` and `post` share one `deliver`. | A notification per remote tab that a newer one replaces and a tab change can remove |
+
+`TabContent.swift` is not touched by this feature (the pinned grid in it belongs to the host side).
+The terminal menu (⌘T, ⌘W, splits, zoom) reaches the remote window through the existing focused
+actions (`newTerminalAction`, `closeTabAction`, `splitTerminalAction`, `toggleSplitZoomAction`,
+`filterSidebarAction`), which the remote window publishes while it is key.
+
+### Keeping It On Upstream Merges
+
+- The fork-only files are `supacode/Features/RemoteClient/*` and
+  `supacode-cli/Commands/RemotePipeCommand.swift`. The CLI keeps its own copy of the pipe's two
+  variable names and header (it does not link the app module); `RemoteClientPipeTests` pins both.
+- If upstream changes the focused actions of the terminal or worktree menu, keep the remote
+  override: a remote `@FocusedValue` present and enabled wins, otherwise the local code runs as
+  upstream does.
+- If upstream makes `ContentHostView`, `TitleView` or `IconContent` `private` again, the remote
+  window stops compiling: keep them `internal`.
+- If upstream changes `SystemNotificationClient`, keep `post` and `remove`, and keep `send`
+  delivering under a fresh UUID.
+- The suites that guard it: `RemoteClientBannerTests`, `RemoteClientChoiceTests`,
+  `RemoteClientConnectionTests`, `RemoteClientFeatureTests`, `RemoteClientGateTests`,
+  `RemoteClientLayoutTests`, `RemoteClientModelsTests`, `RemoteClientPipeTests`,
+  `RemoteClientQueryFilterTests`, `RemoteClientSessionTests`, `RemoteClientSidebarTests`,
+  `RemoteClientSocketTests`, `RemoteClientTerminalTests` and `AppFeatureSystemNotificationTests`.
+  A merge that touches `GhosttySurfaceView` layout must keep them and `GhosttySurfaceViewTests`
+  green.
+- The protocol is shared with the host (`docs/remote-access-protocol.md`) and with the Android app:
+  a protocol change goes into the client models and `RemoteClientConnection.requiredCaps` too.
+
 ## Machine-Local Makefile Overrides (`Local.mk`)
 
 The `Makefile` includes an optional, gitignored `Local.mk` from the repository root
