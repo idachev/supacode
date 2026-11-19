@@ -129,16 +129,24 @@ private struct RemoteClientTitleButton: View {
   let action: () -> Void
 
   var body: some View {
+    // One line: a toolbar item has no room for two.
     Button(action: action) {
-      VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 6) {
         Text(name)
           .font(.headline)
         if !detail.isEmpty {
+          Text("·")
+            .foregroundStyle(.secondary)
           Text(detail)
-            .font(.caption)
             .foregroundStyle(.secondary)
         }
+        Image(systemName: "chevron.down")
+          .imageScale(.small)
+          .foregroundStyle(.secondary)
+          .accessibilityHidden(true)
       }
+      .lineLimit(1)
+      .fixedSize()
     }
     .buttonStyle(.plain)
     .help("Choose which Mac this window shows")
