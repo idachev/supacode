@@ -94,12 +94,14 @@ struct RemoteClientFeatureTests {
   static func makeStore(
     _ state: RemoteClientFeature.State = RemoteClientFeature.State(),
     hasKeyFile: Bool = true,
-    session: FakeSession
+    session: FakeSession,
+    clock: TestClock<Duration> = TestClock()
   ) -> TestStoreOf<RemoteClientFeature> {
     TestStore(initialState: state) {
       RemoteClientFeature()
     } withDependencies: {
       $0.remoteClientSession = Self.client(session, hasKeyFile: hasKeyFile)
+      $0.continuousClock = clock
     }
   }
 
@@ -529,9 +531,10 @@ struct RemoteClientFeatureTests {
 
   /// A store showing `list`, non-exhaustive: the tests check the fields they are about.
   private func shownStore(
-    _ list: RemoteClientList = Self.list([Self.twoPane()]), hostID: String? = nil, session: FakeSession
+    _ list: RemoteClientList = Self.list([Self.twoPane()]), hostID: String? = nil, session: FakeSession,
+    clock: TestClock<Duration> = TestClock()
   ) async -> TestStoreOf<RemoteClientFeature> {
-    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: hostID), session: session)
+    let store = Self.makeStore(RemoteClientFeature.State(selectedHostID: hostID), session: session, clock: clock)
     store.exhaustivity = .off
     await store.send(.listChanged(list))
     return store
@@ -596,6 +599,42 @@ struct RemoteClientFeatureTests {
     }
     await store.finish()
     #expect(session.sent.value == [Sent(type: "tab.close", fields: ["tabId": "t2"], ints: [:], timeout: .seconds(10))])
+  }
+
+  /// An agent waiting at its prompt is not `working`, yet Close Tab still asks (ПМ11).
+  @Test func closingATabWithAnIdleAgentAsksFirst() async {
+    let session = FakeSession()
+    var agentTab = Self.tab("t2")
+    agentTab.agents = [RemoteClientAgent(agent: "claude", activity: "idle")]
+    let store = await shownStore(
+      Self.list([Self.twoPane(tabs: [Self.tab("t1"), agentTab, Self.tab("t3")])]), session: session)
+    await store.send(.closeTabTapped(tabID: "t2")) {
+      $0.alert = RemoteClientFeature.confirmCloseTabAlert(agentTab)
+    }
+    await store.finish()
+    #expect(session.sent.value.isEmpty)
+  }
+
+  /// A host that sends `busy` decides: a busy shell asks even without an agent; a bare shell
+  /// prompt (`busy` false) closes at once even beside an agent's leftover badge.
+  @Test func theHostsBusyFlagDecidesWhetherCloseAsks() {
+    var program = Self.tab("t1")
+    program.busy = true
+    #expect(RemoteClientFeature.closeAsksFirst(program, mode: .busy))
+    var bareShell = Self.tab("t2")
+    bareShell.busy = false
+    bareShell.agents = [RemoteClientAgent(agent: "claude", activity: "idle")]
+    #expect(!RemoteClientFeature.closeAsksFirst(bareShell, mode: .busy))
+    #expect(RemoteClientFeature.closeAsksFirst(Self.tab("t3", working: true), mode: .busy))
+    #expect(!RemoteClientFeature.closeAsksFirst(Self.tab("t4"), mode: .busy))
+  }
+
+  /// The laptop's confirm-close-tab setting applies as it does to a local tab.
+  @Test func alwaysAndNeverOverrideTheBusyFlag() {
+    var program = Self.tab("t1")
+    program.busy = true
+    #expect(!RemoteClientFeature.closeAsksFirst(program, mode: .never))
+    #expect(RemoteClientFeature.closeAsksFirst(Self.tab("t2"), mode: .always))
   }
 
   @Test func closingAnIdleTabSendsAtOnce() async {
@@ -929,6 +968,41 @@ struct RemoteClientFeatureTests {
     let created = RemoteClientWorktree(id: "w9", name: "feature-x", tabs: [Self.tab("t9")])
     await store.send(.listChanged(Self.list([Self.twoPane(), created])))
     #expect(store.state.creatingWorktrees.isEmpty)
+    await store.finish()
+  }
+
+  /// A replied row whose worktree never reaches the list goes after the grace (ДР2).
+  @Test func aRepliedRowTheListNeverHoldsGoesAfterTheGrace() async {
+    let session = FakeSession()
+    let release = gated(session)
+    let clock = TestClock<Duration>()
+    let store = await shownStore(session: session, clock: clock)
+    await createFeatureX(store)
+    #expect(await settle { session.sent.value.count == 1 })
+    release.yield(.success(["worktreeId": "w9", "name": "feature-x"]))
+    await store.receive(\.requestFinished)
+    await clock.advance(by: RemoteClientFeature.creatingRowGrace - .seconds(1))
+    #expect(store.state.creatingWorktrees == ["r": .init(name: "feature-x", worktreeID: "w9")])
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.creatingRowExpired)
+    #expect(store.state.creatingWorktrees.isEmpty)
+    await store.finish()
+  }
+
+  /// A list that holds the worktree in time stops the grace: nothing expires later.
+  @Test func aListThatHoldsTheWorktreeStopsTheGrace() async {
+    let session = FakeSession()
+    let release = gated(session)
+    let clock = TestClock<Duration>()
+    let store = await shownStore(session: session, clock: clock)
+    await createFeatureX(store)
+    #expect(await settle { session.sent.value.count == 1 })
+    release.yield(.success(["worktreeId": "w9", "name": "feature-x"]))
+    await store.receive(\.requestFinished)
+    let created = RemoteClientWorktree(id: "w9", name: "feature-x", tabs: [Self.tab("t9")])
+    await store.send(.listChanged(Self.list([Self.twoPane(), created])))
+    #expect(store.state.creatingWorktrees.isEmpty)
+    await clock.advance(by: RemoteClientFeature.creatingRowGrace)
     await store.finish()
   }
 

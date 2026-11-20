@@ -55,6 +55,7 @@ struct RemoteClientModelsTests {
     #expect(worktree?.canDeleteWorktree == false)
     #expect(worktree?.tabs.first?.contentId == "C1")
     #expect(worktree?.tabs.first?.agents.first?.activity == "busy")
+    #expect(worktree?.tabs.first?.busy == true)
     #expect(worktree?.layout?.mode == "tabsPerSplit")
     #expect(worktree?.layout?.groups.first?.id == "main")
     #expect(worktree?.layout?.groups.first?.zoomedPaneId == nil)
@@ -64,6 +65,18 @@ struct RemoteClientModelsTests {
     #expect(list.sections[2].repositoryIds == ["/r"])
     #expect(list.sections[3].repositoryId == "/r")
     #expect(list.loadFailures == [RemoteClientLoadFailure(repositoryId: "/bad", message: "not a git repository")])
+  }
+
+  /// `busy` missing (an older host) or of a wrong type reads as not said.
+  @Test func aMissingOrWrongBusyReadsAsNotSaid() {
+    let text =
+      #"{"t":"list","id":null,"repos":[{"id":"r","worktrees":[{"id":"w","tabs":["#
+      + #"{"id":"a"},{"id":"b","busy":"yes"},{"id":"c","busy":false}]}]}]}"#
+    guard case .list(let list) = RemoteClientFrame.decode(text) else {
+      Issue.record("not a list")
+      return
+    }
+    #expect(list.repos.first?.worktrees.first?.tabs.map(\.busy) == [nil, nil, false])
   }
 
   @Test func unknownStringsAndMissingFieldsStillDecode() {
@@ -298,7 +311,7 @@ struct RemoteClientModelsTests {
          "status":"pinned","focused":true,"title":null,
          "working":true,"canDeleteWorktree":false,"tabs":[
            {"id":"T1","contentId":"C1","title":"claude","focused":true,
-            "working":false,"readOnly":false,
+            "working":false,"readOnly":false,"busy":true,
             "agents":[{"agent":"claude","activity":"busy"}]}
          ],
          "layout":{

@@ -205,7 +205,7 @@ type reads as invalid and the handler answers it (an invalid `direction` gives `
      "status":"main|pinned|unpinned","focused":true,"title":"<custom title or null>",
      "working":true,"canDeleteWorktree":false,"tabs":[
        {"id":"<tab uuid>","contentId":"<content uuid>","title":"claude","focused":true,
-        "working":false,"readOnly":false,
+        "working":false,"readOnly":false,"busy":true,
         "agents":[{"agent":"claude","activity":"busy|awaitingInput|idle|error|compacting"}]}
      ]}
   ]}
@@ -251,6 +251,12 @@ type reads as invalid and the handler answers it (an invalid `direction` gives `
 Optional fields (`group`, `title`, `collapsed`, …) are omitted when they have no value. Archived worktrees are left out. Order follows the sidebar: per repository main first, then
 pinned, then the rest. `contentId` is the id the terminal messages use. `agent` is the raw
 value of the app's agent enum (`claude`, `codex`, …); `activity` is the raw activity value.
+
+A tab's `busy` is true when closing it would interrupt a program on the Mac: the Mac's own rule
+for asking before Close Tab. A terminal whose shell sits at its prompt is not busy; one running a
+program (Claude, `vim`, a build, a dev server) is, and so is a hibernated or never-started terminal,
+whose session nothing can ask. Clients ask before `tab.close` when `busy` or `working` is true. An
+older host omits `busy`; clients then ask for a tab that is `working` or lists an agent.
 
 Each worktree may carry `layout`, the arrangement of its tabs into panes and splits as the Mac
 shows it. It is omitted when the worktree has no terminal tab (the only kind `tabs` lists). The

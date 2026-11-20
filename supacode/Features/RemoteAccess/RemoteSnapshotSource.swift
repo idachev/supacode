@@ -486,8 +486,9 @@ final class RemoteSnapshotSource {
 
   /// Every terminal tab of a layout in flat pane order (parked split-per-tab
   /// groups included), with the title the strip shows and the agents, working
-  /// and read-only state from the content's chrome. A tab whose content is not
-  /// registered yet (never started) reports no agents and not working.
+  /// and read-only state from the content's chrome, and `busy` by the Mac's own
+  /// close-confirmation rule. A tab whose content is not registered yet (never
+  /// started) reports no agents and not working.
   static func tabs(in layout: PaneLayout, runtime: ContentRuntime) -> [RemoteTab] {
     let focusedTabID = layout.focusedPaneID.flatMap { layout.panes[id: $0]?.selectedTabID }
     return layout.panes.flatMap { pane in
@@ -502,7 +503,8 @@ final class RemoteSnapshotSource {
           readOnly: chrome?.isReadOnly ?? false,
           agents: (chrome?.agents ?? []).map {
             RemoteAgent(agent: $0.agent.rawValue, activity: $0.activity.rawValue)
-          }
+          },
+          busy: runtime.closeWouldInterrupt(tab.content)
         )
       }
     }

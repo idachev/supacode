@@ -31,8 +31,8 @@ struct WindowCommands: Commands {
       .disabled(terminateAllTerminalSessionsAction?.isEnabled != true)
 
       Button("Close Window") {
-        // Menu clicks land here from a pane window too; close the tab, never
-        // the window (the chord itself is consumed by the pane window).
+        // A pane window's Close Window (click or ⇧⌘W) closes its selected tab,
+        // never the pane window itself.
         if let paneWindow = NSApp.keyWindow as? PaneWindow, let closeTab = paneWindow.closeSelectedTab {
           closeTab()
           return

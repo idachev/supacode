@@ -18,7 +18,11 @@ final class ChromeTabContent: TabContent {
 
   var chrome: (any TabChrome)? { terminalChrome }
 
-  var renderer: NSView? { nil }
+  /// A live surface stand-in; nil reads as a hibernated terminal.
+  var liveRenderer: NSView?
+  var isBusy = false
+
+  var renderer: NSView? { liveRenderer }
 
   func startSession(at geometry: ContentGeometry) {}
 

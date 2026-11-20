@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import IdentifiedCollections
 import SupacodeSettingsShared
@@ -44,6 +45,30 @@ struct RemoteAccessSnapshotSourceTests {
     #expect(tabs.map(\.working) == [true, false, false])
     // Not registered yet (never started): no agents, not working.
     #expect(tabs[1].agents.isEmpty)
+  }
+
+  /// `busy` follows the Mac's close-confirmation rule (ПМ11): a live shell at its prompt is not
+  /// busy; a running program, a hibernated terminal and a never-started one are.
+  @Test func tabsAreBusyExactlyWhenTheMacWouldAskBeforeClosing() {
+    let shell = tab("zsh")
+    let program = tab("claude")
+    let hibernated = tab("logs")
+    let unstarted = tab("new")
+    let layout = layout([[shell, program], [hibernated, unstarted]])
+    let runtime = ContentRuntime()
+    let shellContent = ChromeTabContent(id: shell.content.id)
+    shellContent.liveRenderer = NSView()
+    let programContent = ChromeTabContent(id: program.content.id)
+    programContent.liveRenderer = NSView()
+    programContent.isBusy = true
+    let hibernatedContent = ChromeTabContent(id: hibernated.content.id)
+    for content in [shellContent, programContent, hibernatedContent] {
+      #expect(runtime.provision(content, at: .fallback))
+    }
+
+    let tabs = RemoteSnapshotSource.tabs(in: layout, runtime: runtime)
+
+    #expect(tabs.map(\.busy) == [false, true, true, true])
   }
 
   @Test func worktreeNewReportsTheFirstTabListWillShow() {

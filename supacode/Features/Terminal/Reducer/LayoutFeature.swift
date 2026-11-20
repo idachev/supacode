@@ -490,16 +490,10 @@ extension LayoutFeature {
     return .none
   }
 
-  /// Whether closing this content now would interrupt real work: live and
-  /// busy, or a terminal with no live renderer, whose zmx session may still
-  /// host a process nothing can ask about.
+  /// Whether closing this content now would interrupt real work
+  /// (`ContentRuntime.closeWouldInterrupt`, shared with the remote list's `busy`).
   private func closeWouldInterrupt(_ snapshot: ContentSnapshot?) -> Bool {
-    guard let snapshot else { return false }
-    guard let content = contentRuntime.content(for: snapshot.id) else {
-      return snapshot.kind == .terminal
-    }
-    if content.isBusy { return true }
-    return content.kind == .terminal && content.renderer == nil
+    contentRuntime.closeWouldInterrupt(snapshot)
   }
 
   private static func closeConfirmationAlert(tabs targets: [TabID], interrupts: Bool) -> AlertState<Action.Alert> {

@@ -159,9 +159,14 @@ extension RemoteClientFeature {
       state.selectedWorktreeID = worktrees.first(where: \.focused)?.id ?? firstRow ?? worktrees.first?.id
     }
     state.selections = state.selections.filter { ids.contains($0.key) }
-    state.creatingWorktrees = state.creatingWorktrees.filter { $0.value.worktreeID.map(ids.contains) != true }
+    let creating = state.creatingWorktrees
+    state.creatingWorktrees = creating.filter { $0.value.worktreeID.map(ids.contains) != true }
+    // A row the list resolved stops its grace timer (`creatingRowGrace`).
+    let resolved = creating.keys.filter { state.creatingWorktrees[$0] == nil }.sorted()
     applyPendingTabs(&state)
-    return reproject(&state)
+    let projected = reproject(&state)
+    guard !resolved.isEmpty else { return projected }
+    return .merge([projected] + resolved.map { .cancel(id: CancelID.creatingRow(repositoryID: $0)) })
   }
 
   /// Selects each tab a reply created once the list holds it.
@@ -234,12 +239,7 @@ extension RemoteClientFeature {
       return newTab(paneID: paneID, state: &state)
 
     case .closeTabTapped(let tabID):
-      guard let tab = state.selectedWorktree?.tabs.first(where: { $0.id == tabID }) else { return .none }
-      guard !tab.working else {
-        state.alert = Self.confirmCloseTabAlert(tab)
-        return .none
-      }
-      return closeTab(tabID, state: &state)
+      return closeTabTapped(tabID, state: &state)
 
     case .splitTapped(let paneID, let direction):
       return request(
@@ -266,6 +266,12 @@ extension RemoteClientFeature {
 
     case .requestFinished(let key, let result):
       return requestFinished(key: key, result, state: &state)
+
+    case .creatingRowExpired(let repositoryID, let worktreeID):
+      // A newer creation in the same repository keeps its own row.
+      guard state.creatingWorktrees[repositoryID]?.worktreeID == worktreeID else { return .none }
+      state.creatingWorktrees[repositoryID] = nil
+      return .none
 
     case .alert(.presented(let alert)):
       return confirmed(alert, state: &state)
@@ -296,6 +302,29 @@ extension RemoteClientFeature {
   static func newTabPane(_ paneID: String?, in worktree: RemoteClientWorktree) -> String? {
     guard let layout = worktree.layout, layout.mode != "splitPerTab" else { return nil }
     return paneID
+  }
+
+  /// Close Tab: asks first by this Mac's confirm-close-tab setting (`closeAsksFirst`), else sends.
+  private func closeTabTapped(_ tabID: String, state: inout State) -> Effect<Action> {
+    guard let tab = state.selectedWorktree?.tabs.first(where: { $0.id == tabID }) else { return .none }
+    @Shared(.settingsFile) var settingsFile: SettingsFile
+    guard !Self.closeAsksFirst(tab, mode: settingsFile.global.confirmCloseTab) else {
+      state.alert = Self.confirmCloseTabAlert(tab)
+      return .none
+    }
+    return closeTab(tabID, state: &state)
+  }
+
+  /// Whether Close Tab asks first, by the same confirm-close-tab setting as a local tab. In
+  /// `.busy` it asks when closing would interrupt a program on the Mac (ПМ11): the host's `busy`
+  /// (a bare shell prompt is not busy, Claude at its prompt is) or `working`. A host that sends
+  /// no `busy` counts any tab with an agent as busy instead.
+  static func closeAsksFirst(_ tab: RemoteClientTab, mode: ConfirmCloseTabMode) -> Bool {
+    switch mode {
+    case .always: true
+    case .never: false
+    case .busy: tab.working || (tab.busy ?? !tab.agents.isEmpty)
+    }
   }
 
   private func closeTab(_ tabID: String, state: inout State) -> Effect<Action> {
@@ -381,13 +410,34 @@ extension RemoteClientFeature {
       }
       if let tabID = reply["tabId"] { state.pendingTabs[worktreeID] = tabID }
       // The list that holds it may have come before the reply.
-      guard let list = state.list else { return .none }
-      return listChanged(list, state: &state)
+      let applied = state.list.map { listChanged($0, state: &state) } ?? .none
+      // After the re-run: a row the list already resolved needs no grace.
+      return .merge(applied, creatingRowGrace(key: key, worktreeID: worktreeID, state: state))
     case .failure(let error):
       remoteActionsLogger.warning("Remote \(type) failed (\(error.kind))")
       state.alert = Self.failureAlert(title: Self.failureTitle(type), message: Self.failureMessage(type, error))
       return .none
     }
+  }
+
+  /// How long a replied `worktree.new` row waits for a list that holds its worktree. The Mac has
+  /// made the worktree by then, so a list that never shows it (a stalled push) must not leave the
+  /// spinner forever (ДР2).
+  static let creatingRowGrace: Duration = .seconds(30)
+
+  /// The grace timer of a `worktree.new` row that still waits for `worktreeID`; none otherwise.
+  /// Closing the window or switching the Mac cancels it with the requests.
+  private func creatingRowGrace(key: String, worktreeID: String, state: State) -> Effect<Action> {
+    guard RequestKey.type(of: key) == "worktree.new" else { return .none }
+    let repositoryID = String(key.dropFirst("worktree.new:".count))
+    guard state.creatingWorktrees[repositoryID]?.worktreeID == worktreeID else { return .none }
+    let clock = clock
+    return .run { send in
+      try await clock.sleep(for: Self.creatingRowGrace)
+      await send(.creatingRowExpired(repositoryID: repositoryID, worktreeID: worktreeID))
+    }
+    .cancellable(id: CancelID.creatingRow(repositoryID: repositoryID), cancelInFlight: true)
+    .cancellable(id: CancelID.requests)
   }
 
   /// A `worktree.new` reply: a failure, or a reply without the worktree's id, removes its progress

@@ -135,6 +135,8 @@ struct RemoteClientFeature {
     /// A Worktrees menu item while the remote window is key (R20).
     case worktreeCommand(RemoteWorktreeCommand)
     case requestFinished(key: String, Result<[String: String], RemoteClientRequestError>)
+    /// The grace of a replied `worktree.new` row ran out before the list held the worktree.
+    case creatingRowExpired(repositoryID: String, worktreeID: String)
     case windowKeyChanged(Bool)
     /// The Macs the other remote windows show changed.
     case otherWindowsChanged(Set<String>)
@@ -159,8 +161,11 @@ struct RemoteClientFeature {
     case requests
     /// The latest visible set; a newer one replaces one not delivered yet.
     case visible
+    /// The grace timer of one repository's "Creating…" row.
+    case creatingRow(repositoryID: String)
   }
 
+  @Dependency(\.continuousClock) var clock
   @Dependency(\.remoteClientSession) var session
   @Dependency(\.remoteClientWindows) var windows
   @Dependency(\.systemNotificationClient) var systemNotifications

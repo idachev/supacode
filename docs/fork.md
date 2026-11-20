@@ -571,6 +571,7 @@ Each is a small change; keep it on a merge.
 | `supacode/Commands/TerminalCommands.swift` | Select Tab 1-9 / Previous / Next read an optional `remoteTabSelectionAction` focused value and call it when it is enabled. | While the remote window is key, the tab keys act on the remote Mac |
 | `supacode/Commands/WorktreeCommands.swift` | The Worktrees menu reads the optional `remoteWorktreeMenu` focused value: New, Refresh, Select Next / Previous and the slot items go to the remote window; items with no remote meaning are disabled. File ▸ Add Repository and Clone are disabled. | Same, for the worktree menu |
 | `SupacodeSettingsShared/Clients/Notifications/SystemNotificationClient.swift` | `post(identifier, …)` and `remove(identifiers)`; `send` and `post` share one `deliver`. | A notification per remote tab that a newer one replaces and a tab change can remove |
+| `supacode/Features/Terminal/Reducer/LayoutFeature.swift` | The private `closeWouldInterrupt` calls `ContentRuntime.closeWouldInterrupt` (`supacode/Features/Terminal/Content/ContentRuntime+CloseConfirmation.swift`, a fork-only file) instead of holding the rule inline; the rule is unchanged. | The remote list's tab `busy` uses the same rule, so a remote Close Tab asks exactly when the Mac would (ПМ11) |
 
 `TabContent.swift` is not touched by this feature (the pinned grid in it belongs to the host side).
 The terminal menu (⌘T, ⌘W, splits, zoom) reaches the remote window through the existing focused

@@ -526,6 +526,9 @@ nonisolated struct RemoteTab: Encodable, Equatable, Sendable {
   let working: Bool
   let readOnly: Bool
   let agents: [RemoteAgent]
+  /// Closing the tab would interrupt a running program (the Mac's own close-confirmation rule,
+  /// `ContentRuntime.closeWouldInterrupt`); a bare shell prompt is not busy. Absent on old hosts.
+  var busy = false
 }
 
 nonisolated struct RemoteAgent: Encodable, Equatable, Sendable {
