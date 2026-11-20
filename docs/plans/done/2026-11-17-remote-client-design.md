@@ -1,6 +1,6 @@
 # Remote client: Supacode as a window onto another Mac — design
 
-Date: 2026-11-17. Status: implemented (the plan `docs/plans/2026-11-17-remote-client-app.md`, Tasks 1-15; the fork notes are in `docs/fork.md` → "Remote Client Window", how to use it in `docs/remote-access.md` → "Use another Mac from Supacode"). Builds on
+Date: 2026-11-17. Status: implemented and merged (the plan `docs/plans/done/2026-11-17-remote-client-app.md`, Tasks 1-16, merged into `idachev-supacode` on 2026-11-20; the fork notes are in `docs/fork.md` → "Remote Client Window", how to use it in `docs/remote-access.md` → "Use another Mac from Supacode"). Builds on
 `docs/plans/done/2026-11-03-remote-access-android-design.md` and
 `docs/plans/2026-11-10-remote-multi-host-design.md`. The wire protocol is
 `docs/remote-access-protocol.md`; operations are `docs/remote-access.md`. Stage 1 (a Node `attach`

@@ -456,7 +456,7 @@ list the sidebar's sections and drive any terminal tab, shell or agent. Design:
 - **Suggestions.** `RemoteSuggestionRunner` runs `claude -p --model claude-sonnet-5-5` in a login
   shell with hooks, MCP, slash commands and tools off, over the last 80 plain lines. The phone only
   fills its input field with a suggestion.
-- **Several terminals and the layout** (plan `docs/plans/2026-11-17-remote-client-host.md`). `hello`
+- **Several terminals and the layout** (plan `docs/plans/done/2026-11-17-remote-client-host.md`). `hello`
   lists `caps`; `attach` with `keep` holds up to 16 terminals per connection
   (`RemoteAttachPolicy.swift`); `list` carries each worktree's `layout`
   (`RemoteLayoutBuilder.swift`); `watch` pushes `list` on a change, titles at most every 2 s
@@ -520,8 +520,8 @@ terminal:
 File ▸ **Open Remote Mac…** (⌃⌘O) opens a "Remote Mac" window that shows another Mac's Supacode: its
 sidebar, tabs and splits, each pane a real Ghostty terminal. Each Mac gets its own window. It is the
 reverse of "Remote Access From The Android App": the same relay, protocol and keys, with this Mac as
-the client. Design: `docs/plans/2026-11-17-remote-client-design.md`; plan:
-`docs/plans/2026-11-17-remote-client-app.md`; how to use it: `docs/remote-access.md` → "Use another
+the client. Design: `docs/plans/done/2026-11-17-remote-client-design.md`; plan:
+`docs/plans/done/2026-11-17-remote-client-app.md`; how to use it: `docs/remote-access.md` → "Use another
 Mac from Supacode".
 
 - **Fork-only code.** `supacode/Features/RemoteClient/` (the TCA feature `RemoteClientFeature`, the

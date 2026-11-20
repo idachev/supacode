@@ -221,7 +221,7 @@ Cloudflare (protocol: `docs/remote-access-protocol.md` → "LAN shortcut").
 
 Besides the phone, Supacode itself can show another Mac's Supacode in a window: its sidebar, tabs and
 splits, each pane a real terminal. Each Mac gets its own window, so several Macs can be open at
-once. Design: `docs/plans/2026-11-17-remote-client-design.md`; the code is described in
+once. Design: `docs/plans/done/2026-11-17-remote-client-design.md`; the code is described in
 `docs/fork.md` → "Remote Client Window".
 
 Both Macs need the same relay and key pair, as for the phone. The Mac you open (the "host") must

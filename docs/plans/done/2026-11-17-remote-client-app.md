@@ -15,8 +15,8 @@ drives a new `Window` scene; no remote state enters `RepositoriesFeature` or `Te
 **Tech Stack:** Swift 6, TCA, Network.framework, GhosttyKit, swift-argument-parser (CLI), Swift
 Testing with `TestClock`.
 
-**Spec:** `docs/plans/2026-11-17-remote-client-design.md` ("Client design", "No connection",
-"Notifications"). **Depends on:** `docs/plans/2026-11-17-remote-client-host.md` finished through its
+**Spec:** `docs/plans/done/2026-11-17-remote-client-design.md` ("Client design", "No connection",
+"Notifications"). **Depends on:** `docs/plans/done/2026-11-17-remote-client-host.md` finished through its
 Task 10 (a host that sends `caps`, `layout`, pushed `list`, and answers `keep`, `hold` and the
 layout actions; `GhosttySurfaceView.pinGrid` exists).
 

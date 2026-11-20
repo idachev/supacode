@@ -12,8 +12,8 @@ owner in the router and its grid on the terminal content, which pins every surfa
 
 **Tech Stack:** Swift 6, TCA, Swift Testing with `TestClock`, GhosttyKit, Node (`phone-sim.mjs`).
 
-**Spec:** `docs/plans/2026-11-17-remote-client-design.md` (sections "Protocol changes" ПТ0–ПТ6 and
-"Host changes" ХС1–ХС7). The second plan, `docs/plans/2026-11-17-remote-client-app.md`, builds the
+**Spec:** `docs/plans/done/2026-11-17-remote-client-design.md` (sections "Protocol changes" ПТ0–ПТ6 and
+"Host changes" ХС1–ХС7). The second plan, `docs/plans/done/2026-11-17-remote-client-app.md`, builds the
 client on top of this one.
 
 ## Global Constraints
