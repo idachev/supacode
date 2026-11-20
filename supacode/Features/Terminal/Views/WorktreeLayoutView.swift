@@ -168,6 +168,13 @@ private struct LayoutAlertHost: View {
     store.alertPaneID.map { !store.windowedPaneIDs.contains($0) } ?? true
   }
 
+  /// Fork (РС5): the pending close confirmation whose pane is on screen here to flash; its
+  /// dialog waits for the first pulses. Any other alert presents at once.
+  private var heldAlertID: UUID? {
+    guard let paneID = store.alertPaneID, store.layout.tree.visibleLeaves().contains(paneID) else { return nil }
+    return store.alert?.id
+  }
+
   var body: some View {
     LayoutContentView(
       store: store,
@@ -180,7 +187,8 @@ private struct LayoutAlertHost: View {
     )
     .background {
       if presentsAlert {
-        Color.clear.alert($store.scope(state: \.alert, action: \.alert))
+        Color.clear.paneCloseConfirmationAlert(
+          $store.scope(state: \.alert, action: \.alert), heldAlertID: heldAlertID)
       }
     }
   }

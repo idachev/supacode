@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import Testing
 
@@ -422,5 +423,65 @@ struct RemoteClientLayoutTests {
     _ = set.update(visible: [], now: start + .seconds(1))
     let step = set.update(visible: ["d"], now: start + .seconds(31))
     #expect(step == .init(attach: ["d"], detach: ["a", "b", "c"]))
+  }
+
+  // MARK: - Close confirmation flash (РС5)
+
+  @Test func theCloseConfirmationTabIsReadFromTheCloseTabAlertOnly() {
+    #expect(
+      RemoteClientFeature.closeConfirmationTabID(RemoteClientFeature.confirmCloseTabAlert(Self.tab("t3"))) == "t3")
+    #expect(RemoteClientFeature.closeConfirmationTabID(RemoteClientFeature.confirmClosePaneAlert("P1")) == nil)
+    #expect(
+      RemoteClientFeature.closeConfirmationTabID(RemoteClientFeature.failureAlert(title: "x", message: "y")) == nil)
+  }
+
+  @Test func theShownPaneHoldingATabIsFoundSelectedOrNot() {
+    var selection = RemoteLocalSelection()
+    let projection = RemoteLayoutProjection.project(Self.twoPaneWorktree(), selection: &selection)
+    #expect(projection.shownPaneID(holdingTab: "t1") == "P1")  // not P1's selected tab
+    #expect(projection.shownPaneID(holdingTab: "t3") == "P2")
+    #expect(projection.shownPaneID(holdingTab: "gone") == nil)
+  }
+
+  @Test func aPaneAZoomHidesIsNotShown() {
+    var selection = RemoteLocalSelection()
+    let projection = RemoteLayoutProjection.project(Self.twoPaneWorktree(zoomed: "P2"), selection: &selection)
+    #expect(projection.shownPaneID(holdingTab: "t1") == nil)
+    #expect(projection.shownPaneID(holdingTab: "t3") == "P2")
+  }
+
+  @Test func aTabOfAParkedGroupIsNotShown() {
+    let worktree = Self.worktree(
+      layout: RemoteClientLayout(
+        mode: "splitPerTab", activeGroupId: "g1",
+        groups: [Self.group("g1", .pane("P1")), Self.group("g2", .pane("P2"))],
+        panes: [Self.pane("P1", ["t1"]), Self.pane("P2", ["t2"])]),
+      tabs: [Self.tab("t1"), Self.tab("t2")])
+    var selection = RemoteLocalSelection()
+    let projection = RemoteLayoutProjection.project(worktree, selection: &selection)
+    #expect(projection.shownPaneID(holdingTab: "t1") == "P1")
+    #expect(projection.shownPaneID(holdingTab: "t2") == nil)
+  }
+
+  @Test func theCloseFlashNamesTheShownPaneAndTheAlert() {
+    var selection = RemoteLocalSelection()
+    var state = RemoteClientFeature.State()
+    state.projection = RemoteLayoutProjection.project(Self.twoPaneWorktree(), selection: &selection)
+    #expect(state.closeFlash == nil)
+
+    let alert = RemoteClientFeature.confirmCloseTabAlert(Self.tab("t1"))
+    state.alert = alert
+    #expect(state.closeFlash == RemoteClientFeature.CloseFlash(paneID: "P1", alertID: alert.id))
+
+    // Any other alert presents at once: nothing flashes.
+    state.alert = RemoteClientFeature.confirmClosePaneAlert("P1")
+    #expect(state.closeFlash == nil)
+    state.alert = RemoteClientFeature.failureAlert(title: "Close failed", message: "no")
+    #expect(state.closeFlash == nil)
+
+    // No projection (no worktree shown): nothing to flash.
+    state.alert = alert
+    state.projection = nil
+    #expect(state.closeFlash == nil)
   }
 }

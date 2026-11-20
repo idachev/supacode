@@ -33,7 +33,8 @@ struct RemoteLayoutView: View {
         dividerColor: ghostty.splitDividerColor() ?? Color(nsColor: .separatorColor),
         unfocusedFill: ghostty.unfocusedSplitFill(),
         unfocusedOpacity: ghostty.unfocusedSplitOverlayOpacity(),
-        macName: macName
+        macName: macName,
+        closeFlash: store.closeFlash
       )
       let focusedContentID = projection.focusedTab?.contentId
       VStack(spacing: 0) {
@@ -113,10 +114,22 @@ private struct RemoteLayoutContext {
   let unfocusedFill: Color?
   let unfocusedOpacity: Double
   let macName: String
+  /// The pending Close Tab confirmation whose pane flashes (РС5).
+  let closeFlash: RemoteClientFeature.CloseFlash?
 
   /// Only a view of several panes dims; a zoomed or single pane is always the working one.
   func isDimmed(_ paneID: String) -> Bool {
     zoomedPaneID == nil && isSplit && focusedPaneID != paneID
+  }
+
+  /// РС4: the focused pane of a view of several panes carries the accent border.
+  func showsFocusBorder(_ paneID: String) -> Bool {
+    PaneHighlight.showsFocusBorder(isFocused: focusedPaneID == paneID, isSplit: isSplit, isZoomed: zoomedPaneID != nil)
+  }
+
+  /// РС5: the id of the pending Close Tab confirmation this pane is the target of.
+  func closeFlashID(_ paneID: String) -> UUID? {
+    closeFlash?.paneID == paneID ? closeFlash?.alertID : nil
   }
 
   /// The tabs among `tabIDs` whose `tab.close` is in flight.
@@ -191,6 +204,9 @@ private struct RemotePaneLeafView: View {
             ? context.unfocusedFill.map { (fill: $0, opacity: context.unfocusedOpacity) } : nil
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
+      .overlay {
+        PaneHighlightBorder(showsFocusBorder: context.showsFocusBorder(paneID), flashID: context.closeFlashID(paneID))
       }
     } else {
       // The projection keeps tree and panes in step; this only shows if that slips.

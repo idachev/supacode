@@ -602,6 +602,39 @@ actions (`newTerminalAction`, `closeTabAction`, `splitTerminalAction`, `toggleSp
 - The protocol is shared with the host (`docs/remote-access-protocol.md`) and with the Android app:
   a protocol change goes into the client models and `RemoteClientConnection.requiredCaps` too.
 
+## Focused Pane Border And Close Flash
+
+- **Focused pane border (РС4).** When a window shows more than one pane (a split, not zoomed), the
+  focused pane gets an accent border (`Color.accentColor`). One pane, a zoomed split or a pane
+  window: no border. Ghostty's unfocused-split dim stays as it is; the border is an overlay on top.
+- **Close flash (РС5).** When a close asks first ("Close Tab?"), the border of the pane it is about
+  flashes: two pulses before the dialog (about 0.56 s), three more while it shows, then it stays lit
+  until the dialog closes. It flashes on a single pane and on an unfocused one too. With Reduce
+  Motion there is no pulse and no delay: the border just stays lit while the dialog is up. A pane
+  that is not on screen (a parked group, hidden by a zoom) does not flash and the dialog shows at once.
+- **Both windows.** The main window reads `LayoutFeature.State.alertPaneID` and the alert's id; the
+  Remote Mac window reads the pending Close Tab alert (`RemoteClientFeature.State.closeFlash`). Both
+  are view-only: no reducer state or action is added, so `LayoutFeature` stays topology only. A pane
+  window presents its own confirmation at once, without a flash.
+- **Fork-only code.** `supacode/Features/Terminal/Views/PaneHighlight.swift` (the rule, the flash
+  schedule, `PaneHighlightBorder` and `paneCloseConfirmationAlert`) and
+  `supacode/Features/RemoteClient/RemoteClientFeature+CloseFlash.swift`. Tests: `PaneHighlightTests`
+  and the "Close confirmation flash" cases of `RemoteClientLayoutTests`.
+
+### Upstream files it touches
+
+| File | Change | Why |
+| --- | --- | --- |
+| `supacode/Features/Terminal/Views/LayoutContentView.swift` | `PaneStripView` gets `showsFocusBorder` and `closeFlashID` and one `.overlay { PaneHighlightBorder(…) }` on its stack. `isDimmed` is unchanged. | The border and the flash on each pane |
+| `supacode/Features/Terminal/Views/WorktreeLayoutView.swift` | `LayoutAlertHost` presents with `.paneCloseConfirmationAlert(…, heldAlertID:)` instead of `.alert(…)`; `heldAlertID` is the alert's id while its pane is on screen. | The dialog waits for the first pulses |
+
+### Keeping It On Upstream Merges
+
+- If upstream changes the alert host in `WorktreeLayoutView.swift`, keep the store-scoped alert
+  going through `paneCloseConfirmationAlert`; with `heldAlertID` nil it behaves as `.alert(…)`.
+- If upstream changes `PaneStripView`'s body, keep the `PaneHighlightBorder` overlay on the outer
+  stack (an overlay, never a frame or padding change: that would resize the terminal grid).
+
 ## Machine-Local Makefile Overrides (`Local.mk`)
 
 The `Makefile` includes an optional, gitignored `Local.mk` from the repository root

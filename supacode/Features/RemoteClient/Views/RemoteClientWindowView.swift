@@ -37,8 +37,11 @@ struct RemoteClientWindowView: View {
       )
       // On the window, not the split view: a request that fails as the connection fails (a refused
       // key) shows its alert over the failure screen, not stale after a reconnect. The New Worktree
-      // prompt likewise closes (and cancels) only when the user or the reducer closes it.
-      .alert($store.scope(state: \.alert, action: \.alert))
+      // prompt likewise closes (and cancels) only when the user or the reducer closes it. A Close
+      // Tab confirmation whose pane is on screen waits for that pane's first flashes (РС5).
+      .paneCloseConfirmationAlert(
+        $store.scope(state: \.alert, action: \.alert), heldAlertID: store.closeFlash?.alertID
+      )
       .sheet(
         isPresented: Binding(
           get: { store.newWorktree != nil },

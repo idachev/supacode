@@ -358,6 +358,23 @@ struct PaneStripView: View {
     return Set(store.layout.tree.visibleLeaves()).subtracting(windowedPaneIDs).count > 1
   }
 
+  /// Fork (РС4): the focused pane of a multi-pane view carries the accent border, by the same
+  /// count as the dim. A windowed pane never does.
+  private var showsFocusBorder: Bool {
+    guard context == .embedded else { return false }
+    return PaneHighlight.showsFocusBorder(
+      isFocused: isFocused,
+      isSplit: Set(store.layout.tree.visibleLeaves()).subtracting(windowedPaneIDs).count > 1,
+      isZoomed: store.layout.tree.zoomed != nil)
+  }
+
+  /// Fork (РС5): the pending close confirmation this pane is the target of; its border flashes.
+  /// Embedded only: a pane window presents its own confirmation without the hold.
+  private var closeFlashID: UUID? {
+    guard context == .embedded, store.alertPaneID == pane.id else { return nil }
+    return store.alert?.id
+  }
+
   /// Split per tab: an embedded pane holds one tab and the worktree's group
   /// strip carries its title, so it has no strip and no tab-drop zones. A
   /// windowed pane keeps its one-tab strip (title, rename, accessories). Read
@@ -427,6 +444,7 @@ struct PaneStripView: View {
         }
       }
     }
+    .overlay { PaneHighlightBorder(showsFocusBorder: showsFocusBorder, flashID: closeFlashID) }
   }
 }
 
