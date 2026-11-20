@@ -612,12 +612,17 @@ actions (`newTerminalAction`, `closeTabAction`, `splitTerminalAction`, `toggleSp
   until the dialog closes. It flashes on a single pane and on an unfocused one too. With Reduce
   Motion there is no pulse and no delay: the border just stays lit while the dialog is up. A pane
   that is not on screen (a parked group, hidden by a zoom) does not flash and the dialog shows at once.
+- **Keys during the hold (РС6).** While the dialog waits, a local key monitor swallows the
+  holding window's key presses and their releases, so a reflexive Return never reaches the
+  terminal (⌘W pressed again is swallowed too). It runs only during the hold (and until the
+  swallowed keys' releases arrive) and never touches another window's keys
+  (`PaneHighlight.HoldKeyFilter`). With Reduce Motion there is no hold, so nothing is swallowed.
 - **Both windows.** The main window reads `LayoutFeature.State.alertPaneID` and the alert's id; the
   Remote Mac window reads the pending Close Tab alert (`RemoteClientFeature.State.closeFlash`). Both
   are view-only: no reducer state or action is added, so `LayoutFeature` stays topology only. A pane
   window presents its own confirmation at once, without a flash.
 - **Fork-only code.** `supacode/Features/Terminal/Views/PaneHighlight.swift` (the rule, the flash
-  schedule, `PaneHighlightBorder` and `paneCloseConfirmationAlert`) and
+  schedule, the hold's key filter, `PaneHighlightBorder` and `paneCloseConfirmationAlert`) and
   `supacode/Features/RemoteClient/RemoteClientFeature+CloseFlash.swift`. Tests: `PaneHighlightTests`
   and the "Close confirmation flash" cases of `RemoteClientLayoutTests`.
 

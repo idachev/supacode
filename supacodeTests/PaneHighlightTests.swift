@@ -62,4 +62,60 @@ struct PaneHighlightTests {
     #expect(!PaneHighlight.isDialogHeld(heldAlertID: nil, releasedAlertID: nil, reduceMotion: false))
     #expect(!PaneHighlight.isDialogHeld(heldAlertID: UUID(), releasedAlertID: nil, reduceMotion: true))
   }
+
+  // MARK: - Keys during the hold (РС6)
+
+  private typealias Filter = PaneHighlight.HoldKeyFilter
+
+  @Test func aKeyPressedInTheHoldingWindowDuringTheHoldIsSwallowedWithItsRelease() {
+    var filter = Filter()
+    let down = filter.shouldSwallow(.down, keyCode: 36, eventWindowNumber: 7, holdWindowNumber: 7, isHolding: true)
+    #expect(down)
+    #expect(filter.isAwaitingKeyUps)
+    // The release comes after the dialog showed (hold over) and in the dialog's window: still swallowed.
+    let up = filter.shouldSwallow(.up, keyCode: 36, eventWindowNumber: 9, holdWindowNumber: 7, isHolding: false)
+    #expect(up)
+    #expect(!filter.isAwaitingKeyUps)
+    // A second release of the same key is not ours.
+    let again = filter.shouldSwallow(.up, keyCode: 36, eventWindowNumber: 7, holdWindowNumber: 7, isHolding: false)
+    #expect(!again)
+  }
+
+  @Test func anotherWindowsKeysAreNeverSwallowed() {
+    var filter = Filter()
+    let down = filter.shouldSwallow(.down, keyCode: 36, eventWindowNumber: 8, holdWindowNumber: 7, isHolding: true)
+    #expect(!down)
+    let up = filter.shouldSwallow(.up, keyCode: 36, eventWindowNumber: 8, holdWindowNumber: 7, isHolding: true)
+    #expect(!up)
+    #expect(!filter.isAwaitingKeyUps)
+  }
+
+  @Test func keysAfterTheHoldOrWithoutAWindowPassThrough() {
+    var filter = Filter()
+    let afterHold = filter.shouldSwallow(
+      .down, keyCode: 36, eventWindowNumber: 7, holdWindowNumber: 7, isHolding: false)
+    #expect(!afterHold)
+    let noWindow = filter.shouldSwallow(
+      .down, keyCode: 36, eventWindowNumber: 7, holdWindowNumber: nil, isHolding: true)
+    #expect(!noWindow)
+    #expect(!filter.isAwaitingKeyUps)
+  }
+
+  @Test func theReleaseOfAKeyPressedBeforeTheHoldReachesTheTerminal() {
+    var filter = Filter()
+    // Shift held down before ⌘W, or W itself: its press was not swallowed, so neither is its release.
+    let up = filter.shouldSwallow(.up, keyCode: 13, eventWindowNumber: 7, holdWindowNumber: 7, isHolding: true)
+    #expect(!up)
+  }
+
+  @Test func repeatsOfOneKeyAwaitOneRelease() {
+    var filter = Filter()
+    for _ in 0..<3 {
+      _ = filter.shouldSwallow(.down, keyCode: 36, eventWindowNumber: 7, holdWindowNumber: 7, isHolding: true)
+    }
+    _ = filter.shouldSwallow(.down, keyCode: 49, eventWindowNumber: 7, holdWindowNumber: 7, isHolding: true)
+    #expect(filter.swallowedKeyCodes == [36, 49])
+    _ = filter.shouldSwallow(.up, keyCode: 36, eventWindowNumber: 7, holdWindowNumber: 7, isHolding: true)
+    #expect(filter.swallowedKeyCodes == [49])
+  }
 }
