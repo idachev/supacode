@@ -306,6 +306,9 @@ private struct RemoteClientMenuActions: ViewModifier {
         guard let paneID else { return }
         store.send(.splitTapped(paneID: paneID, direction: direction.remoteSplitDirection))
       }
+      .focusedSceneAction(\.focusSplitAction, enabled: isSplit && paneID != nil, token: token) { direction in
+        store.send(.focusSplitTapped(direction))
+      }
       .focusedSceneAction(\.toggleSplitZoomAction, enabled: isSplit && paneID != nil, token: token) {
         guard let paneID else { return }
         store.send(.zoomToggled(paneID: paneID))

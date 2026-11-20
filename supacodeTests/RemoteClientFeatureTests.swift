@@ -559,6 +559,39 @@ struct RemoteClientFeatureTests {
     #expect(session.visible.value.last == ["c-t1", "c-t3"])
   }
 
+  /// ⌘⌥+arrow moves the focus to the neighbouring pane, locally, by the local layout's spatial
+  /// rule (НП2): P1 | P2 focused on P2, then P3 under P2.
+  @Test func focusSplitMovesToTheNeighbouringPaneAndSendsNothing() async {
+    let session = FakeSession()
+    let tree: RemoteClientLayoutNode = .split(
+      direction: "horizontal", ratio: 0.5, left: .pane("P1"),
+      right: .split(direction: "vertical", ratio: 0.5, left: .pane("P2"), right: .pane("P3")))
+    let worktree = Self.twoPane(
+      tabs: [Self.tab("t1"), Self.tab("t2"), Self.tab("t3"), Self.tab("t4")],
+      extraPanes: [RemoteClientLayoutPane(id: "P3", tabIds: ["t4"], selectedTabId: "t4")], tree: tree)
+    let store = await shownStore(Self.list([worktree]), session: session)
+    #expect(store.state.projection?.focusedPaneID == "P2")
+    await store.send(.focusSplitTapped(.down))
+    #expect(store.state.projection?.focusedPaneID == "P3")
+    await store.send(.focusSplitTapped(.left))
+    #expect(store.state.projection?.focusedPaneID == "P1")
+    await store.send(.focusSplitTapped(.right))
+    #expect(store.state.projection?.focusedPaneID != "P1")
+    await store.finish()
+    #expect(session.sent.value.isEmpty)
+  }
+
+  /// No neighbour that way, or a single pane: the focus stays.
+  @Test func focusSplitAtAnEdgeKeepsTheFocus() async {
+    let session = FakeSession()
+    let store = await shownStore(session: session)
+    await store.send(.focusSplitTapped(.right))
+    #expect(store.state.projection?.focusedPaneID == "P2")
+    await store.send(.focusSplitTapped(.up))
+    #expect(store.state.projection?.focusedPaneID == "P2")
+    await store.finish()
+  }
+
   @Test func aPushedListKeepsTheLocalTabChoice() async {
     let session = FakeSession()
     let store = await shownStore(session: session)

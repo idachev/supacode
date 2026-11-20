@@ -120,6 +120,8 @@ struct RemoteClientFeature {
     case filterChanged(String)
     case tabSelected(paneID: String, tabID: String)
     case paneFocused(String)
+    /// Focus Split Left / Right / Up / Down (⌘⌥+arrow): the neighbouring pane, chosen locally.
+    case focusSplitTapped(TerminalSplitMenuDirection)
     case zoomToggled(paneID: String)
     case groupSelected(String)
     case newTabTapped(paneID: String?)

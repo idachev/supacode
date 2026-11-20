@@ -81,10 +81,8 @@ extension RemoteClientFeature {
         if let groupID = projection.groupID(containing: paneID) { selection.focusedPaneID[groupID] = paneID }
       }
 
-    case .paneFocused(let paneID):
-      return changeSelection(&state) { selection, projection in
-        if let groupID = projection.groupID(containing: paneID) { selection.focusedPaneID[groupID] = paneID }
-      }
+    case .paneFocused, .focusSplitTapped:
+      return focusPane(action, state: &state)
 
     case .zoomToggled(let paneID):
       return changeSelection(&state) { selection, projection in
@@ -126,6 +124,21 @@ extension RemoteClientFeature {
     }
     guard let target, target != state.selectedWorktreeID else { return .none }
     return reduceSelection(&state, .worktreeSelected(target))
+  }
+
+  /// A pane takes the focus: the one clicked into (`paneFocused`), or the neighbour Focus Split
+  /// picks (`focusSplitTapped`, nothing at an edge).
+  private func focusPane(_ action: Action, state: inout State) -> Effect<Action> {
+    return changeSelection(&state) { selection, projection in
+      let paneID: String? =
+        switch action {
+        case .paneFocused(let paneID): paneID
+        case .focusSplitTapped(let direction): projection.paneID(movingFocus: direction)
+        default: nil
+        }
+      guard let paneID, let groupID = projection.groupID(containing: paneID) else { return }
+      selection.focusedPaneID[groupID] = paneID
+    }
   }
 
   /// The selected worktree's choices changed by `change`, then re-projected.
@@ -554,6 +567,39 @@ extension RemoteLayoutProjection {
     groups.first { $0.id == activeGroupID }
   }
 
+  /// The pane Focus Split (⌘⌥+arrow) moves to from the active group's focused pane, by the local
+  /// layout's spatial rule (`SplitTree.focusTarget`), so both windows pick the same neighbour.
+  /// Nil at an edge, with one pane, or while the group is zoomed (only one pane shows).
+  func paneID(movingFocus direction: TerminalSplitMenuDirection) -> String? {
+    guard let group = activeGroup, group.zoomedPaneID == nil, let focused = group.focusedPaneID else { return nil }
+    let tree = SplitTree<RemotePaneLeaf>(root: Self.splitNode(group.tree))
+    guard let node = tree.find(id: focused) else { return nil }
+    let spatial: SplitTree<RemotePaneLeaf>.SpatialDirection =
+      switch direction {
+      case .right: .right
+      case .left: .left
+      case .down: .down
+      case .up: .top
+      }
+    guard let target = tree.focusTarget(for: .spatial(spatial), from: node)?.id, target != focused else {
+      return nil
+    }
+    return target
+  }
+
+  /// The remote tree as a local split tree; an axis this client does not know reads as horizontal.
+  private static func splitNode(_ node: RemoteClientLayoutNode) -> SplitTree<RemotePaneLeaf>.Node {
+    switch node {
+    case .pane(let id):
+      return .leaf(view: RemotePaneLeaf(id: id))
+    case .split(let direction, let ratio, let left, let right):
+      return .split(
+        .init(
+          direction: SplitDirection(rawValue: direction) ?? .horizontal, ratio: ratio,
+          left: splitNode(left), right: splitNode(right)))
+    }
+  }
+
   /// The active group's tree has more than one pane: zoom means something.
   var isActiveGroupSplit: Bool {
     activeGroup.map { Self.paneIDs(in: $0.tree).count > 1 } ?? false
@@ -619,4 +665,9 @@ extension RemoteLayoutProjection {
       return selection == .next ? (current + 1) % count : (current - 1 + count) % count
     }
   }
+}
+
+/// A remote pane as a split-tree leaf, so the remote layout reuses the local focus rules.
+nonisolated struct RemotePaneLeaf: Identifiable, Hashable, Sendable {
+  let id: String
 }
