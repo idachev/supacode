@@ -19,6 +19,10 @@ paths:
   alone needs no `()`. **Why:** on 2026-11-10 three reruns "passed" with 0 tests executed.
   A NEW test file is in no target until `mise exec -- tuist generate --no-open --cache-profile development`
   runs; before that `-only-testing:` on it also runs 0 tests and prints `TEST SUCCEEDED`.
+- **zsh does not split `$VAR` into words.** `FILES="a b"; swiftlint lint $FILES` (or a string of
+  `-only-testing:` flags) passes ONE argument: lint and format check nothing and exit 0, and
+  xcodebuild runs only the last suite. Use an array: `FILES=(a b)`, then `"${FILES[@]}"`.
+  **Why:** on 2026-11-20 this hid a lint pass and a 30-suite test run (only one suite ran).
 - **A locked screen stops every test run.** The test bundles are hosted in `supacode.app`; while
   the Mac's screen is locked the build finishes (`Validate supacode.app`) and the test session
   never starts (the host hangs in `XCTestDriver _prepareTestConfigurationAndIDESession`), for
