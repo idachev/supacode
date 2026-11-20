@@ -267,10 +267,22 @@ under the name is the banner's notice instead (see "What the banner means"). Whe
 fails, the window uses the relay again and goes back to LAN when it can.
 
 While a Remote Mac window is key, the menus act on the Mac it shows: New Terminal (⌘T), Close (⌘W),
-the splits and zoom, Select Tab (⌘1 to ⌘9, previous, next), and the Worktrees menu (new, refresh,
-next and previous worktree, select by slot). Items that have no meaning there are disabled, for
-example Add Repository and Clone, Archived Worktrees, Recent Terminals, Jump to Latest Unread and
-the worktree history.
+the splits and zoom, Focus Split (⌘⌥ and an arrow), Select Tab (⌘1 to ⌘9, previous, next), and the
+Worktrees menu (new, refresh, next and previous worktree, select by slot, ⌃1 to ⌃9). Items that have
+no meaning there are disabled, for example Add Repository and Clone, Archived Worktrees, Recent
+Terminals, Jump to Latest Unread and the worktree history.
+
+- **Close (⌘W)** follows this Mac's "Confirm before closing a tab" setting. In its default mode it
+  asks first when closing would stop a program on the host: the host marks each tab `busy` by its
+  own rule (a shell at its prompt is not busy; Claude, `vim`, a build or a server is, and so is a
+  hibernated terminal). An older host does not send `busy`; then a tab with an agent asks. ⌘W
+  never closes a window that shows terminals; Close Window is ⇧⌘W.
+- Before the question the pane flashes so you see which one closes; keys typed in that short
+  moment are dropped, so a quick Return never reaches the program.
+- In a split the focused pane has a border in the system accent color, in this window and in the
+  main window.
+- Hold ⌘ or ⌃ alone for a moment to see the shortcut hints: ⌃1 to ⌃9 on the sidebar rows and
+  ⌘1 to ⌘9 on the focused pane's tabs (on the groups in Splits in Each Tab).
 
 ### What the banner means
 

@@ -23,6 +23,9 @@ paths:
   `-only-testing:` flags) passes ONE argument: lint and format check nothing and exit 0, and
   xcodebuild runs only the last suite. Use an array: `FILES=(a b)`, then `"${FILES[@]}"`.
   **Why:** on 2026-11-20 this hid a lint pass and a 30-suite test run (only one suite ran).
+- **`make build-app` can hide a compile error.** It pipes through xcbeautify, which may print
+  only "Error 65" with no `error:` line. Rerun the xcodebuild line without the pipe into a log and
+  grep it for `error:`.
 - **A locked screen stops every test run.** The test bundles are hosted in `supacode.app`; while
   the Mac's screen is locked the build finishes (`Validate supacode.app`) and the test session
   never starts (the host hangs in `XCTestDriver _prepareTestConfigurationAndIDESession`), for
