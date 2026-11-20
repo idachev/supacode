@@ -1081,6 +1081,44 @@ struct GhosttySurfaceViewTests {
     #expect(!hiddenTarget.fired)
   }
 
+  /// Stands in for SwiftUI's command menu: `update()` replaces the command item with a fresh one
+  /// that holds the current focused action (the behaviour cb5670f8 observed in the app).
+  /// `nonisolated`: NSMenu's members are, and the project defaults to the main actor.
+  nonisolated private final class RebuildingMenu: NSMenu {
+    var fresh: NSMenuItem?
+    var updates = 0
+
+    override func update() {
+      super.update()
+      updates += 1
+      guard let fresh else { return }
+      removeAllItems()
+      addItem(fresh)
+    }
+  }
+
+  /// A Cyrillic ⌘W fires its item directly, which AppKit's own path would update first. Without
+  /// the update it ran the action of an older focus: the main window's Close Tab while the Remote
+  /// Mac window was key, or ⌘D with a closed pane's id (ХП1).
+  @Test func directlyFiredChordUpdatesTheMenuAndFiresTheFreshItem() {
+    let staleTarget = MenuActionTarget()
+    let freshTarget = MenuActionTarget()
+    let stale = Self.commandWItem(target: staleTarget)
+    let fileMenu = RebuildingMenu()
+    fileMenu.autoenablesItems = false
+    fileMenu.addItem(stale)
+    fileMenu.fresh = Self.commandWItem(target: freshTarget)
+    let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+    fileItem.submenu = fileMenu
+    let root = Self.manualMenu([fileItem])
+    let event = Self.cyrillicCommandW()
+
+    #expect(GhosttySurfaceView.dispatchForwardableChord(stale, for: event, in: root))
+    #expect(fileMenu.updates >= 1)
+    #expect(freshTarget.fired)
+    #expect(!staleTarget.fired)
+  }
+
   @Test func isSystemManagedMenuItemClassifiesActions() {
     let hideOthers = NSMenuItem(
       title: "Hide Others",
