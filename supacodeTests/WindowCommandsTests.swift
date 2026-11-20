@@ -5,7 +5,7 @@ import Testing
 
 @testable import supacode
 
-/// ⌘W only ever closes the focused tab or pane, never a window (owner rule R32).
+/// ⌘W only ever closes the focused tab or pane, never a window with terminals (owner rule R32).
 @MainActor
 struct WindowCommandsTests {
   // MARK: - The hosting app's real main menu.
@@ -44,7 +44,8 @@ struct WindowCommandsTests {
   }
 }
 
-/// Close Tab's action: the focused tab, a pane window's tab, or nothing; never the window.
+/// Close Tab's action: a utility window, the focused tab, a pane window's tab, or nothing; never a
+/// window with terminals.
 @MainActor
 struct WindowCommandsCloseTabTests {
   private final class Counter {
@@ -103,6 +104,40 @@ struct WindowCommandsCloseTabTests {
     #expect(WindowCommands.performCloseTab(nil, keyWindow: nil) == .nothing)
     #expect(WindowCommands.performCloseTab(nil, keyWindow: Self.paneWindow(closing: nil)) == .nothing)
     #expect(window.isVisible)
+  }
+
+  /// Settings, the references and panels close on ⌘W, before any tab action (РШ3).
+  @Test func aUtilityWindowClosesItself() {
+    let focused = Counter()
+    let action = FocusedAction<Void>(isEnabled: true) { focused.count += 1 }
+    for id in [WindowID.settings, WindowID.deeplinkReference, WindowID.cliReference] {
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled, .closable],
+        backing: .buffered, defer: true)
+      window.isReleasedWhenClosed = false
+      window.identifier = NSUserInterfaceItemIdentifier(id)
+      window.orderFront(nil)
+      #expect(WindowCommands.performCloseTab(action, keyWindow: window) == .utilityWindow)
+      #expect(!window.isVisible)
+    }
+    let panel = NSPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled, .closable],
+      backing: .buffered, defer: true)
+    panel.isReleasedWhenClosed = false
+    panel.orderFront(nil)
+    #expect(WindowCommands.performCloseTab(nil, keyWindow: panel) == .utilityWindow)
+    #expect(!panel.isVisible)
+    #expect(focused.count == 0)
+  }
+
+  @Test func theMainAndTheRemoteWindowAreNotUtilityWindows() {
+    for id in [WindowID.main, "\(WindowID.remoteClient)-AppWindow-1"] {
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled, .closable],
+        backing: .buffered, defer: true)
+      window.identifier = NSUserInterfaceItemIdentifier(id)
+      #expect(!WindowCommands.isUtilityWindow(window))
+    }
   }
 
   @Test func closeWindowShortcutIsCommandShiftWAndNeverCloseTabs() {

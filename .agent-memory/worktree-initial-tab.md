@@ -15,8 +15,10 @@ paths:
 - For a new worktree, `selectedWorktreeChanged` arrives before `worktreeCreated`. A worktree in
   lifecycle `.pending` must still get its first tab: that tab runs the setup script and sends
   the ack back to CLI `worktree new`.
-- Cmd+W never closes a window (owner rule, 2026-11-19): "Close Tab/Terminal" always owns Cmd+W
-  and does nothing when `closeTabAction` is not enabled; Close Window is Shift+Cmd+W.
+- Cmd+W never closes a window with terminals (owner rule, 2026-11-19): "Close Tab/Terminal" always
+  owns Cmd+W and does nothing when `closeTabAction` is not enabled; Close Window is Shift+Cmd+W.
+  Utility windows (Settings, the references, any panel such as About) do close on Cmd+W
+  (`WindowCommands.isUtilityWindow`, owner, 2026-11-20).
   **Why:** Cmd+W closing the main window once was "expected"; the owner ruled it out.
 - A `WindowGroup` scene brings its own File > Close (Cmd+W) and Close All, which push out the
   app's `CommandGroup(replacing: .saveItem)` (Close Tab vanishes, Cmd+W closes the window on every

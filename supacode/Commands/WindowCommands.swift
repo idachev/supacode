@@ -12,8 +12,9 @@ struct WindowCommands: Commands {
   @FocusedValue(\.terminateAllTerminalSessionsAction) private var terminateAllTerminalSessionsAction
 
   var body: some Commands {
-    // ⌘W only ever closes the focused tab or pane, never a window (R32). Close Tab is
-    // non-customizable and always holds ⌘W, so the chord never moves to Close Window.
+    // ⌘W only ever closes the focused tab or pane, never a window with terminals (R32); a
+    // utility window closes (РШ3). Close Tab is non-customizable and always holds ⌘W, so the
+    // chord never moves to Close Window.
     let closeTab = AppShortcuts.closeTab.effective(from: settingsFile.global.shortcutOverrides)
     // In Splits in Each Tab ⌘W closes the focused split, not the whole tab.
     // The menu bar has no layout scope, so it reads the setting (ДР9).
@@ -50,12 +51,27 @@ struct WindowCommands: Commands {
     case focusedTab
     /// A pane window's selected tab, when no enabled `closeTabAction` reached the menu.
     case paneWindowTab
+    /// A window without terminals (Settings, a reference, About, a panel) closed (РШ3).
+    case utilityWindow
     case nothing
   }
 
-  /// Closes the focused tab or pane and never a window (R32).
+  /// The windows whose ⌘W closes the window itself, as in other Mac apps (РШ3): they hold no
+  /// terminal, so R32 does not apply. Settings, the references and every panel (About included).
+  static let utilityWindowIDs: Set<String> = [WindowID.settings, WindowID.deeplinkReference, WindowID.cliReference]
+
+  static func isUtilityWindow(_ window: NSWindow) -> Bool {
+    window is NSPanel || window.identifier.map { utilityWindowIDs.contains($0.rawValue) } == true
+  }
+
+  /// Closes the focused tab or pane and never a window that shows terminals (R32); a utility
+  /// window itself closes (РШ3).
   @discardableResult
   static func performCloseTab(_ closeTabAction: FocusedAction<Void>?, keyWindow: NSWindow?) -> CloseTabTarget {
+    if let keyWindow, isUtilityWindow(keyWindow) {
+      keyWindow.performClose(nil)
+      return .utilityWindow
+    }
     if let closeTabAction, closeTabAction.isEnabled {
       closeTabAction()
       return .focusedTab
