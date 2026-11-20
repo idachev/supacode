@@ -775,6 +775,8 @@ struct SupacodeApp: App {
     // One window per Mac, keyed by the Mac it shows (Task 16).
     WindowGroup("Remote Mac", id: WindowID.remoteClient, for: RemoteClientWindowValue.self) { $value in
       RemoteClientWindowRoot(value: $value, ghostty: ghostty)
+        // The strips and the sidebar show the ⌘ / ⌃ shortcut hints too (НП4).
+        .environment(commandKeyObserver)
         .appChromeTextSize(store.settings.chromeTextSize)
         .appChromeBaseFont(store.settings.chromeTextSize)
     }

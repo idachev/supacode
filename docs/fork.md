@@ -635,6 +635,41 @@ actions (`newTerminalAction`, `closeTabAction`, `splitTerminalAction`, `toggleSp
 - If upstream changes `PaneStripView`'s body, keep the `PaneHighlightBorder` overlay on the outer
   stack (an overlay, never a frame or padding change: that would resize the terminal grid).
 
+## Shortcut Hints On ⌘ Or ⌃
+
+- **Which hints (НП4).** Holding ⌘ or ⌃ shows every hint: `⌃1`…`⌃9` on the sidebar's worktree
+  rows and `⌘1`…`⌘9` on the tabs Select Tab N picks. Upstream's `CommandKeyObserver` already
+  treated ⌃ like ⌘; the fork adds the hold rule and the Remote Mac window.
+- **Hold rule.** Upstream flips the hints on the instant the modifier goes down (#381 dropped its
+  300 ms hold). ⌃C, ⌃R and ⌘C in a terminal then flashed them on every chord. The fork shows them
+  only after ⌘ or ⌃ is held alone for 300 ms (`ShortcutHintHoldGate.holdDelay`). A key pressed
+  with the modifier hides them at once, and they stay hidden until both ⌘ and ⌃ are released. The
+  app becoming active with the modifier down (⌘⇥ into it) counts as a chord. The rule is a pure
+  state machine (`supacode/App/ShortcutHintHoldGate.swift`); the observer runs the delay on an
+  injected clock.
+- **Remote Mac window.** The sidebar shows `⌃N` on row N of `RemoteClientFeature.State.sidebarRowIDs`,
+  the order `selectWorktree(slot:)` picks from (`RemoteSidebarModel.shortcutHints`). The per-pane
+  strip (`tabsPerSplit`) shows `⌘N` on the focused pane's tabs only; the `splitPerTab` group strip
+  shows it on every group (`RemoteStripTab.shortcutHint`), the same picks as
+  `RemoteLayoutProjection.target(of:)`. Both use the user's shortcut overrides; hover gives the
+  slot to the close button, as on a local tab.
+- **Fork-only code.** `supacode/App/ShortcutHintHoldGate.swift`, the remote views and models above.
+  Tests: `ShortcutHintHoldGateTests` and the "Shortcut hints" cases of `RemoteClientSidebarTests`
+  and `RemoteClientLayoutTests`.
+
+### Upstream files it touches
+
+| File | Change | Why |
+| --- | --- | --- |
+| `supacode/App/CommandKeyObserver.swift` | The monitor also takes `.keyDown`; `init(clock:)`; the flags, key and activation events go through `ShortcutHintHoldGate`, and `isPressed` is written only when it changes. `handleCommandKeyChange` and `handleKeyDown` are internal for the tests. | The hold rule |
+| `supacode/App/supacodeApp.swift` | `.environment(commandKeyObserver)` on `RemoteClientWindowRoot` in the "Remote Mac" scene. | The remote strips and sidebar read the observer |
+
+### Keeping It On Upstream Merges
+
+- If upstream changes `CommandKeyObserver.handleCommandKeyChange`, keep the tab-hint re-resolve and
+  route the flip through the gate (`startHold` + `applyHoldGate`), never `isPressed = isDown`.
+- If upstream brings back its own hold delay, keep one of the two, not both.
+
 ## Machine-Local Makefile Overrides (`Local.mk`)
 
 The `Makefile` includes an optional, gitignored `Local.mk` from the repository root

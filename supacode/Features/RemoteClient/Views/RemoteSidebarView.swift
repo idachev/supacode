@@ -16,9 +16,17 @@ struct RemoteSidebarView: View {
   let focusTerminal: () -> Void
 
   @Shared(.appStorage("worktreeRowHideSubtitleOnMatch")) private var hideSubtitleOnMatch = true
+  @Shared(.settingsFile) private var settingsFile
+  @Environment(CommandKeyObserver.self) private var commandKeyObserver
 
   var body: some View {
     let sections = store.sidebarSections
+    // ⌃1…⌃9 on the rows they pick (НП4); empty while the hints are hidden, so the rows' `==` holds.
+    let shortcutHints =
+      commandKeyObserver.isPressed
+      ? RemoteSidebarModel.shortcutHints(
+        rowIDs: store.sidebarRowIDs, overrides: settingsFile.global.shortcutOverrides)
+      : [:]
     let busy = store.busyRequests
     // Repository id → the name of the worktree `worktree.new` is creating there.
     let creating = store.creatingWorktrees.mapValues(\.name)
@@ -34,7 +42,7 @@ struct RemoteSidebarView: View {
       ForEach(sections) { section in
         RemoteSidebarSectionView(
           section: section, busyRequests: busy, creatingWorktrees: creating, hideSubtitleOnMatch: hideSubtitleOnMatch,
-          store: store)
+          shortcutHints: shortcutHints, store: store)
       }
     }
     .listStyle(.sidebar)
@@ -82,6 +90,8 @@ private struct RemoteSidebarSectionView: View {
   /// Repository id → the name of the worktree being created there.
   let creatingWorktrees: [String: String]
   let hideSubtitleOnMatch: Bool
+  /// Row id → its Select Worktree N chord, while the hints show.
+  let shortcutHints: [String: String]
   let store: StoreOf<RemoteClientFeature>
 
   var body: some View {
@@ -159,6 +169,7 @@ private struct RemoteSidebarSectionView: View {
       isHighlighted: isHighlighted,
       hideSubtitleOnMatch: hideSubtitleOnMatch,
       isDeleting: busyRequests.contains(RemoteClientFeature.RequestKey.make("worktree.delete", row.id)),
+      shortcutHint: shortcutHints[row.id],
       store: store
     )
     .equatable()
@@ -194,11 +205,14 @@ private struct RemoteSidebarRow: View, Equatable {
   let isHighlighted: Bool
   let hideSubtitleOnMatch: Bool
   let isDeleting: Bool
+  /// The row's Select Worktree N chord while ⌘ or ⌃ is held; it takes the badges' place.
+  let shortcutHint: String?
   let store: StoreOf<RemoteClientFeature>
 
   static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.row == rhs.row && lhs.isHighlighted == rhs.isHighlighted
       && lhs.hideSubtitleOnMatch == rhs.hideSubtitleOnMatch && lhs.isDeleting == rhs.isDeleting
+      && lhs.shortcutHint == rhs.shortcutHint
   }
 
   var body: some View {
@@ -227,8 +241,17 @@ private struct RemoteSidebarRow: View, Equatable {
         )
         .equatable()
         Spacer(minLength: 0)
-        RemoteAgentBadges(agents: row.agents, size: 16)
-          .fixedSize(horizontal: true, vertical: false)
+        // Cross-faded in place, as on a local row.
+        ZStack(alignment: .trailing) {
+          RemoteAgentBadges(agents: row.agents, size: 16)
+            .fixedSize(horizontal: true, vertical: false)
+            .opacity(shortcutHint == nil ? 1 : 0)
+          Text(shortcutHint ?? "")
+            .appFont(.caption)
+            .foregroundStyle(.secondary)
+            .opacity(shortcutHint == nil ? 0 : 1)
+        }
+        .animation(.easeInOut(duration: 0.15), value: shortcutHint == nil)
       }
     } icon: {
       IconContent(

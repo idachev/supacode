@@ -1,4 +1,5 @@
 import Foundation
+import SupacodeSettingsShared
 
 /// The remote window's sidebar as plain values (СЛ1–СЛ3): `list.sections` in the host's order,
 /// repository rows by `rowIds`, and the load failures. Rows carry only plain values, so the
@@ -59,6 +60,25 @@ nonisolated enum RemoteSidebarModel {
     let name: String
     let canCreateWorktree: Bool
     let rows: [Row]
+  }
+
+  /// The Select Worktree N chord each row shows while ⌘ or ⌃ is held (НП4), by row id. `rowIDs`
+  /// is `sidebarRowIDs`, the order `selectWorktree(slot:)` picks from: row N shows slot N's chord
+  /// with the user's overrides; a disabled slot shows nothing, and an id listed twice keeps its first.
+  /// Main actor, as `AppShortcuts`.
+  @MainActor
+  static func shortcutHints(
+    rowIDs: [String], overrides: [AppShortcutID: AppShortcutOverride]
+  ) -> [String: String] {
+    var hints: [String: String] = [:]
+    var seen = Set<String>()
+    for (slot, id) in rowIDs.prefix(AppShortcuts.worktreeSelection.count).enumerated() {
+      guard seen.insert(id).inserted,
+        let hint = AppShortcuts.worktreeSelectionShortcutDisplay(atSlot: slot, overrides: overrides)
+      else { continue }
+      hints[id] = hint
+    }
+    return hints
   }
 
   /// `list.sections` in order, rows by `rowIds`, unresolvable ids skipped; `filter` keeps rows whose

@@ -1,5 +1,7 @@
+import Carbon.HIToolbox
 import ComposableArchitecture
 import Foundation
+import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
@@ -483,5 +485,60 @@ struct RemoteClientLayoutTests {
     state.alert = alert
     state.projection = nil
     #expect(state.closeFlash == nil)
+  }
+
+  // MARK: - Shortcut hints (НП4)
+
+  @Test func onlyTheFocusedPanesTabsShowTheChordsThatPickThem() {
+    var selection = RemoteLocalSelection(focusedPaneID: ["main": "P1"])
+    // P1 holds [t1, t2] and is focused; P2 holds [t3].
+    let projection = RemoteLayoutProjection.project(Self.twoPaneWorktree(), selection: &selection)
+    #expect(projection.focusedPaneID == "P1")
+
+    for (paneID, pane) in projection.panes {
+      // The strip's `chrome.isFocused`.
+      let isFocused = projection.focusedPaneID == paneID
+      for (slot, tab) in pane.tabs.enumerated() {
+        let hint = RemoteStripTab.shortcutHint(slot: slot, selectsBySlot: isFocused, overrides: [:])
+        if isFocused {
+          #expect(hint == "⌘\(slot + 1)")
+          #expect(projection.target(of: .index(slot + 1)) == .tab(paneID: paneID, tabID: tab.id))
+        } else {
+          #expect(hint == nil)
+        }
+      }
+    }
+  }
+
+  @Test func everyGroupOfTheSplitPerTabStripShowsTheChordThatPicksIt() {
+    let worktree = Self.worktree(
+      layout: RemoteClientLayout(
+        mode: "splitPerTab", activeGroupId: "G2",
+        groups: [
+          Self.group("G1", .pane("P1")),
+          Self.group("G2", .pane("P2")),
+          Self.group("G3", .pane("P3")),
+        ],
+        panes: [Self.pane("P1", ["t1"]), Self.pane("P2", ["t2"]), Self.pane("P3", ["t3"])]),
+      tabs: [Self.tab("t1"), Self.tab("t2"), Self.tab("t3")])
+    var selection = RemoteLocalSelection()
+    let projection = RemoteLayoutProjection.project(worktree, selection: &selection)
+
+    for (slot, group) in projection.groups.enumerated() {
+      #expect(RemoteStripTab.shortcutHint(slot: slot, selectsBySlot: true, overrides: [:]) == "⌘\(slot + 1)")
+      #expect(projection.target(of: .index(slot + 1)) == .group(group.id))
+    }
+  }
+
+  @Test func aStripHintFollowsOverridesAndStopsAfterNine() {
+    let overrides: [AppShortcutID: AppShortcutOverride] = [
+      .selectTab(1): AppShortcutOverride(keyCode: UInt16(kVK_ANSI_1), modifiers: .control),
+      .selectTab(2): .disabled,
+    ]
+    #expect(RemoteStripTab.shortcutHint(slot: 0, selectsBySlot: true, overrides: overrides) == "⌃1")
+    #expect(RemoteStripTab.shortcutHint(slot: 1, selectsBySlot: true, overrides: overrides) == nil)
+    #expect(RemoteStripTab.shortcutHint(slot: 8, selectsBySlot: true, overrides: overrides) == "⌘9")
+    #expect(RemoteStripTab.shortcutHint(slot: 9, selectsBySlot: true, overrides: overrides) == nil)
+    #expect(RemoteStripTab.shortcutHint(slot: -1, selectsBySlot: true, overrides: overrides) == nil)
   }
 }

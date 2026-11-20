@@ -29,9 +29,11 @@ struct RemoteTabStripView: View {
 
   @Shared(.settingsFile) private var settingsFile
   @Environment(\.controlActiveState) private var controlActiveState
+  @Environment(CommandKeyObserver.self) private var commandKeyObserver
 
   var body: some View {
     let overrides = settingsFile.global.shortcutOverrides
+    let showsHints = commandKeyObserver.isPressed
     HStack(spacing: 0) {
       ScrollView(.horizontal) {
         HStack(spacing: TerminalTabBarMetrics.tabSpacing) {
@@ -43,6 +45,8 @@ struct RemoteTabStripView: View {
               // Select Tab N picks the focused pane's tabs.
               tooltip: RemoteStripTab.tooltip(
                 title: title, slot: index, selectsBySlot: chrome.isFocused, overrides: overrides),
+              shortcutHint: showsHints
+                ? RemoteStripTab.shortcutHint(slot: index, selectsBySlot: chrome.isFocused, overrides: overrides) : nil,
               isSelected: tab.id == pane.selectedTabID,
               isClosing: chrome.closingTabIDs.contains(tab.id),
               onSelect: { store.send(.tabSelected(paneID: pane.id, tabID: tab.id)) },
@@ -79,9 +83,11 @@ struct RemoteGroupStripView: View {
 
   @Shared(.settingsFile) private var settingsFile
   @Environment(\.controlActiveState) private var controlActiveState
+  @Environment(CommandKeyObserver.self) private var commandKeyObserver
 
   var body: some View {
     let overrides = settingsFile.global.shortcutOverrides
+    let showsHints = commandKeyObserver.isPressed
     HStack(spacing: 0) {
       ScrollView(.horizontal) {
         HStack(spacing: TerminalTabBarMetrics.tabSpacing) {
@@ -92,6 +98,9 @@ struct RemoteGroupStripView: View {
               title: title,
               tab: tab,
               tooltip: RemoteStripTab.tooltip(title: title, slot: index, selectsBySlot: true, overrides: overrides),
+              // One strip per worktree: every group hints, as the local group strip.
+              shortcutHint: showsHints
+                ? RemoteStripTab.shortcutHint(slot: index, selectsBySlot: true, overrides: overrides) : nil,
               isSelected: group.id == projection.activeGroupID,
               isClosing: tab.map { closingTabIDs.contains($0.id) } ?? true,
               onSelect: { store.send(.groupSelected(group.id)) },
@@ -130,8 +139,18 @@ enum RemoteStripTab {
     title: String, slot: Int, selectsBySlot: Bool, overrides: [AppShortcutID: AppShortcutOverride]
   ) -> String {
     guard selectsBySlot, slot < AppShortcuts.tabSelection.count else { return title }
-    let shortcut = AppShortcuts.tabSelection[slot].effective(from: overrides)
-    return WorktreeGroupStrip.tooltip(title: title, slot: slot, chord: AppShortcut.display(of: shortcut))
+    return WorktreeGroupStrip.tooltip(
+      title: title, slot: slot, chord: shortcutHint(slot: slot, selectsBySlot: true, overrides: overrides))
+  }
+
+  /// The Select Tab N chord a strip slot shows while ⌘ or ⌃ is held (НП4): only where Select Tab
+  /// N picks by slot (the focused pane's strip, or the group strip), for the first nine slots, nil
+  /// when the user disabled it.
+  static func shortcutHint(
+    slot: Int, selectsBySlot: Bool, overrides: [AppShortcutID: AppShortcutOverride]
+  ) -> String? {
+    guard selectsBySlot, AppShortcuts.tabSelection.indices.contains(slot) else { return nil }
+    return AppShortcut.display(of: AppShortcuts.tabSelection[slot].effective(from: overrides))
   }
 }
 
@@ -141,6 +160,8 @@ private struct RemoteTabButton: View {
   /// The tab whose badges, working shimmer and lock show; nil draws the title only.
   let tab: RemoteClientTab?
   let tooltip: String
+  /// The Select Tab N chord while ⌘ or ⌃ is held; hover wins, the close button takes the slot.
+  let shortcutHint: String?
   let isSelected: Bool
   let isClosing: Bool
   let onSelect: () -> Void
@@ -153,6 +174,7 @@ private struct RemoteTabButton: View {
 
   var body: some View {
     let isWorking = tab?.working == true
+    let isShowingHint = shortcutHint != nil && !isHovering
     HStack(spacing: TerminalTabBarMetrics.contentSpacing) {
       Text(title)
         .appFont(.caption)
@@ -170,7 +192,11 @@ private struct RemoteTabButton: View {
       // The lock ignores clicks itself; the close button above it stays hit-testable.
       ZStack(alignment: .trailing) {
         if tab?.readOnly == true {
-          PaneTabLockIndicator(suppress: isHovering)
+          PaneTabLockIndicator(suppress: isHovering || isShowingHint)
+        }
+        if isShowingHint, let shortcutHint {
+          PaneTabShortcutHintText(hint: shortcutHint)
+            .transition(.opacity)
         }
         TerminalTabTrailingButton(
           title: "Close Tab",
@@ -181,9 +207,13 @@ private struct RemoteTabButton: View {
           gestureActive: $trailingButtonGestureActive
         )
       }
-      .frame(width: TerminalTabBarMetrics.closeButtonSize, height: TerminalTabBarMetrics.closeButtonSize)
+      // At least the close button's width; a chord such as ⌘1 is wider.
+      .frame(minWidth: TerminalTabBarMetrics.closeButtonSize, maxHeight: TerminalTabBarMetrics.closeButtonSize)
     }
     .padding(.horizontal, TerminalTabBarMetrics.tabHorizontalPadding)
+    .animation(
+      reduceMotion ? nil : .easeInOut(duration: TerminalTabBarMetrics.fadeAnimationDuration), value: isShowingHint
+    )
     .frame(
       minWidth: TerminalTabBarMetrics.tabMinWidth,
       maxWidth: TerminalTabBarMetrics.tabMaxWidth,

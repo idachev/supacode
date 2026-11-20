@@ -1,4 +1,6 @@
+import Carbon.HIToolbox
 import Foundation
+import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
@@ -170,5 +172,41 @@ struct RemoteClientSidebarTests {
     #expect(Self.ids(Model.sections(list, filter: "")) == ["group:Work|A", "group:Work|B"])
     // The filter drops A's rows: the second keeps its own id, the first is gone.
     #expect(Self.ids(Model.sections(list, filter: "b1")) == ["group:Work|B"])
+  }
+
+  // MARK: - Shortcut hints (НП4)
+
+  @Test func eachRowShowsTheSelectWorktreeChordThatPicksIt() {
+    var state = RemoteClientFeature.State()
+    state.sidebarSections = Model.sections(Self.fullList, filter: "")
+    let rows = state.sidebarRowIDs
+    #expect(rows == ["b2", "a2", "a1", "a3", "b1", "c1"])
+
+    let hints = Model.shortcutHints(rowIDs: rows, overrides: [:])
+    // Row N is what `selectWorktree(slot: N)` picks, so it shows ⌃(N+1).
+    for (slot, id) in rows.enumerated() {
+      #expect(hints[id] == "⌃\(slot + 1)")
+    }
+  }
+
+  @Test func onlyTheFirstNineRowsHintAndOverridesApply() {
+    let rows = (1...11).map { "w\($0)" }
+    let hints = Model.shortcutHints(
+      rowIDs: rows,
+      overrides: [
+        .selectWorktree(1): AppShortcutOverride(keyCode: UInt16(kVK_ANSI_1), modifiers: .command),
+        .selectWorktree(2): .disabled,
+      ])
+    #expect(hints["w1"] == "⌘1")
+    #expect(hints["w2"] == nil)
+    #expect(hints["w3"] == "⌃3")
+    #expect(hints["w9"] == "⌃9")
+    #expect(hints["w10"] == nil)
+    #expect(hints["w11"] == nil)
+  }
+
+  @Test func aRowListedTwiceKeepsItsFirstChord() {
+    let hints = Model.shortcutHints(rowIDs: ["x", "y", "x"], overrides: [:])
+    #expect(hints == ["x": "⌃1", "y": "⌃2"])
   }
 }
