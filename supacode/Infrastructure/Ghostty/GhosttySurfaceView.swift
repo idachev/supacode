@@ -2052,13 +2052,16 @@ final class GhosttySurfaceView: NSView, Identifiable {
     return performMenuItem(fresh)
   }
 
-  /// The item to fire directly, after the update AppKit's own key-equivalent path runs first.
-  /// SwiftUI sets a command item's action when its menu updates, so a menu not updated since the
-  /// focus moved still holds an older window's action: a Cyrillic ⌘W closed the main window's tab
-  /// while the Remote Mac window was key, and ⌘D sent a closed pane's id (ХП1). The update makes
-  /// SwiftUI replace the item (cb5670f8), so the chord is resolved again afterwards.
+  /// The item to fire directly, after the refresh AppKit's own key-equivalent path runs first: it
+  /// asks the item's menu delegate `menuNeedsUpdate(_:)`, which is where SwiftUI's command menus
+  /// (`SwiftUIMenu`, delegate `AppKitMainMenuItem`) put the current focused actions into their
+  /// items; `update()` alone does not. Without it a Cyrillic chord ran an older focus's action:
+  /// ⌘W closed the main window's tab, or nothing, while the Remote Mac window was key, and ⌘D sent
+  /// a pane id from before the last focus change (ХП1, ХП3). The refresh may replace the item, so
+  /// the chord is resolved again afterwards.
   private static func refreshedItem(_ item: NSMenuItem, for event: NSEvent, in menu: NSMenu) -> NSMenuItem? {
     guard let parent = item.menu else { return item }
+    parent.delegate?.menuNeedsUpdate?(parent)
     parent.update()
     return forwardableMenuItem(for: event, in: menu)
   }

@@ -1081,40 +1081,43 @@ struct GhosttySurfaceViewTests {
     #expect(!hiddenTarget.fired)
   }
 
-  /// Stands in for SwiftUI's command menu: `update()` replaces the command item with a fresh one
-  /// that holds the current focused action (the behaviour cb5670f8 observed in the app).
-  /// `nonisolated`: NSMenu's members are, and the project defaults to the main actor.
-  nonisolated private final class RebuildingMenu: NSMenu {
-    var fresh: NSMenuItem?
-    var updates = 0
+  /// Stands in for SwiftUI's command menus: their delegate (`AppKitMainMenuItem`) fills the items
+  /// with the current focused actions in `menuNeedsUpdate(_:)`, which AppKit's own key-equivalent
+  /// path calls first. Here it swaps in a fresh item.
+  private final class RebuildingMenuDelegate: NSObject, NSMenuDelegate {
+    let fresh: NSMenuItem
+    var refreshes = 0
 
-    override func update() {
-      super.update()
-      updates += 1
-      guard let fresh else { return }
-      removeAllItems()
-      addItem(fresh)
+    init(fresh: NSMenuItem) {
+      self.fresh = fresh
+    }
+
+    nonisolated deinit {}
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+      refreshes += 1
+      menu.removeAllItems()
+      menu.addItem(fresh)
     }
   }
 
-  /// A Cyrillic ⌘W fires its item directly, which AppKit's own path would update first. Without
-  /// the update it ran the action of an older focus: the main window's Close Tab while the Remote
-  /// Mac window was key, or ⌘D with a closed pane's id (ХП1).
+  /// A Cyrillic ⌘W fires its item directly, which AppKit's own path would refresh first. Without
+  /// the refresh it ran the action of an older focus: the main window's Close Tab while the Remote
+  /// Mac window was key, or ⌘D with the pane focused before (ХП1, ХП3).
   @Test func directlyFiredChordUpdatesTheMenuAndFiresTheFreshItem() {
     let staleTarget = MenuActionTarget()
     let freshTarget = MenuActionTarget()
     let stale = Self.commandWItem(target: staleTarget)
-    let fileMenu = RebuildingMenu()
-    fileMenu.autoenablesItems = false
-    fileMenu.addItem(stale)
-    fileMenu.fresh = Self.commandWItem(target: freshTarget)
+    let fileMenu = Self.manualMenu([stale])
+    let delegate = RebuildingMenuDelegate(fresh: Self.commandWItem(target: freshTarget))
+    fileMenu.delegate = delegate
     let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
     fileItem.submenu = fileMenu
     let root = Self.manualMenu([fileItem])
     let event = Self.cyrillicCommandW()
 
     #expect(GhosttySurfaceView.dispatchForwardableChord(stale, for: event, in: root))
-    #expect(fileMenu.updates >= 1)
+    #expect(delegate.refreshes == 1)
     #expect(freshTarget.fired)
     #expect(!staleTarget.fired)
   }
