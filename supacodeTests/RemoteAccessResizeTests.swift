@@ -527,6 +527,33 @@ struct RemoteAccessResizeTests {
     #expect(ZmxRemoteStream.controllingTerminal(pid: 1) == nil)
     #expect(ZmxRemoteStream.controllingTerminal(pid: Int32.max) == nil)
   }
+
+  @Test nonisolated func deviceNamesStayApartWhenReadInParallel() async {
+    // The size polls of two sessions run at once (`Task.detached`); a shared
+    // name buffer let one read the other session's tty and send its size.
+    let devices = [("null", Self.characterDevice("/dev/null")), ("zero", Self.characterDevice("/dev/zero"))]
+    let mismatches = await withTaskGroup(of: Int.self) { group in
+      for (name, device) in devices {
+        for _ in 0..<4 {
+          group.addTask {
+            var bad = 0
+            for _ in 0..<5_000 where ZmxRemoteStream.deviceName(device) != name { bad += 1 }
+            return bad
+          }
+        }
+      }
+      var total = 0
+      for await bad in group { total += bad }
+      return total
+    }
+    #expect(mismatches == 0)
+  }
+
+  nonisolated private static func characterDevice(_ path: String) -> dev_t {
+    var info = stat()
+    _ = stat(path, &info)
+    return info.st_rdev
+  }
 }
 
 /// A clock whose sleeps end only when the test says so (`wake`), whatever the

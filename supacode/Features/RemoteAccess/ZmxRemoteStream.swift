@@ -323,14 +323,26 @@ nonisolated final class ZmxRemoteStream: @unchecked Sendable {
         replyTag: ZmxIPCFrameEncoder.infoTag, timeoutMilliseconds: 1500),
       let pid = ZmxIPCFrameEncoder.infoPID(info), pid > 0,
       let terminal = controllingTerminal(pid: pid),
-      let name = devname(terminal, S_IFCHR)
+      let name = deviceName(terminal)
     else { return nil }
-    let device = open("/dev/" + String(cString: name), O_RDONLY | O_NOCTTY | O_NONBLOCK)
+    let device = open("/dev/" + name, O_RDONLY | O_NOCTTY | O_NONBLOCK)
     guard device >= 0 else { return nil }
     defer { Darwin.close(device) }
     var window = winsize()
     guard ioctl(device, TIOCGWINSZ, &window) == 0, window.ws_col > 0, window.ws_row > 0 else { return nil }
     return (Int(window.ws_col), Int(window.ws_row))
+  }
+
+  /// The `/dev` name of the character device `device` (`ttys004`), nil when there is none.
+  /// `devname_r`, not `devname`: `devname` returns one static buffer, and the size polls of two
+  /// sessions run at once, so one read the other session's tty and sent its size as its own.
+  static func deviceName(_ device: dev_t) -> String? {
+    var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+    let count = Int32(buffer.count)
+    return buffer.withUnsafeMutableBufferPointer { pointer -> String? in
+      guard let base = pointer.baseAddress, let name = devname_r(device, S_IFCHR, base, count) else { return nil }
+      return String(cString: name)
+    }
   }
 
   /// The controlling terminal of `pid`, nil when it has none or cannot be read.
