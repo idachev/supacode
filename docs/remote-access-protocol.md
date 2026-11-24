@@ -258,7 +258,7 @@ program (Claude, `vim`, a build, a dev server) is, and so is a hibernated or nev
 whose session nothing can ask. Clients ask before `tab.close` when `busy` or `working` is true. An
 older host omits `busy`; clients then ask for a tab that is `working` or lists an agent.
 
-When the host confirms a waiting prompt from the screen for three minutes, the tab can include
+When the host confirms a waiting prompt from the screen for the configured delay, the tab can include
 `inputReminder: {"id":"<UUID>","agent":"claude"}`. The reminder ID stays the same until that
 prompt clears. The host also reports the agent as `awaitingInput` in `agents` so existing clients
 can notify through their usual path.

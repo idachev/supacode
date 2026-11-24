@@ -315,9 +315,9 @@ tab stops waiting, and when the window of its Mac closes or switches to another 
 
 Enable **Agent input reminders** in **Settings → Notifications** on the Mac that runs the terminal.
 Supacode also checks the live screen of background tabs, including tabs whose agent has no hooks.
-After a question or approval prompt stays open for three minutes, the host and its connected
-Remote Mac windows show a dialog with **Open Terminal**. The phone receives a waiting-agent
-notification through its existing notification settings.
+Set the delay with **Remind after**. The default is three minutes. When a prompt reaches that
+delay, the host and its connected Remote Mac windows show a dialog with **Open Terminal**.
+The phone receives a waiting-agent notification through its existing notification settings.
 
 For ambiguous screens, the host can send up to 24 recent screen lines to Claude Code with Haiku.
 If Claude Code cannot classify the screen, the host tries Codex with GPT-6 Luna. Remote clients

@@ -80,6 +80,7 @@ public struct SettingsFeature {
     public var openFileScript: String
     public var richAgentNotificationsEnabled: Bool
     public var agentInputRemindersEnabled: Bool
+    public var agentInputReminderMinutes: Int
     public var agentPresenceBadgesEnabled: Bool
     public var resumeAgentSessionsAfterRestart: Bool
     public var confirmQuitMode: ConfirmQuitMode
@@ -222,6 +223,7 @@ public struct SettingsFeature {
       openFileScript = settings.openFileScript
       richAgentNotificationsEnabled = settings.richAgentNotificationsEnabled
       agentInputRemindersEnabled = settings.agentInputRemindersEnabled
+      agentInputReminderMinutes = settings.agentInputReminderMinutes
       agentPresenceBadgesEnabled = settings.agentPresenceBadgesEnabled
       resumeAgentSessionsAfterRestart = settings.resumeAgentSessionsAfterRestart
       confirmQuitMode = settings.confirmQuitMode
@@ -421,6 +423,7 @@ public struct SettingsFeature {
         state.openFileScript = normalizedSettings.openFileScript
         state.richAgentNotificationsEnabled = normalizedSettings.richAgentNotificationsEnabled
         state.agentInputRemindersEnabled = normalizedSettings.agentInputRemindersEnabled
+        state.agentInputReminderMinutes = normalizedSettings.agentInputReminderMinutes
         state.agentPresenceBadgesEnabled = normalizedSettings.agentPresenceBadgesEnabled
         state.resumeAgentSessionsAfterRestart = normalizedSettings.resumeAgentSessionsAfterRestart
         state.confirmQuitMode = normalizedSettings.confirmQuitMode
@@ -452,6 +455,11 @@ public struct SettingsFeature {
           persist(state),
           shouldPreview ? .run { _ in await notificationSoundClient.play(sound) } : .none
         )
+
+      case .binding(\.agentInputReminderMinutes):
+        state.agentInputReminderMinutes = GlobalSettings.normalizedAgentInputReminderMinutes(
+          state.agentInputReminderMinutes)
+        return persist(state)
 
       case .binding:
         state.syncGlobalDefaults()
@@ -1252,6 +1260,7 @@ extension SettingsFeature.State {
     settings.openFileScript = openFileScript
     settings.richAgentNotificationsEnabled = richAgentNotificationsEnabled
     settings.agentInputRemindersEnabled = agentInputRemindersEnabled
+    settings.agentInputReminderMinutes = agentInputReminderMinutes
     settings.agentPresenceBadgesEnabled = agentPresenceBadgesEnabled
     settings.resumeAgentSessionsAfterRestart = resumeAgentSessionsAfterRestart
     settings.confirmQuitMode = confirmQuitMode

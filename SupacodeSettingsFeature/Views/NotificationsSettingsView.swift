@@ -45,10 +45,27 @@ public struct NotificationsSettingsView: View {
         Toggle(isOn: $store.agentInputRemindersEnabled) {
           Text("Agent input reminders")
           Text(
-            "Show a dialog after an agent waits for input for three minutes. "
+            "Show a dialog when an agent has been waiting for input. "
               + "Claude Code or Codex can receive recent terminal text to recognize questions."
           )
         }
+        LabeledContent("Remind after") {
+          HStack(spacing: 8) {
+            TextField("Minutes", value: $store.agentInputReminderMinutes, format: .number.grouping(.never))
+              .labelsHidden()
+              .multilineTextAlignment(.trailing)
+              .frame(width: 64)
+            Text("min")
+              .foregroundStyle(.secondary)
+            Stepper(
+              "Adjust reminder delay", value: $store.agentInputReminderMinutes,
+              in: GlobalSettings.agentInputReminderMinutesRange
+            )
+            .labelsHidden()
+            .help("Increase or decrease the reminder delay in minutes")
+          }
+        }
+        .disabled(!store.agentInputRemindersEnabled)
         Picker(selection: $store.notificationRetentionLimit) {
           ForEach(NotificationRetentionLimit.allCases, id: \.self) { limit in
             RetentionLimitLabel(limit: limit).tag(limit)

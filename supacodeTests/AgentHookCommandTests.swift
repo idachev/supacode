@@ -76,9 +76,16 @@ struct AgentHookCommandTests {
         """, agentHint: nil))
     let start = ContinuousClock.now
     let wait = AgentInputWait(screen: screen, started: start)
-    #expect(wait.reminder(at: start.advanced(by: .seconds(179))) == nil)
-    #expect(wait.reminder(at: start.advanced(by: .seconds(180)))?.agent == .codex)
-    #expect(wait.reminder(at: start.advanced(by: .seconds(181)))?.id == wait.id)
+    let delay = GlobalSettings.default.agentInputReminderDelay
+    #expect(wait.reminder(at: start.advanced(by: .seconds(179)), after: delay) == nil)
+    #expect(wait.reminder(at: start.advanced(by: .seconds(180)), after: delay)?.agent == .codex)
+    #expect(wait.reminder(at: start.advanced(by: .seconds(181)), after: delay)?.id == wait.id)
+
+    var settings = GlobalSettings.default
+    settings.agentInputReminderMinutes = 1
+    let shorterDelay = settings.agentInputReminderDelay
+    #expect(wait.reminder(at: start.advanced(by: .seconds(59)), after: shorterDelay) == nil)
+    #expect(wait.reminder(at: start.advanced(by: .seconds(60)), after: shorterDelay)?.id == wait.id)
   }
 
   @Test func anIdleClaudeFooterDoesNotTriggerClassification() {
@@ -90,14 +97,15 @@ struct AgentHookCommandTests {
       AgentInputScreen(
         "Which database should I use?\n❯\n? for shortcuts", agentHint: nil))
     let start = ContinuousClock.now
+    let delay = GlobalSettings.default.agentInputReminderDelay
     var wait = AgentInputWait(screen: screen, started: start)
     #expect(!wait.needsClassification(at: start))
     #expect(wait.needsClassification(at: start.advanced(by: .seconds(20))))
     wait.beginClassification()
     #expect(!wait.needsClassification(at: start.advanced(by: .seconds(180))))
-    #expect(wait.reminder(at: start.advanced(by: .seconds(180))) == nil)
+    #expect(wait.reminder(at: start.advanced(by: delay), after: delay) == nil)
     wait.resolve(as: .claude)
-    #expect(wait.reminder(at: start.advanced(by: .seconds(180)))?.agent == .claude)
+    #expect(wait.reminder(at: start.advanced(by: delay), after: delay)?.agent == .claude)
   }
 
   @Test func theClassifierFallsBackToCodexWhenClaudeFails() async {

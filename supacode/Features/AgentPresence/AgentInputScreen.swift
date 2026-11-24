@@ -62,7 +62,6 @@ nonisolated struct AgentInputScreen: Equatable, Sendable {
 /// Tracks one unchanged candidate screen. The id travels to remote clients so an open
 /// dialog can be cleared or updated without a second dialog for the same wait.
 nonisolated struct AgentInputWait: Equatable, Sendable {
-  static let reminderDelay: Duration = .seconds(180)
   static let classificationDelay: Duration = .seconds(20)
 
   let id = UUID()
@@ -90,8 +89,8 @@ nonisolated struct AgentInputWait: Equatable, Sendable {
     self.agent = agent
   }
 
-  func reminder(at now: ContinuousClock.Instant) -> AgentInputReminder? {
-    guard let agent, started.duration(to: now) >= Self.reminderDelay else { return nil }
+  func reminder(at now: ContinuousClock.Instant, after delay: Duration) -> AgentInputReminder? {
+    guard let agent, started.duration(to: now) >= delay else { return nil }
     return AgentInputReminder(id: id, agent: agent)
   }
 }

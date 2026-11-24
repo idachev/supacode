@@ -11,6 +11,8 @@ final class AgentInputReminderMonitor {
     let agentHint: SkillAgent?
   }
 
+  typealias Snapshot = (terminals: [UUID: Terminal], delay: Duration)
+
   struct Ready {
     let worktreeID: Worktree.ID
     let title: String
@@ -31,15 +33,15 @@ final class AgentInputReminderMonitor {
   nonisolated deinit {}
 
   func start(
-    terminals: @escaping @MainActor () -> [UUID: Terminal]?,
+    snapshot: @escaping @MainActor () -> Snapshot?,
     didScan: @escaping @MainActor () -> Void
   ) {
     guard scanTask == nil else { return }
     scanTask = Task { [weak self] in
       let clock = ContinuousClock()
       while !Task.isCancelled, self != nil {
-        if let snapshot = terminals() {
-          await self?.scan(snapshot, now: clock.now)
+        if let snapshot = snapshot() {
+          await self?.scan(snapshot.terminals, now: clock.now, delay: snapshot.delay)
         } else {
           self?.clear()
         }
@@ -77,7 +79,7 @@ final class AgentInputReminderMonitor {
     self.classification = nil
   }
 
-  private func scan(_ terminals: [UUID: Terminal], now: ContinuousClock.Instant) async {
+  private func scan(_ terminals: [UUID: Terminal], now: ContinuousClock.Instant, delay: Duration) async {
     let sockets = terminals.compactMap { id, terminal in
       terminal.zmxSocket.map { (id, $0) }
     }
@@ -108,7 +110,7 @@ final class AgentInputReminderMonitor {
         wait = AgentInputWait(screen: screen, started: now)
       }
       next[id] = wait
-      if let reminder = wait.reminder(at: now) {
+      if let reminder = wait.reminder(at: now, after: delay) {
         ready[id] = Ready(worktreeID: terminal.worktreeID, title: terminal.title, reminder: reminder)
       }
     }

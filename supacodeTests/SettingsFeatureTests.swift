@@ -130,6 +130,41 @@ struct SettingsFeatureTests {
     #expect(settingsFile.global.terminalHibernationEnabled == false)
   }
 
+  @Test(.dependencies) func changingAgentInputReminderDelayPersistsMinutes() async {
+    @Shared(.settingsFile) var settingsFile
+    let previous = settingsFile.global
+    $settingsFile.withLock { $0.global = .default }
+    defer { $settingsFile.withLock { $0.global = previous } }
+
+    let store = TestStore(initialState: SettingsFeature.State(settings: .default)) {
+      SettingsFeature()
+    }
+    #expect(store.state.agentInputReminderMinutes == 3)
+    await store.send(.binding(.set(\.agentInputReminderMinutes, 7))) {
+      $0.agentInputReminderMinutes = 7
+    }
+    await store.receive(\.delegate.settingsChanged)
+    #expect(settingsFile.global.agentInputReminderMinutes == 7)
+
+    await store.send(.binding(.set(\.agentInputReminderMinutes, 0))) {
+      $0.agentInputReminderMinutes = 1
+    }
+    await store.receive(\.delegate.settingsChanged)
+    #expect(settingsFile.global.agentInputReminderMinutes == 1)
+  }
+
+  @Test func agentInputReminderDelayRoundTripsAndDefaultsToThreeMinutes() throws {
+    var settings = GlobalSettings.default
+    settings.agentInputReminderMinutes = 7
+    let data = try JSONEncoder().encode(settings)
+    #expect(try JSONDecoder().decode(GlobalSettings.self, from: data).agentInputReminderMinutes == 7)
+
+    var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object.removeValue(forKey: "agentInputReminderMinutes")
+    let legacy = try JSONSerialization.data(withJSONObject: object)
+    #expect(try JSONDecoder().decode(GlobalSettings.self, from: legacy).agentInputReminderMinutes == 3)
+  }
+
   @Test(.dependencies) func togglingPinWorktreeWhenAgentSessionEndsPersistsChanges() async {
     @Shared(.settingsFile) var settingsFile
     $settingsFile.withLock { $0.global = .default }

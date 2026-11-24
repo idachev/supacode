@@ -73,7 +73,7 @@ private struct AgentInputReminderDialog: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       VStack(alignment: .leading, spacing: 4) {
-        Text("\(item.agent) has been waiting for input for three minutes.")
+        Text("\(item.agent) is waiting for your input.")
           .font(.headline)
         Text(item.location)
           .foregroundStyle(.secondary)

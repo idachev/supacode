@@ -170,6 +170,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   public var openFileScript: String
   public var richAgentNotificationsEnabled: Bool
   public var agentInputRemindersEnabled: Bool
+  public var agentInputReminderMinutes: Int
   public var agentPresenceBadgesEnabled: Bool
   /// When true, a pane whose agent was still running before a reboot types and runs the agent's
   /// resume command when its surface is first opened.
@@ -209,6 +210,17 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   public var terminalLayoutMode: TerminalLayoutMode
   /// System-wide chord that toggles the app; nil (the default) leaves it unbound.
   public var globalToggleVisibilityHotkey: AppShortcutOverride?
+
+  // Keep the conversion to seconds within the integer range.
+  public static let agentInputReminderMinutesRange = 1...(Int.max / 60)
+
+  public static func normalizedAgentInputReminderMinutes(_ minutes: Int) -> Int {
+    min(max(minutes, agentInputReminderMinutesRange.lowerBound), agentInputReminderMinutesRange.upperBound)
+  }
+
+  public var agentInputReminderDelay: Duration {
+    .seconds(Self.normalizedAgentInputReminderMinutes(agentInputReminderMinutes) * 60)
+  }
 
   public static let `default` = GlobalSettings(
     appearanceMode: .dark,
@@ -295,6 +307,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     openFileScript: String = "",
     richAgentNotificationsEnabled: Bool = true,
     agentInputRemindersEnabled: Bool = false,
+    agentInputReminderMinutes: Int = 3,
     agentPresenceBadgesEnabled: Bool = true,
     resumeAgentSessionsAfterRestart: Bool = true,
     confirmQuitMode: ConfirmQuitMode = .auto,
@@ -347,6 +360,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.openFileScript = openFileScript
     self.richAgentNotificationsEnabled = richAgentNotificationsEnabled
     self.agentInputRemindersEnabled = agentInputRemindersEnabled
+    self.agentInputReminderMinutes = Self.normalizedAgentInputReminderMinutes(agentInputReminderMinutes)
     self.agentPresenceBadgesEnabled = agentPresenceBadgesEnabled
     self.resumeAgentSessionsAfterRestart = resumeAgentSessionsAfterRestart
     self.confirmQuitMode = confirmQuitMode
@@ -532,6 +546,10 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     agentInputRemindersEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .agentInputRemindersEnabled)
       ?? Self.default.agentInputRemindersEnabled
+    agentInputReminderMinutes = Self.normalizedAgentInputReminderMinutes(
+      try container.decodeIfPresent(Int.self, forKey: .agentInputReminderMinutes)
+        ?? Self.default.agentInputReminderMinutes
+    )
     agentPresenceBadgesEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .agentPresenceBadgesEnabled)
       ?? Self.default.agentPresenceBadgesEnabled

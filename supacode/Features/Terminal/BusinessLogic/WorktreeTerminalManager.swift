@@ -282,17 +282,18 @@ final class WorktreeTerminalManager {
 
   func startAgentInputReminders() {
     agentInputReminders.start(
-      terminals: { [weak self] in
-        self?.agentInputTerminals()
+      snapshot: { [weak self] in
+        self?.agentInputReminderSnapshot()
       },
       didScan: { [weak self] in
         self?.presentAgentInputReminders()
       })
   }
 
-  private func agentInputTerminals() -> [UUID: AgentInputReminderMonitor.Terminal]? {
-    guard settingsFile.global.agentInputRemindersEnabled, let appStore else { return nil }
-    return appStore.withState { state in
+  private func agentInputReminderSnapshot() -> AgentInputReminderMonitor.Snapshot? {
+    let settings = settingsFile.global
+    guard settings.agentInputRemindersEnabled, let appStore else { return nil }
+    let terminals = appStore.withState { state in
       var terminals: [UUID: AgentInputReminderMonitor.Terminal] = [:]
       let runtime = ContentRuntime.liveValue
       for layout in state.terminals.layouts {
@@ -319,6 +320,7 @@ final class WorktreeTerminalManager {
       }
       return terminals
     }
+    return (terminals, settings.agentInputReminderDelay)
   }
 
   private func presentAgentInputReminders() {
