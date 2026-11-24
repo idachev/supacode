@@ -744,18 +744,18 @@ final class GhosttySurfaceView: NSView, Identifiable {
     }
   }
 
-  private func readScreenContents() -> String {
+  private func readScreenContents(from region: ghostty_point_tag_e = GHOSTTY_POINT_SCREEN) -> String {
     guard let surface else { return "" }
     var text = ghostty_text_s()
     let selection = ghostty_selection_s(
       top_left: ghostty_point_s(
-        tag: GHOSTTY_POINT_SCREEN,
+        tag: region,
         coord: GHOSTTY_POINT_COORD_TOP_LEFT,
         x: 0,
         y: 0
       ),
       bottom_right: ghostty_point_s(
-        tag: GHOSTTY_POINT_SCREEN,
+        tag: region,
         coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
         x: 0,
         y: 0
@@ -765,6 +765,11 @@ final class GhosttySurfaceView: NSView, Identifiable {
     guard ghostty_surface_read_text(surface, selection, &text) else { return "" }
     defer { ghostty_surface_free_text(surface, &text) }
     return String(cString: text.text)
+  }
+
+  /// Read the live screen even when the local viewport has scrolled back.
+  func readActiveScreen() -> String {
+    readScreenContents(from: GHOSTTY_POINT_ACTIVE)
   }
 
   override func keyDown(with event: NSEvent) {

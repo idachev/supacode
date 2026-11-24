@@ -313,6 +313,16 @@ forward and opens that tab; when no window shows that Mac (a notification left f
 relaunch), a window opens for it, without selecting the tab. The notification goes away when the
 tab stops waiting, and when the window of its Mac closes or switches to another Mac.
 
+Enable **Agent input reminders** in **Settings → Notifications** on the Mac that runs the terminal.
+Supacode also checks the live screen of background tabs, including tabs whose agent has no hooks.
+After a question or approval prompt stays open for three minutes, the host and its connected
+Remote Mac windows show a dialog with **Open Terminal**. The phone receives a waiting-agent
+notification through its existing notification settings.
+
+For ambiguous screens, the host can send up to 24 recent screen lines to Claude Code with Haiku.
+If Claude Code cannot classify the screen, the host tries Codex with GPT-6 Luna. Remote clients
+receive the reminder and the tab it belongs to.
+
 ## Troubleshooting
 
 - **Phone shows "Mac offline"**: Supacode is not running, `enabled` is false, or another Supacode

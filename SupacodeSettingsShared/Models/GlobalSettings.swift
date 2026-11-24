@@ -169,6 +169,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
   /// `SUPACODE_FILE_PATH`. Empty uses the system default app. A hook, never in the script menu.
   public var openFileScript: String
   public var richAgentNotificationsEnabled: Bool
+  public var agentInputRemindersEnabled: Bool
   public var agentPresenceBadgesEnabled: Bool
   /// When true, a pane whose agent was still running before a reboot types and runs the agent's
   /// resume command when its surface is first opened.
@@ -245,6 +246,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     globalScripts: [],
     openFileScript: "",
     richAgentNotificationsEnabled: true,
+    agentInputRemindersEnabled: false,
     agentPresenceBadgesEnabled: true,
     resumeAgentSessionsAfterRestart: true,
     confirmQuitMode: .auto,
@@ -292,6 +294,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     globalScripts: [ScriptDefinition] = [],
     openFileScript: String = "",
     richAgentNotificationsEnabled: Bool = true,
+    agentInputRemindersEnabled: Bool = false,
     agentPresenceBadgesEnabled: Bool = true,
     resumeAgentSessionsAfterRestart: Bool = true,
     confirmQuitMode: ConfirmQuitMode = .auto,
@@ -343,6 +346,7 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     self.globalScripts = globalScripts
     self.openFileScript = openFileScript
     self.richAgentNotificationsEnabled = richAgentNotificationsEnabled
+    self.agentInputRemindersEnabled = agentInputRemindersEnabled
     self.agentPresenceBadgesEnabled = agentPresenceBadgesEnabled
     self.resumeAgentSessionsAfterRestart = resumeAgentSessionsAfterRestart
     self.confirmQuitMode = confirmQuitMode
@@ -525,6 +529,9 @@ public nonisolated struct GlobalSettings: Codable, Equatable, Sendable {
     richAgentNotificationsEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .richAgentNotificationsEnabled)
       ?? Self.default.richAgentNotificationsEnabled
+    agentInputRemindersEnabled =
+      try container.decodeIfPresent(Bool.self, forKey: .agentInputRemindersEnabled)
+      ?? Self.default.agentInputRemindersEnabled
     agentPresenceBadgesEnabled =
       try container.decodeIfPresent(Bool.self, forKey: .agentPresenceBadgesEnabled)
       ?? Self.default.agentPresenceBadgesEnabled

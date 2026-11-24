@@ -1,6 +1,7 @@
 import Clocks
 import ConcurrencyExtras
 import Foundation
+import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
@@ -18,12 +19,13 @@ struct RemoteAccessWatchTests {
     titles: [String],
     activity: String = "idle",
     id: Int? = nil,
-    layout: RemoteLayout? = nil
+    layout: RemoteLayout? = nil,
+    reminder: AgentInputReminder? = nil
   ) -> RemoteListMessage {
     let tabs = titles.enumerated().map { index, title in
       RemoteTab(
         id: "tab-\(index)", contentId: "content-\(index)", title: title, focused: index == 0, working: false,
-        readOnly: false, agents: [RemoteAgent(agent: "claude", activity: activity)])
+        readOnly: false, agents: [RemoteAgent(agent: "claude", activity: activity)], inputReminder: reminder)
     }
     let worktree = RemoteWorktree(
       id: "/tmp/repo", name: "repo", branch: "main", status: "idle", focused: true, title: nil, working: false,
@@ -64,6 +66,14 @@ struct RemoteAccessWatchTests {
       RemoteWatch.change(
         from: Self.list(titles: ["zsh"], activity: "idle"), to: Self.list(titles: ["zsh"], activity: "working"))
         == .structural)
+  }
+
+  @Test func aReminderChangeIsStructuralEvenIfTheAgentWasAlreadyWaiting() {
+    let before = Self.list(titles: ["Codex"], activity: "awaitingInput")
+    let after = Self.list(
+      titles: ["Codex"], activity: "awaitingInput", reminder: AgentInputReminder(id: UUID(), agent: .claude))
+    #expect(RemoteWatch.change(from: before, to: after) == .structural)
+    #expect(RemoteWatch.change(from: after, to: before) == .structural)
   }
 
   @Test func aLayoutChangeWithTheSameTitlesIsStructural() {

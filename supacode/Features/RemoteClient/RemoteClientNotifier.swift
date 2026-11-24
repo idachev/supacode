@@ -42,7 +42,7 @@ nonisolated enum RemoteClientNotifier {
 
   /// Not when the tab is visible in the key remote window.
   static func shouldPost(_ tab: RemoteAwaitingTab, isKeyWindow: Bool, visibleContentIDs: [String]) -> Bool {
-    !(isKeyWindow && visibleContentIDs.contains(tab.contentId))
+    !tab.hasReminder && !(isKeyWindow && visibleContentIDs.contains(tab.contentId))
   }
 
   /// `supacode://remote-client/notification?host=<id>&worktree=<id>&content=<id>`.

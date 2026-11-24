@@ -35,6 +35,7 @@ final class WorktreeTerminalManager {
   private var pendingActivityReasserts: Set<Worktree.ID> = []
   @ObservationIgnored
   @Shared(.settingsFile) private var settingsFile: SettingsFile
+  @ObservationIgnored let agentInputReminders = AgentInputReminderMonitor()
   private var notificationsEnabled = true
   private var lastNotificationIndicatorCount: Int?
   // Cached so views read one Bool instead of iterating sidebarItems.
@@ -268,6 +269,77 @@ final class WorktreeTerminalManager {
 
   private func applyHookEvent(_ event: AgentHookEvent) {
     emit(.agentHookEventReceived(event))
+    guard settingsFile.global.agentInputRemindersEnabled, event.agent == "claude" || event.agent == "codex" else {
+      return
+    }
+    switch event.eventName {
+    case .busy, .sessionStart, .sessionEnd, .error, .compacting:
+      if agentInputReminders.invalidate(event.surfaceID) { presentAgentInputReminders() }
+    default:
+      break
+    }
+  }
+
+  func startAgentInputReminders() {
+    agentInputReminders.start(
+      terminals: { [weak self] in
+        self?.agentInputTerminals()
+      },
+      didScan: { [weak self] in
+        self?.presentAgentInputReminders()
+      })
+  }
+
+  private func agentInputTerminals() -> [UUID: AgentInputReminderMonitor.Terminal]? {
+    guard settingsFile.global.agentInputRemindersEnabled, let appStore else { return nil }
+    return appStore.withState { state in
+      var terminals: [UUID: AgentInputReminderMonitor.Terminal] = [:]
+      let runtime = ContentRuntime.liveValue
+      for layout in state.terminals.layouts {
+        guard let worktree = state.repositories.worktree(for: layout.id) else { continue }
+        for pane in layout.layout.panes {
+          for tab in pane.tabs {
+            guard case .terminal(let terminal) = tab.content.state, !tab.isLocked else { continue }
+            let contentID = tab.content.id
+            let id = contentID.rawValue
+            let content = runtime.content(for: contentID)
+            let view = content?.renderer as? GhosttySurfaceView
+            let zmxSocket =
+              view == nil && terminal.launch?.bypassZmx != true
+              ? ZmxRemoteStream.socketPath(contentID: id) : nil
+            terminals[id] = AgentInputReminderMonitor.Terminal(
+              worktreeID: worktree.id,
+              title: "\(worktree.name) · \(TabTitle.resolved(for: tab, chrome: content?.chrome))",
+              screen: view?.readActiveScreen(),
+              zmxSocket: zmxSocket,
+              agentHint: state.agentPresence.bySurface[id]?.first { $0 == .claude || $0 == .codex }
+            )
+          }
+        }
+      }
+      return terminals
+    }
+  }
+
+  private func presentAgentInputReminders() {
+    let items = agentInputReminders.ready.map { surfaceID, ready in
+      AgentInputReminderPresenter.Item(
+        id: ready.reminder.id, agent: ready.reminder.agent.displayName, location: ready.title
+      ) { [weak self] in
+        guard let self, let appStore,
+          let tabID = tabID(forWorktreeID: ready.worktreeID, surfaceID: surfaceID)
+        else { return }
+        NSApplication.shared.surfaceMainWindow()
+        appStore.send(
+          .deeplink(
+            .worktree(
+              id: ready.worktreeID,
+              action: .surface(tabID: tabID.rawValue, surfaceID: surfaceID, input: nil)
+            ))
+        )
+      }
+    }
+    AgentInputReminderPresenter.shared.update(.local, items: items)
   }
 
   #if DEBUG
@@ -409,18 +481,7 @@ final class WorktreeTerminalManager {
     case .selectRelativeTab(let worktree, let forward):
       selectRelativeTab(forward: forward, in: worktree)
     case .focusSurface(let worktree, let tabID, let surfaceID, let input):
-      let host = host(for: worktree)
-      // Surface-first: the tab ID is a hint; the surface's actual owner wins.
-      guard let owningTab = host.tabID(containing: surfaceID) ?? presentTab(tabID, in: worktree.id) else {
-        terminalLogger.warning("focusSurface: surface \(surfaceID) not found in worktree \(worktree.id).")
-        break
-      }
-      sendLayout(worktree.id, .wakeTab(id: owningTab))
-      sendLayout(worktree.id, .selectTab(id: owningTab))
-      host.liveSurface(surfaceID)?.requestFocus()
-      if let input, !input.isEmpty {
-        host.focusAndInsertText(input + "\r")
-      }
+      focusSurface(in: worktree, tabID: tabID, surfaceID: surfaceID, input: input)
     case .splitSurface(
       let worktree, let tabID, let surfaceID, let direction, let input, let id, let focusing
     ):
@@ -1456,6 +1517,27 @@ final class WorktreeTerminalManager {
       return
     }
     emit(.surfaceCreated(worktreeID: worktree.id, id: id))
+  }
+
+  private func focusSurface(in worktree: Worktree, tabID: TabID, surfaceID: UUID, input: String?) {
+    let host = host(for: worktree)
+    // The surface's current tab wins if it has moved since the caller found it.
+    guard let owningTab = host.tabID(containing: surfaceID) ?? presentTab(tabID, in: worktree.id) else {
+      terminalLogger.warning("focusSurface: surface \(surfaceID) not found in worktree \(worktree.id).")
+      return
+    }
+    sendLayout(worktree.id, .wakeTab(id: owningTab))
+    sendLayout(worktree.id, .selectTab(id: owningTab))
+    if let state = layoutState(for: worktree.id),
+      let paneID = state.layout.pane(containingTab: owningTab)?.id,
+      state.windowedPaneIDs.contains(paneID)
+    {
+      paneWindows.orderFront(worktreeID: worktree.id, paneID: paneID)
+    }
+    host.liveSurface(surfaceID)?.requestFocus()
+    if let input, !input.isEmpty {
+      host.focusAndInsertText(input + "\r")
+    }
   }
 
   private func focusPane(in worktree: Worktree, paneToken: UUID) {

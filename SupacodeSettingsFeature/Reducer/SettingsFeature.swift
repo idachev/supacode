@@ -79,6 +79,7 @@ public struct SettingsFeature {
     public var globalScripts: [ScriptDefinition]
     public var openFileScript: String
     public var richAgentNotificationsEnabled: Bool
+    public var agentInputRemindersEnabled: Bool
     public var agentPresenceBadgesEnabled: Bool
     public var resumeAgentSessionsAfterRestart: Bool
     public var confirmQuitMode: ConfirmQuitMode
@@ -220,6 +221,7 @@ public struct SettingsFeature {
       globalScripts = settings.globalScripts
       openFileScript = settings.openFileScript
       richAgentNotificationsEnabled = settings.richAgentNotificationsEnabled
+      agentInputRemindersEnabled = settings.agentInputRemindersEnabled
       agentPresenceBadgesEnabled = settings.agentPresenceBadgesEnabled
       resumeAgentSessionsAfterRestart = settings.resumeAgentSessionsAfterRestart
       confirmQuitMode = settings.confirmQuitMode
@@ -418,6 +420,7 @@ public struct SettingsFeature {
         state.globalScripts = normalizedSettings.globalScripts
         state.openFileScript = normalizedSettings.openFileScript
         state.richAgentNotificationsEnabled = normalizedSettings.richAgentNotificationsEnabled
+        state.agentInputRemindersEnabled = normalizedSettings.agentInputRemindersEnabled
         state.agentPresenceBadgesEnabled = normalizedSettings.agentPresenceBadgesEnabled
         state.resumeAgentSessionsAfterRestart = normalizedSettings.resumeAgentSessionsAfterRestart
         state.confirmQuitMode = normalizedSettings.confirmQuitMode
@@ -1248,6 +1251,7 @@ extension SettingsFeature.State {
     settings.globalScripts = globalScripts
     settings.openFileScript = openFileScript
     settings.richAgentNotificationsEnabled = richAgentNotificationsEnabled
+    settings.agentInputRemindersEnabled = agentInputRemindersEnabled
     settings.agentPresenceBadgesEnabled = agentPresenceBadgesEnabled
     settings.resumeAgentSessionsAfterRestart = resumeAgentSessionsAfterRestart
     settings.confirmQuitMode = confirmQuitMode

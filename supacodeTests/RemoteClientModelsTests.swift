@@ -1,9 +1,24 @@
 import Foundation
+import SupacodeSettingsShared
 import Testing
 
 @testable import supacode
 
 struct RemoteClientModelsTests {
+  @Test func aScreenReminderIdentifiesTheAgentWithoutSendingTerminalText() throws {
+    let reminder = AgentInputReminder(id: UUID(), agent: .codex)
+    let tab = RemoteTab(
+      id: "tab", contentId: "content", title: "Codex", focused: false, working: false,
+      readOnly: false, agents: [], inputReminder: reminder)
+    let data = try JSONEncoder().encode(tab)
+    let decoded = try JSONDecoder().decode(RemoteClientTab.self, from: data)
+    #expect(decoded.inputReminder == reminder)
+    #expect(decoded.contentId == "content")
+    let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let fields = try #require(json["inputReminder"] as? [String: String])
+    #expect(Set(fields.keys) == ["id", "agent"])
+  }
+
   @Test func theKeyFileSplitsAtTheLastSlash() {
     #expect(
       RemoteClientKey.parse("relay.example.com/abcde-fghij\n")

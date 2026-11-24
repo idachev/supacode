@@ -529,6 +529,7 @@ nonisolated struct RemoteTab: Encodable, Equatable, Sendable {
   /// Closing the tab would interrupt a running program (the Mac's own close-confirmation rule,
   /// `ContentRuntime.closeWouldInterrupt`); a bare shell prompt is not busy. Absent on old hosts.
   var busy = false
+  var inputReminder: AgentInputReminder?
 }
 
 nonisolated struct RemoteAgent: Encodable, Equatable, Sendable {

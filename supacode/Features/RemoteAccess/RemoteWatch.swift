@@ -47,7 +47,7 @@ nonisolated enum RemoteWatch {
             tabs: worktree.tabs.map { tab in
               RemoteTab(
                 id: tab.id, contentId: tab.contentId, title: "", focused: tab.focused, working: tab.working,
-                readOnly: tab.readOnly, agents: tab.agents, busy: tab.busy)
+                readOnly: tab.readOnly, agents: tab.agents, busy: tab.busy, inputReminder: tab.inputReminder)
             },
             canDeleteWorktree: worktree.canDeleteWorktree, layout: worktree.layout)
         },

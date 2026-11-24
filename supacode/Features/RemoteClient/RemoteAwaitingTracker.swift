@@ -8,6 +8,7 @@ nonisolated struct RemoteAwaitingTab: Equatable, Sendable {
   let worktreeName: String
   let tabTitle: String
   let agent: String
+  var hasReminder = false
 }
 
 /// When an agent **starts** to wait for input.
@@ -42,7 +43,7 @@ nonisolated struct RemoteAwaitingTracker: Equatable, Sendable {
             contentId: tab.contentId, repositoryId: repo.id, worktreeId: worktree.id,
             worktreeName: Self.worktreeName(worktree),
             tabTitle: tab.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Tab" : tab.title,
-            agent: agent.agent)
+            agent: agent.agent, hasReminder: tab.inputReminder != nil)
         }
       }
     }

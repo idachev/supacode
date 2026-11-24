@@ -18,9 +18,8 @@ nonisolated enum CodexHookSettingsError: Error {
 
 // MARK: - Hook payload.
 
-// Turn-level activity only — Codex doesn't expose PreToolUse/PostToolUse
-// at a useful granularity (Bash-only), so a single `busy` at submit and
-// a single `idle` + notify at stop is the cleanest model. SessionStart
+// Work runs from `busy` at submit to `idle` + notify at stop. PermissionRequest
+// marks an approval prompt without returning an approval decision. SessionStart
 // fires on the first turn rather than on session open (openai/codex#15266),
 // so the badge appears once the user submits a prompt. SessionEnd fires
 // only on `/exit` and Ctrl-C (codex 0.164), never on HUP or TERM, so the
@@ -30,6 +29,8 @@ nonisolated enum CodexHookSettingsError: Error {
 private nonisolated struct CodexHooksPayload: Encodable {
   private static let busy = AgentHookSettingsCommand.compositeCommand(
     events: [.busy], forwardStdinAsNotification: false, agent: .codex)
+  private static let awaitingInput = AgentHookSettingsCommand.compositeCommand(
+    events: [.awaitingInput], forwardStdinAsNotification: false, agent: .codex)
   private static let idleAndNotify = AgentHookSettingsCommand.compositeCommand(
     events: [.idle], forwardStdinAsNotification: true, agent: .codex)
   private static let sessionStart = AgentHookSettingsCommand.compositeCommand(
@@ -43,6 +44,9 @@ private nonisolated struct CodexHooksPayload: Encodable {
     ],
     "UserPromptSubmit": [
       .init(hooks: [.init(command: Self.busy, timeout: AgentHookSettingsCommand.timeoutSeconds)])
+    ],
+    "PermissionRequest": [
+      .init(hooks: [.init(command: Self.awaitingInput, timeout: AgentHookSettingsCommand.timeoutSeconds)])
     ],
     "Stop": [
       .init(hooks: [.init(command: Self.idleAndNotify, timeout: AgentHookSettingsCommand.timeoutSeconds)])

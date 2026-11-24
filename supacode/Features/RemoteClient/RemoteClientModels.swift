@@ -34,6 +34,7 @@ nonisolated struct RemoteClientTab: Decodable, Equatable, Sendable, Identifiable
   var agents: [RemoteClientAgent] = []
   /// Closing would interrupt a running program on the Mac; nil from a host that does not say.
   var busy: Bool?
+  var inputReminder: AgentInputReminder?
 }
 
 nonisolated indirect enum RemoteClientLayoutNode: Decodable, Equatable, Sendable {
@@ -191,7 +192,9 @@ nonisolated extension RemoteClientAgent {
 }
 
 nonisolated extension RemoteClientTab {
-  private enum CodingKeys: String, CodingKey { case id, contentId, title, focused, working, readOnly, agents, busy }
+  private enum CodingKeys: String, CodingKey {
+    case id, contentId, title, focused, working, readOnly, agents, busy, inputReminder
+  }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -204,6 +207,7 @@ nonisolated extension RemoteClientTab {
     agents = try c.elements(.agents)
     // A wrong type reads as "not said", like a missing field.
     busy = (try? c.decodeIfPresent(Bool.self, forKey: .busy)) ?? nil
+    inputReminder = (try? c.decodeIfPresent(AgentInputReminder.self, forKey: .inputReminder)) ?? nil
   }
 }
 

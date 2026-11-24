@@ -253,6 +253,7 @@ final class PaneWindowManager {
       terminalManager?.sendLayout(worktreeID, .exitWindowMode(paneID: paneID))
       return
     }
+    if window.isMiniaturized { window.deminiaturize(nil) }
     window.makeKeyAndOrderFront(nil)
   }
 

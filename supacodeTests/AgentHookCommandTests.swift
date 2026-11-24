@@ -46,6 +46,78 @@ struct AgentHookCommandTests {
 
   // MARK: - Claude canonical hook map.
 
+  @Test func claudeIdleNotificationDoesNotMarkTheAgentAsWaiting() throws {
+    let groups = try #require(ClaudeHookSettings.hooksByEvent()["Notification"])
+    let unfiltered = try #require(groups.first { $0.objectValue?["matcher"]?.stringValue == "" })
+    let command = try #require(Self.commandStrings(in: [unfiltered]).first)
+    #expect(command.contains("kind=notify"))
+    #expect(!command.contains("event=awaiting_input"))
+  }
+
+  @Test func permissionRequestsMarkBothAgentsAsWaitingWithoutDeciding() throws {
+    for hooks in [try ClaudeHookSettings.hooksByEvent(), try CodexHookSettings.hooksByEvent()] {
+      let groups = try #require(hooks["PermissionRequest"])
+      let command = try #require(Self.commandStrings(in: groups).first)
+      #expect(command.contains("event=awaiting_input"))
+      #expect(!command.contains("kind=notify"))
+      #expect(!command.contains("hookSpecificOutput"))
+    }
+  }
+
+  @Test func aCodexApprovalScreenNeedsNoHookAndWaitsForThreeMinutes() throws {
+    let screen = try #require(
+      AgentInputScreen(
+        """
+        Would you like to run the following command?
+          $ ls
+        › 1. Yes, proceed (y)
+          2. No, and tell Codex what to do differently (esc)
+        Press Enter to confirm or Esc to cancel
+        """, agentHint: nil))
+    let start = ContinuousClock.now
+    let wait = AgentInputWait(screen: screen, started: start)
+    #expect(wait.reminder(at: start.advanced(by: .seconds(179))) == nil)
+    #expect(wait.reminder(at: start.advanced(by: .seconds(180)))?.agent == .codex)
+    #expect(wait.reminder(at: start.advanced(by: .seconds(181)))?.id == wait.id)
+  }
+
+  @Test func anIdleClaudeFooterDoesNotTriggerClassification() {
+    #expect(AgentInputScreen("All tests passed.\n❯\n? for shortcuts", agentHint: .claude) == nil)
+  }
+
+  @Test func aQuestionWithoutAnAgentHookCanUseTheClassifier() throws {
+    let screen = try #require(
+      AgentInputScreen(
+        "Which database should I use?\n❯\n? for shortcuts", agentHint: nil))
+    let start = ContinuousClock.now
+    var wait = AgentInputWait(screen: screen, started: start)
+    #expect(!wait.needsClassification(at: start))
+    #expect(wait.needsClassification(at: start.advanced(by: .seconds(20))))
+    wait.beginClassification()
+    #expect(!wait.needsClassification(at: start.advanced(by: .seconds(180))))
+    #expect(wait.reminder(at: start.advanced(by: .seconds(180))) == nil)
+    wait.resolve(as: .claude)
+    #expect(wait.reminder(at: start.advanced(by: .seconds(180)))?.agent == .claude)
+  }
+
+  @Test func theClassifierFallsBackToCodexWhenClaudeFails() async {
+    let agent = await AgentInputClassifier.classify(screen: "Which database?") { command, prompt in
+      #expect(prompt.contains("Which database?"))
+      if command.contains("--model haiku") { return nil }
+      #expect(command.contains("gpt-6-luna"))
+      return "WAITING_CODEX\n"
+    }
+    #expect(agent == .codex)
+  }
+
+  @Test func aClearAnswerFromHaikuDoesNotCallCodex() async {
+    let agent = await AgentInputClassifier.classify(screen: "Done") { command, _ in
+      #expect(command.contains("--model haiku"))
+      return "CLEAR"
+    }
+    #expect(agent == nil)
+  }
+
   @Test func claudePostToolUseFiresIdleNotBusy() throws {
     // PostToolUse releases the shimmer when a tool finishes, so `busy` tracks
     // active tool execution rather than the whole turn.

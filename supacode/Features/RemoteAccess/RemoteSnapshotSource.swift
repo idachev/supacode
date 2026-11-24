@@ -481,7 +481,9 @@ final class RemoteSnapshotSource {
 
   private func tabs(of worktreeID: Worktree.ID) -> [RemoteTab] {
     guard let layout = terminalManager.layoutState(for: worktreeID)?.layout else { return [] }
-    return Self.tabs(in: layout, runtime: ContentRuntime.liveValue)
+    return Self.tabs(in: layout, runtime: ContentRuntime.liveValue) { [terminalManager] id in
+      terminalManager.agentInputReminders.ready[id]?.reminder
+    }
   }
 
   /// Every terminal tab of a layout in flat pane order (parked split-per-tab
@@ -489,11 +491,23 @@ final class RemoteSnapshotSource {
   /// and read-only state from the content's chrome, and `busy` by the Mac's own
   /// close-confirmation rule. A tab whose content is not registered yet (never
   /// started) reports no agents and not working.
-  static func tabs(in layout: PaneLayout, runtime: ContentRuntime) -> [RemoteTab] {
+  static func tabs(
+    in layout: PaneLayout, runtime: ContentRuntime,
+    inputReminder: (UUID) -> AgentInputReminder? = { _ in nil }
+  ) -> [RemoteTab] {
     let focusedTabID = layout.focusedPaneID.flatMap { layout.panes[id: $0]?.selectedTabID }
     return layout.panes.flatMap { pane in
       pane.tabs.filter { $0.content.kind == .terminal }.map { tab in
         let chrome = runtime.content(for: tab.content.id)?.chrome as? TerminalTabChrome
+        let reminder = inputReminder(tab.content.id.rawValue)
+        var agents = (chrome?.agents ?? []).map {
+          RemoteAgent(agent: $0.agent.rawValue, activity: $0.activity.rawValue)
+        }
+        // Older clients already notify on this activity even when no hook is installed.
+        if let reminder {
+          agents.removeAll { $0.agent == reminder.agent.rawValue }
+          agents.append(RemoteAgent(agent: reminder.agent.rawValue, activity: "awaitingInput"))
+        }
         return RemoteTab(
           id: tab.id.rawValue.uuidString,
           contentId: tab.content.id.rawValue.uuidString,
@@ -501,10 +515,9 @@ final class RemoteSnapshotSource {
           focused: tab.id == focusedTabID,
           working: chrome?.isWorking ?? false,
           readOnly: chrome?.isReadOnly ?? false,
-          agents: (chrome?.agents ?? []).map {
-            RemoteAgent(agent: $0.agent.rawValue, activity: $0.activity.rawValue)
-          },
-          busy: runtime.closeWouldInterrupt(tab.content)
+          agents: agents,
+          busy: runtime.closeWouldInterrupt(tab.content),
+          inputReminder: reminder
         )
       }
     }

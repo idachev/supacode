@@ -76,6 +76,31 @@ struct RemoteClientWindowView: View {
           onCancel: { store.send(.hostPickerDismissed) }
         )
       }
+      .onChange(of: store.list, initial: true) { _, _ in updateAgentInputReminders() }
+      .onChange(of: store.status) { _, _ in updateAgentInputReminders() }
+      .onDisappear { AgentInputReminderPresenter.shared.update(.remote(window), items: []) }
+  }
+
+  private func updateAgentInputReminders() {
+    let source = AgentInputReminderPresenter.Source.remote(ObjectIdentifier(store))
+    guard case .online = store.status, let hostID = store.selectedHostID else {
+      AgentInputReminderPresenter.shared.update(source, items: [])
+      return
+    }
+    let macName = store.macName
+    let items = store.worktrees.flatMap { worktree in
+      worktree.tabs.compactMap { tab -> AgentInputReminderPresenter.Item? in
+        guard let reminder = tab.inputReminder, !tab.contentId.isEmpty else { return nil }
+        let target = RemoteClientNotifier.Target(hostID: hostID, worktreeID: worktree.id, contentID: tab.contentId)
+        return AgentInputReminderPresenter.Item(
+          id: reminder.id, agent: reminder.agent.displayName,
+          location: "\(macName) · \(worktree.title ?? worktree.name) · \(tab.title)"
+        ) {
+          RemoteClientWindowRegistry.shared.notificationOpened(target)
+        }
+      }
+    }
+    AgentInputReminderPresenter.shared.update(source, items: items)
   }
 
   @ViewBuilder private var content: some View {

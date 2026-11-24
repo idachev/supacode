@@ -62,6 +62,7 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
     // Release the global Carbon registration explicitly rather than leaning on
     // deinit timing.
     globalHotkeyMonitor?.tearDown()
+    terminalManager?.agentInputReminders.stop()
     remoteAccessHost?.stop()
     // Every remote window's connection and pipes stop now: no store effect runs during terminate.
     RemoteClientWindowRegistry.shared.closeAll()
@@ -102,6 +103,7 @@ final class SupacodeAppDelegate: NSObject, NSApplicationDelegate {
     // Apply the saved Dock/menu-bar visibility before the first window shows.
     NSApplication.shared.applyActivationPolicy(for: appStore.state.settings.appVisibility)
     appStore.send(.appLaunched)
+    terminalManager?.startAgentInputReminders()
   }
 
   // Menu key equivalents are characters. Outside the terminal, a Cyrillic event

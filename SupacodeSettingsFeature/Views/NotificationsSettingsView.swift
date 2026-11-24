@@ -42,6 +42,13 @@ public struct NotificationsSettingsView: View {
         .disabled(!store.hasActiveNotificationChannel)
       }
       Section {
+        Toggle(isOn: $store.agentInputRemindersEnabled) {
+          Text("Agent input reminders")
+          Text(
+            "Show a dialog after an agent waits for input for three minutes. "
+              + "Claude Code or Codex can receive recent terminal text to recognize questions."
+          )
+        }
         Picker(selection: $store.notificationRetentionLimit) {
           ForEach(NotificationRetentionLimit.allCases, id: \.self) { limit in
             RetentionLimitLabel(limit: limit).tag(limit)
